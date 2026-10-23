@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 import json
+import math
 from pathlib import Path
 import re
 from typing import Any
@@ -34,10 +35,13 @@ class VideoStyle:
     max_input_size_mb: int = 500
     max_video_duration_seconds: int = 1800
     max_transcription_chunks: int = 2
+    openai_price_per_audio_minute_usd: float | None = None
+    shotstack_price_per_render_minute_usd: float | None = None
+    max_estimated_cost_usd: float | None = None
 
 
 def _validate_hex(value: str, key: str) -> str:
-    if not re.fullmatch(r"#[0-9A-Fa-f]{6}", value):
+    if not isinstance(value, str) or not re.fullmatch(r"#[0-9A-Fa-f]{6}", value):
         raise StyleConfigError(f"{key} must be a six-digit hex color such as #FFFFFF.")
     return value.upper()
 
@@ -81,6 +85,8 @@ def load_video_style(path: str | Path = "video_style.json") -> VideoStyle:
         raise StyleConfigError("logo_position must be one of Shotstack's nine clip positions.")
     if not 0.02 <= float(values["logo_scale"]) <= 0.4:
         raise StyleConfigError("logo_scale must be between 0.02 and 0.4.")
+    if any(not -1 <= float(values[key]) <= 1 for key in ("logo_offset_x", "logo_offset_y")):
+        raise StyleConfigError("Logo offsets must be between -1 and 1.")
     if int(values["output_width"]) != 1080 or int(values["output_height"]) != 1920:
         raise StyleConfigError("This project currently supports only 1080 × 1920 output.")
     if int(values["output_fps"]) not in {25, 30, 50, 60}:
@@ -89,6 +95,17 @@ def load_video_style(path: str | Path = "video_style.json") -> VideoStyle:
         raise StyleConfigError("Input size and duration limits must be positive.")
     if int(values["max_transcription_chunks"]) <= 0:
         raise StyleConfigError("max_transcription_chunks must be positive.")
+    for key in (
+        "openai_price_per_audio_minute_usd",
+        "shotstack_price_per_render_minute_usd",
+        "max_estimated_cost_usd",
+    ):
+        rate = values[key]
+        if rate is not None:
+            if not math.isfinite(float(rate)) or float(rate) < 0:
+                raise StyleConfigError(f"{key} must be a finite, non-negative number.")
+    if values["logo_path"] is not None and not isinstance(values["logo_path"], str):
+        raise StyleConfigError("logo_path must be a local file path or null.")
     emojis = values["emoji_by_keyword"]
     if emojis is not None and (
         not isinstance(emojis, dict)
@@ -100,6 +117,12 @@ def load_video_style(path: str | Path = "video_style.json") -> VideoStyle:
     for key in ("font_size", "stroke_width", "output_width", "output_height", "output_fps",
                 "max_input_size_mb", "max_video_duration_seconds", "max_transcription_chunks"):
         values[key] = int(values[key])
-    for key in ("caption_offset_y", "logo_scale", "logo_offset_x", "logo_offset_y"):
+    for key in (
+        "caption_offset_y", "logo_scale", "logo_offset_x", "logo_offset_y",
+        "openai_price_per_audio_minute_usd", "shotstack_price_per_render_minute_usd",
+        "max_estimated_cost_usd",
+    ):
+        if values[key] is None:
+            continue
         values[key] = float(values[key])
     return VideoStyle(**values)

@@ -1,57 +1,68 @@
-# Vídeos verticales locales: OpenAI + Shotstack
+# Automatización local de vídeos verticales
 
-El proyecto permite validar un MP4 local, transcribir su audio, agrupar captions temporizados y preparar un render vertical 1080 × 1920. Google Drive aún no participa en este flujo.
+Este proyecto conserva un flujo local de MP4 para preparar una edición 9:16 con OpenAI y Shotstack. Google Drive permanece desconectado y no se han ampliado permisos.
 
-## Qué hace el código
+## Implementado
 
-- Valida el MP4 con `ffprobe` y extrae audio temporal con FFmpeg en fragmentos de 15 minutos.
-- Usa OpenAI `whisper-1` en formato `verbose_json`, solicitando timestamps de palabra y segmento. Si no hay tiempos por palabra, distribuye los tiempos de segmento entre sus palabras.
-- Agrupa las palabras en captions consecutivos de 2 a 4 palabras conservando sus marcas temporales.
-- Carga una copia del MP4 a Shotstack Ingest, crea una edición con vídeo recortado para vertical y captions visibles, solicita el render y descarga el MP4 terminado.
-- Mantiene el vídeo original intacto y asigna un nombre de salida nuevo. Si ya existe, elige otro nombre; no sobrescribe.
-- El audio extraído se borra al terminar. Los outputs locales se guardan en `outputs/`.
+- Validación de MP4, duración, tamaño, audio, códecs, dimensiones y FPS mediante `ffprobe`.
+- Extracción temporal de audio con FFmpeg en bloques de 15 minutos.
+- Transcripción `whisper-1` en `verbose_json`, solicitando timestamps por palabra y segmento. La salida se normaliza; si faltan tiempos por palabra, se estiman dentro del segmento.
+- Captions SRT de 2–4 palabras sincronizados con el audio.
+- Edición Shotstack con `rich-caption`, animación/highlight por palabra, trazo legible y subtítulos en zona inferior segura.
+- Estilo configurable en `video_style.json`: fuente, colores, animación, posición, emojis asociados manualmente y logo local opcional.
+- Salida MP4 1080 × 1920 a 30 fps. Las fuentes con otra relación de aspecto usan `contain` para no cortar caras; solo se usa crop si el formato ya es prácticamente 9:16.
+- Ingest de MP4, SRT y, opcionalmente, logo a Shotstack. Resultado descargado como archivo nuevo; el original no se modifica ni sobrescribe.
+- SQLite local (`data/processing.sqlite3`) para detectar vídeos ya completados, reanudar un render existente y permitir como máximo un reintento manual.
+- Límites por defecto: un vídeo por ejecución, 500 MB, 30 minutos de vídeo, dos bloques de transcripción y un nuevo render por intento. Se pueden ajustar en `video_style.json`.
+- `requirements.txt` fija las versiones usadas, incluidos los requisitos de ejecución de OpenAI/Requests.
 
-## Pruebas sin costes
+La animación activa destaca la palabra que se está pronunciando; el proyecto no realiza análisis semántico para decidir qué palabras son “importantes”. Los emojis son opcionales y solo se añaden si se configuran en `emoji_by_keyword`.
 
-Las pruebas usan únicamente datos sintéticos, mocks y funciones locales; no hacen llamadas a OpenAI/Shotstack ni consumen créditos:
+## Shotstack: Stage exclusivamente
+
+La configuración y el cliente rechazan cualquier entorno que no sea `stage`; no hay una ruta de producción habilitada. Replit Secrets informa que existen `OPENAI_API_KEY` y `SHOTSTACK_API_KEY`, pero no se han leído ni mostrado sus valores. Tampoco se ha comprobado mediante una llamada que la clave de Shotstack corresponda a Stage, porque no se han realizado solicitudes externas.
+
+La carga y el render siguen detrás de `--authorize-paid-apis`. La transcripción real puede tener coste; el MP4, los subtítulos y el logo opcional se envían a Shotstack Ingest y se solicita un render Stage. Los reintentos automáticos del SDK de OpenAI están desactivados y una nueva tentativa requiere `--retry-failed` y la autorización explícita.
+
+## Pruebas sin llamadas externas
 
 ```bash
 python -m unittest discover -s tests -v
 python -m video_pipeline --dry-run
 ```
 
-El entorno verificado tiene Python 3.11, `ffmpeg`, `ffprobe`, OpenAI Python SDK 3.37.0 y Requests 2.34.2. `requirements.txt` fija versiones exactas de esas bibliotecas y sus dependencias de ejecución.
+Las pruebas usan un MP4 sintético generado y comprobado localmente, mocks de ambas APIs, y payloads construidos sin enviarlos. Validan los límites, estado/idempotencia, SRT, animación, logo opcional, rechazo de Production y calidad técnica de un MP4 sintético 1080 × 1920. **No son prueba de una transcripción ni un render real de Shotstack.**
 
-## Primer procesamiento local real
+## Primer render real (todavía no autorizado)
 
-1. Coloca un MP4 de prueba en el workspace, por ejemplo `data/incoming/prueba.mp4`. No se copia ni modifica al hacerlo manualmente.
-2. `OPENAI_API_KEY` ya existe en Replit Secrets. No hace falta volver a configurarla.
-3. Para Shotstack hace falta que el usuario configure su propia `SHOTSTACK_API_KEY` en Replit Secrets. El proyecto no inventa ni contiene esa credencial.
-4. Cuando autorices expresamente los costes y el envío del archivo a esos servicios, ejecuta:
+1. Coloca el MP4 local de prueba en `data/incoming/`.
+2. Comprueba su preflight sin llamadas remotas:
 
-```bash
-python -m video_pipeline --process data/incoming/prueba.mp4 --authorize-paid-apis
-```
+   ```bash
+   python -m video_pipeline --dry-run --input-dir data/incoming
+   ```
 
-El flag `--authorize-paid-apis` es una barrera intencional: la transcripción de OpenAI puede tener coste; el MP4 se sube a Shotstack Ingest y el render puede consumir créditos/coste del plan. **No se han realizado esas llamadas en esta implementación.** Sin el flag no se contacta con esos servicios. Si falta `SHOTSTACK_API_KEY`, el programa se detiene antes de llamar a OpenAI.
+3. Completa las tarifas vigentes de tu cuenta en `video_style.json` si quieres que el preflight calcule un importe USD. Sin esas tarifas informa que el importe es desconocido; no inventa precios.
+4. Solo cuando autorices el coste y el envío del archivo, ejecuta una sola vez:
 
-El entorno Shotstack puede ser `v1` o `stage`:
+   ```bash
+   python -m video_pipeline --process data/incoming/prueba.mp4 --authorize-paid-apis
+   ```
 
-```bash
-SHOTSTACK_ENVIRONMENT=stage python -m video_pipeline --process data/incoming/prueba.mp4 --authorize-paid-apis
-```
+El render se guarda en `outputs/`. Si el vídeo ya está marcado como completado, el hash impide procesarlo de nuevo. Para un fallo, revisa primero el estado y usa `--retry-failed` solo si autorizas otra posible llamada de pago.
 
-`stage` sigue siendo una llamada remota y requiere la clave de Shotstack; no se usa automáticamente. El resultado se guarda en `outputs/<nombre>_vertical_subtitled.mp4` (o un nombre incremental si ya existe).
+## Pendiente y limitaciones
 
-## Limitaciones y comprobación final
+- No hay vídeo real de usuario procesado y no se ha hecho ninguna llamada real a OpenAI o Shotstack. El secreto de Shotstack existe, pero no se ha verificado su correspondencia con Stage mediante API.
+- Falta revisión visual y auditiva del primer resultado real; también hace falta comprobar la respuesta real de Shotstack y sus defaults de códec/fps. Los renders remotos no se simulan como verificados.
+- La composición centra y conserva fuentes no 9:16 con letterboxing; no hace seguimiento facial ni reencuadre semántico.
+- El logo se incorpora si se especifica un archivo local en `video_style.json`. El acceso al logo de Drive no está implementado.
+- El importe USD es desconocido hasta que se configuren precios actuales por minuto para ambas APIs en `video_style.json`; revisa también si tu plan cobra conceptos adicionales de almacenamiento, transferencia o impuestos.
+- Google Drive no lista ni descarga entradas, no sube resultados y no amplía OAuth. El bloqueo actual de acceso a carpetas existentes sigue pendiente de autorización/decisión.
 
-- No se ha transcrito un vídeo real ni enviado una solicitud real de render. Las pruebas validan la forma y la seguridad local del flujo, no garantizan la aceptación de cada propiedad por un proyecto Shotstack concreto ni la calidad final del encuadre/captions.
-- En el estado actual no hay `SHOTSTACK_API_KEY` configurada en el proyecto. No se solicitó ni se creó una.
-- El servicio remoto debe poder ingerir el MP4 y renderizarlo; el primer render real sigue pendiente de la clave de Shotstack y de tu autorización explícita.
-- Google Drive continúa sin conectarse. Este flujo acepta un archivo local y no modifica permisos OAuth.
+## Referencias consultadas
 
-## Referencias de API
-
-- OpenAI, transcripción con timestamps: https://platform.openai.com/docs/api-reference/audio/createTranscription
-- Shotstack, edición/render: https://shotstack.io/docs/api
-- Shotstack, carga local mediante URL firmada: https://shotstack.io/docs/guide/ingesting-footage/sources.md
+- OpenAI Transcriptions: https://platform.openai.com/docs/api-reference/audio/createTranscription
+- Shotstack Rich Captions: https://shotstack.io/docs/guide/architecting-an-application/rich-captions/
+- Shotstack Positioning: https://shotstack.io/docs/guide/architecting-an-application/positioning/
+- Shotstack Ingest: https://shotstack.io/docs/guide/ingesting-footage/sources.md

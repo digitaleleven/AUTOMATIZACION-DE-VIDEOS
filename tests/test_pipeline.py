@@ -6,7 +6,7 @@ import subprocess
 from unittest.mock import Mock
 
 from video_pipeline.config import PipelineConfig
-from video_pipeline.media import extract_audio_chunks, probe_video
+from video_pipeline.media import extract_audio_chunks, probe_video, validate_rendered_output
 from video_pipeline.models import SubtitleSegment, VideoInfo, WordTiming
 from video_pipeline.pipeline import (
     _new_output_path,
@@ -15,9 +15,16 @@ from video_pipeline.pipeline import (
     process_local_video,
 )
 from video_pipeline.shotstack import ShotstackClient, ShotstackError, build_edit_payload
+from video_pipeline.state import (
+    DuplicateProcessingError,
+    ProcessingLedger,
+    RetryNotAllowedError,
+)
+from video_pipeline.style import StyleConfigError, VideoStyle, load_video_style
 from video_pipeline.subtitles import (
     TranscriptionError,
     build_subtitle_segments,
+    captions_to_srt,
     normalize_transcription,
 )
 from video_pipeline.transcription import transcribe_video
@@ -105,6 +112,14 @@ class TranscriptionAndSubtitleTests(unittest.TestCase):
         with self.assertRaises(TranscriptionError):
             build_subtitle_segments([WordTiming("Solo.", 0, 1)])
 
+    def test_srt_preserves_times_and_allows_configured_relevant_emoji(self):
+        srt = captions_to_srt(
+            [SubtitleSegment("viaje muy bonito", 1.25, 2.5)],
+            {"viaje": "✈️"},
+        )
+        self.assertIn("00:00:01,250 --> 00:00:02,500", srt)
+        self.assertIn("viaje muy bonito ✈️", srt)
+
 
 class ShotstackPayloadTests(unittest.TestCase):
     def test_builds_vertical_video_with_visible_timed_subtitles(self):
@@ -112,18 +127,55 @@ class ShotstackPayloadTests(unittest.TestCase):
             SubtitleSegment("Hola mundo", 0.2, 1.1),
             SubtitleSegment("Prueba vertical", 1.1, 2.5),
         ]
-        payload = build_edit_payload("https://media.example/video.mp4", 2.5, captions)
+        payload = build_edit_payload(
+            "https://media.example/video.mp4",
+            2.5,
+            captions,
+            "https://media.example/subtitles.srt",
+            source_width=360,
+            source_height=640,
+        )
         self.assertEqual(payload["output"]["size"], {"width": 1080, "height": 1920})
         tracks = payload["timeline"]["tracks"]
         self.assertEqual(len(tracks), 2)
-        self.assertEqual(len(tracks[0]["clips"]), 2)
-        self.assertEqual(tracks[0]["clips"][0]["asset"]["text"], "Hola mundo")
+        self.assertEqual(tracks[0]["clips"][0]["asset"]["type"], "rich-caption")
+        self.assertEqual(tracks[0]["clips"][0]["asset"]["animation"]["style"], "highlight")
+        self.assertEqual(tracks[0]["clips"][0]["asset"]["active"]["font"]["color"], "#FFD84D")
         self.assertEqual(tracks[0]["clips"][0]["position"], "bottom")
-        self.assertEqual(tracks[1]["clips"][0]["asset"]["fit"], "crop")
+        self.assertEqual(tracks[1]["clips"][0]["fit"], "crop")
+
+    def test_landscape_source_uses_contain_instead_of_cropping(self):
+        payload = build_edit_payload(
+            "https://media.example/video.mp4",
+            2.5,
+            [SubtitleSegment("Hola mundo", 0, 1)],
+            "https://media.example/subtitles.srt",
+            source_width=1920,
+            source_height=1080,
+        )
+        self.assertEqual(payload["timeline"]["tracks"][-1]["clips"][0]["fit"], "contain")
+
+    def test_optional_logo_is_a_separate_configurable_overlay(self):
+        payload = build_edit_payload(
+            "https://media.example/video.mp4",
+            2.5,
+            [SubtitleSegment("Hola mundo", 0, 1)],
+            "https://media.example/subtitles.srt",
+            style=VideoStyle(logo_scale=0.1),
+            logo_url="https://media.example/logo.png",
+            source_width=360,
+            source_height=640,
+        )
+        logo_track = payload["timeline"]["tracks"][1]
+        self.assertEqual(logo_track["clips"][0]["asset"]["type"], "image")
+        self.assertEqual(logo_track["clips"][0]["scale"], 0.1)
 
     def test_rejects_non_https_video_source(self):
         with self.assertRaises(ValueError):
-            build_edit_payload("file:///tmp/video.mp4", 5, [SubtitleSegment("Hola mundo", 0, 1)])
+            build_edit_payload(
+                "file:///tmp/video.mp4", 5, [SubtitleSegment("Hola mundo", 0, 1)],
+                "https://media.example/subtitles.srt",
+            )
 
     def test_rejects_subtitle_outside_video_duration(self):
         with self.assertRaises(ValueError):
@@ -131,6 +183,7 @@ class ShotstackPayloadTests(unittest.TestCase):
                 "https://media.example/video.mp4",
                 1,
                 [SubtitleSegment("Hola mundo", 2, 3)],
+                "https://media.example/subtitles.srt",
             )
 
 
@@ -165,7 +218,7 @@ class ProviderAdapterTests(unittest.TestCase):
             session.post.return_value.json.return_value = {
                 "data": {
                     "id": "source-id",
-                    "attributes": {"url": "https://shotstack-ingest-api-v1-sources.s3.amazonaws.com/signed"},
+                    "attributes": {"url": "https://shotstack-ingest-api-stage-sources.s3.amazonaws.com/signed"},
                 }
             }
             session.get.return_value.json.return_value = {
@@ -173,7 +226,7 @@ class ProviderAdapterTests(unittest.TestCase):
                     "id": "source-id",
                     "attributes": {
                         "status": "ready",
-                        "source": "https://shotstack-ingest-api-v1-sources.s3.amazonaws.com/source.mp4",
+                        "source": "https://shotstack-ingest-api-stage-sources.s3.amazonaws.com/source.mp4",
                     },
                 }
             }
@@ -186,8 +239,14 @@ class ProviderAdapterTests(unittest.TestCase):
             )
             url = client.upload_local_video(source)
 
-        self.assertEqual(url, "https://shotstack-ingest-api-v1-sources.s3.amazonaws.com/source.mp4")
+        self.assertEqual(url, "https://shotstack-ingest-api-stage-sources.s3.amazonaws.com/source.mp4")
+        self.assertIn("/ingest/stage/upload", session.post.call_args.args[0])
+        self.assertIn("/ingest/stage/sources/", session.get.call_args.args[0])
         self.assertNotIn("x-api-key", session.put.call_args.kwargs["headers"])
+
+    def test_shotstack_client_rejects_production_environment(self):
+        with self.assertRaises(ValueError):
+            ShotstackClient(api_key="test-only-not-a-real-key", environment="v1", session=Mock())
 
     def test_render_download_refuses_to_delete_or_overwrite_existing_file(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -231,6 +290,182 @@ class LocalMediaTests(unittest.TestCase):
             self.assertEqual(len(chunks), 1)
             self.assertGreater(chunks[0][0].stat().st_size, 0)
             self.assertTrue(video_path.exists())
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg tools are required")
+    def test_validates_synthetic_h264_1080x1920_output(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_path = root / "source.mp4"
+            output_path = root / "output.mp4"
+            subprocess.run(
+                [
+                    "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+                    "-f", "lavfi", "-i", "color=c=blue:s=360x640:d=1:r=30",
+                    "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                    "-shortest", str(source_path),
+                ],
+                check=True,
+                capture_output=True,
+                timeout=30,
+            )
+            subprocess.run(
+                [
+                    "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+                    "-f", "lavfi", "-i", "color=c=blue:s=1080x1920:d=1:r=30",
+                    "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                    "-shortest", str(output_path),
+                ],
+                check=True,
+                capture_output=True,
+                timeout=30,
+            )
+            source_info = probe_video(source_path)
+            output_info = validate_rendered_output(source_info, output_path, VideoStyle())
+
+            self.assertEqual((output_info.width, output_info.height), (1080, 1920))
+            self.assertEqual(output_info.video_codec, "h264")
+            self.assertEqual(output_info.audio_codec, "aac")
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg tools are required")
+    def test_offline_pipeline_orchestration_preserves_original_and_rejects_duplicate(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_path = root / "input.mp4"
+            output_dir = root / "outputs"
+            state_path = root / "state.sqlite3"
+            subprocess.run(
+                [
+                    "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+                    "-f", "lavfi", "-i", "color=c=blue:s=360x640:d=1:r=30",
+                    "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                    "-shortest", str(source_path),
+                ],
+                check=True,
+                capture_output=True,
+                timeout=30,
+            )
+            original_bytes = source_path.read_bytes()
+
+            blocked_openai = Mock()
+            blocked_shotstack = Mock()
+            with self.assertRaisesRegex(ValueError, "exceeds the configured limit"):
+                process_local_video(
+                    source_path,
+                    output_dir,
+                    paid_api_authorized=True,
+                    openai_client=blocked_openai,
+                    shotstack_client=blocked_shotstack,
+                    config=PipelineConfig(shotstack_environment="stage"),
+                    style=VideoStyle(
+                        openai_price_per_audio_minute_usd=1.0,
+                        shotstack_price_per_render_minute_usd=1.0,
+                        max_estimated_cost_usd=0.01,
+                    ),
+                    state_db_path=root / "blocked.sqlite3",
+                )
+            blocked_openai.audio.transcriptions.create.assert_not_called()
+            blocked_shotstack.upload_local_video.assert_not_called()
+
+            class OfflineShotstackStub:
+                def upload_local_video(self, path):
+                    self.uploaded_video = Path(path)
+                    return "https://media.example/ingested.mp4"
+
+                def upload_local_asset(self, path, content_type):
+                    self.subtitle_srt = Path(path).read_text(encoding="utf-8")
+                    self.content_type = content_type
+                    return "https://media.example/captions.srt"
+
+                def submit_render(self, payload):
+                    self.payload = payload
+                    return "offline-render-id"
+
+                def wait_for_render(self, render_id):
+                    self.waited_for = render_id
+                    return "https://media.example/rendered.mp4"
+
+                def download_render(self, url, destination):
+                    subprocess.run(
+                        [
+                            "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+                            "-f", "lavfi", "-i", "color=c=blue:s=1080x1920:d=1:r=30",
+                            "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+                            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                            "-shortest", str(destination),
+                        ],
+                        check=True,
+                        capture_output=True,
+                        timeout=30,
+                    )
+                    return Path(destination)
+
+            renderer = OfflineShotstackStub()
+            with unittest.mock.patch(
+                "video_pipeline.pipeline.transcribe_video",
+                return_value=[WordTiming("Hola", 0, 0.45), WordTiming("mundo.", 0.45, 1)],
+            ) as transcription:
+                result = process_local_video(
+                    source_path,
+                    output_dir,
+                    paid_api_authorized=True,
+                    openai_client=Mock(),
+                    shotstack_client=renderer,
+                    config=PipelineConfig(shotstack_environment="stage"),
+                    state_db_path=state_path,
+                )
+                transcription.assert_called_once()
+
+            self.assertTrue(Path(result["output"]).is_file())
+            self.assertEqual(result["output_dimensions"], {"width": 1080, "height": 1920})
+            self.assertEqual(result["shotstack_environment"], "stage")
+            self.assertEqual(renderer.content_type, "application/x-subrip")
+            self.assertIn("Hola mundo.", renderer.subtitle_srt)
+            self.assertEqual(renderer.payload["timeline"]["tracks"][0]["clips"][0]["asset"]["type"], "rich-caption")
+            self.assertEqual(source_path.read_bytes(), original_bytes)
+            renderer.submit_render = Mock(side_effect=AssertionError("duplicate must not render"))
+            with self.assertRaises(DuplicateProcessingError):
+                process_local_video(
+                    source_path,
+                    output_dir,
+                    paid_api_authorized=True,
+                    openai_client=Mock(),
+                    shotstack_client=renderer,
+                    config=PipelineConfig(shotstack_environment="stage"),
+                    state_db_path=state_path,
+                )
+            self.assertEqual(source_path.read_bytes(), original_bytes)
+
+
+class StateAndStyleTests(unittest.TestCase):
+    def test_ledger_prevents_duplicates_and_allows_only_one_explicit_retry(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ledger = ProcessingLedger(Path(temp_dir) / "state.sqlite3")
+            job = ledger.claim("hash-1", "input.mp4")
+            self.assertEqual(job["attempts"], 1)
+            ledger.update("hash-1", captions_json='[{"text":"hola mundo","start":0,"end":1}]')
+            ledger.mark_failed("hash-1", "temporary problem")
+            with self.assertRaises(RetryNotAllowedError):
+                ledger.claim("hash-1", "input.mp4")
+            retried = ledger.claim("hash-1", "input.mp4", retry_failed=True)
+            self.assertEqual(retried["attempts"], 2)
+            self.assertIsNotNone(retried["captions_json"])
+            ledger.mark_completed("hash-1", "outputs/video.mp4")
+            with self.assertRaises(DuplicateProcessingError):
+                ledger.claim("hash-1", "input.mp4", retry_failed=True)
+
+    def test_style_file_validates_supported_visual_and_usage_options(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "style.json"
+            path.write_text('{"animation_style":"karaoke","font_size":72}', encoding="utf-8")
+            style = load_video_style(path)
+            self.assertEqual(style.animation_style, "karaoke")
+            self.assertEqual(style.font_size, 72)
+            path.write_text('{"animation_style":"made-up"}', encoding="utf-8")
+            with self.assertRaises(StyleConfigError):
+                load_video_style(path)
 
 
 class SafetyTests(unittest.TestCase):

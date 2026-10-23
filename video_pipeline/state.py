@@ -30,12 +30,20 @@ class ProcessingLedger:
                     output_path TEXT,
                     captions_json TEXT,
                     shotstack_source_url TEXT,
+                    subtitle_url TEXT,
+                    logo_url TEXT,
                     render_id TEXT,
                     error TEXT,
                     updated_at TEXT NOT NULL
                 )
                 """
             )
+            existing_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(processing_jobs)")
+            }
+            for column in ("subtitle_url", "logo_url"):
+                if column not in existing_columns:
+                    connection.execute(f"ALTER TABLE processing_jobs ADD COLUMN {column} TEXT")
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -124,7 +132,8 @@ class ProcessingLedger:
 
     def update(self, source_sha256: str, **fields: Any) -> None:
         allowed = {
-            "output_path", "captions_json", "shotstack_source_url", "render_id", "error", "status"
+            "output_path", "captions_json", "shotstack_source_url", "subtitle_url",
+            "logo_url", "render_id", "error", "status"
         }
         if not fields or set(fields) - allowed:
             raise ValueError("Unsupported or empty processing-ledger update.")

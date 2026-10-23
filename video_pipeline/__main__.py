@@ -8,6 +8,7 @@ import sys
 
 from .config import PipelineConfig
 from .pipeline import build_dry_run_plan, process_local_video
+from .style import load_video_style
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -36,6 +37,21 @@ def _parser() -> argparse.ArgumentParser:
         help="Directory for new rendered files (default: outputs).",
     )
     parser.add_argument(
+        "--style",
+        default="video_style.json",
+        help="JSON visual style and processing limits (default: video_style.json).",
+    )
+    parser.add_argument(
+        "--state-db",
+        default="data/processing.sqlite3",
+        help="SQLite idempotency ledger (default: data/processing.sqlite3).",
+    )
+    parser.add_argument(
+        "--retry-failed",
+        action="store_true",
+        help="Explicitly retry one previously failed source, reusing any saved transcript/render ID.",
+    )
+    parser.add_argument(
         "--authorize-paid-apis",
         action="store_true",
         help="Explicitly authorize sending this video to OpenAI and Shotstack and using their paid APIs.",
@@ -55,9 +71,18 @@ def main() -> int:
     if args.dry_run:
         if args.authorize_paid_apis:
             parser.error("--authorize-paid-apis cannot be used with --dry-run.")
+        if args.retry_failed:
+            parser.error("--retry-failed can only be used with --process.")
         try:
             config = PipelineConfig.from_environment()
-            print(json.dumps(build_dry_run_plan(config, Path(args.input_dir)), indent=2, ensure_ascii=False))
+            style = load_video_style(args.style)
+            print(
+                json.dumps(
+                    build_dry_run_plan(config, Path(args.input_dir), style),
+                    indent=2,
+                    ensure_ascii=False,
+                )
+            )
             return 0
         except Exception as exc:
             logging.getLogger(__name__).error("Dry run failed: %s", exc)
@@ -75,6 +100,9 @@ def main() -> int:
             output_dir=args.output_dir,
             paid_api_authorized=True,
             config=PipelineConfig.from_environment(),
+            style=load_video_style(args.style),
+            state_db_path=args.state_db,
+            retry_failed=args.retry_failed,
         )
     except Exception as exc:
         # Keep console logs concise and avoid leaking request URLs or tokens

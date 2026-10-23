@@ -25,7 +25,9 @@ def transcribe_video(
     if not client and not api_key:
         raise RuntimeError("OPENAI_API_KEY is not set in Replit Secrets.")
     if client is None:
-        client = OpenAI(api_key=api_key)
+        # Avoid SDK-level automatic retries that could repeat a billable request
+        # after an ambiguous network timeout. Retrying is a user-controlled action.
+        client = OpenAI(api_key=api_key, max_retries=0)
 
     all_words: list[WordTiming] = []
     for index, (audio_path, offset) in enumerate(extract_audio_chunks(video, work_dir), start=1):

@@ -44,6 +44,11 @@ def build_edit_payload(
         raise ValueError("Video duration must be positive.")
     if not subtitles:
         raise ValueError("At least one subtitle segment is required.")
+    if not any(
+        caption.text.strip() and caption.start < duration and caption.end > 0
+        for caption in subtitles
+    ):
+        raise ValueError("No subtitle segment overlaps the video duration.")
     target_ratio = style.output_width / style.output_height
     source_ratio = source_width / source_height if source_width > 0 and source_height > 0 else target_ratio
     # Center-crop only a near-matching vertical source. Preserve all of a
