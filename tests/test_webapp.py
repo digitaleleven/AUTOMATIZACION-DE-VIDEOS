@@ -80,7 +80,15 @@ class VideoPanelApiTests(unittest.TestCase):
     def test_panel_serves_real_empty_state_and_secret_presence_only(self):
         status, _, body = self.request("GET", "/")
         self.assertEqual(status, 200)
-        self.assertIn(b"Biblioteca local", body)
+        self.assertIn(b"Tu biblioteca", body)
+        self.assertIn(b"summary-pending", body)
+        self.assertIn(b'name="emoji_by_keyword"', body)
+        self.assertIn(b'name="logo_position"', body)
+
+        status, headers, body = self.request("GET", "/premium.css")
+        self.assertEqual(status, 200)
+        self.assertIn("text/css", dict(headers)["Content-Type"])
+        self.assertIn(b"app-shell", body)
 
         status, _, body = self.request("GET", "/api/health")
         health = json.loads(body.decode("utf-8"))
@@ -104,6 +112,13 @@ class VideoPanelApiTests(unittest.TestCase):
         self.assertEqual(item["status"], "ready")
         self.assertEqual(item["width"], 360)
         self.assertEqual(item["height"], 640)
+        self.assertIsInstance(item["created_at"], (int, float))
+        self.assertTrue(item["thumbnail_url"])
+
+        status, headers, payload = self.request("GET", item["thumbnail_url"])
+        self.assertEqual(status, 200)
+        self.assertEqual(dict(headers)["Content-Type"], "image/jpeg")
+        self.assertTrue(payload.startswith(b"\xff\xd8"))
 
         status, headers, payload = self.request(
             "GET", f"/media/incoming/{item['id']}", headers={"Range": "bytes=0-15"}
@@ -147,6 +162,11 @@ class VideoPanelApiTests(unittest.TestCase):
     def test_valid_style_changes_are_saved_and_returned(self):
         style = self.panel.style()
         style["font_size"] = 72
+        style["emoji_by_keyword"] = {"viaje": "✈️"}
+        style["logo_position"] = "bottomLeft"
+        style["logo_scale"] = 0.18
+        style["logo_offset_x"] = 0.1
+        style["logo_offset_y"] = -0.12
         status, _, body = self.request(
             "PUT",
             "/api/style",
@@ -154,11 +174,17 @@ class VideoPanelApiTests(unittest.TestCase):
             headers={"Content-Type": "application/json"},
         )
         self.assertEqual(status, 200)
-        self.assertEqual(json.loads(body.decode("utf-8"))["font_size"], 72)
+        saved = json.loads(body.decode("utf-8"))
+        self.assertEqual(saved["font_size"], 72)
+        self.assertEqual(saved["emoji_by_keyword"], {"viaje": "✈️"})
+        self.assertEqual(saved["logo_position"], "bottomLeft")
+        self.assertEqual(saved["logo_scale"], 0.18)
 
         status, _, body = self.request("GET", "/api/style")
         self.assertEqual(status, 200)
-        self.assertEqual(json.loads(body.decode("utf-8"))["font_size"], 72)
+        saved = json.loads(body.decode("utf-8"))
+        self.assertEqual(saved["font_size"], 72)
+        self.assertEqual(saved["emoji_by_keyword"], {"viaje": "✈️"})
 
 
 if __name__ == "__main__":

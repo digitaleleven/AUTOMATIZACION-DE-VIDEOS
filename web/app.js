@@ -8,6 +8,7 @@ const API = {
 
 const state = {
   library: [],
+  libraryLoaded: false,
   selectedId: null,
   health: null,
   style: null,
@@ -113,6 +114,14 @@ function formatDuration(value) {
   return `${mins}:${String(secs).padStart(2, "0")} min`;
 }
 
+function formatDate(value) {
+  if (value === null || value === undefined || value === "") return "Fecha no disponible";
+  const numeric = Number(value);
+  const date = Number.isFinite(numeric) ? new Date(numeric * 1000) : new Date(value);
+  if (Number.isNaN(date.getTime())) return "Fecha no disponible";
+  return new Intl.DateTimeFormat("es-ES", { day: "2-digit", month: "short", year: "numeric" }).format(date);
+}
+
 function formatCost(value) {
   if (value === null || value === undefined || value === "") return "Desconocido";
   const amount = Number(value);
@@ -151,18 +160,40 @@ function statusLabel(status) {
 function renderLibrary() {
   const list = byId("library-list");
   byId("library-count").textContent = state.library.length ? `${state.library.length} ARCHIVO${state.library.length === 1 ? "" : "S"}` : "0 ARCHIVOS";
+  renderSummary();
   if (!state.library.length) {
-    list.innerHTML = `<div class="empty-state"><div class="empty-glyph">＋</div><h3>Biblioteca vacía</h3><p>No hay vídeos disponibles en el servicio local. Añade un MP4 o MOV para empezar.</p><button class="outline-button" type="button" data-action="upload">Añadir un vídeo</button></div>`;
+    list.innerHTML = `<div class="empty-state"><div class="empty-glyph">▧</div><h3>Tu mesa está vacía</h3><p>${state.libraryLoaded ? "No hay vídeos en el servicio local. Añade un MP4 o MOV para empezar." : "Consulta la biblioteca local o añade un vídeo MP4 o MOV."}</p><button class="outline-button" type="button" data-action="${state.libraryLoaded ? "upload" : "connect"}">${state.libraryLoaded ? "Añadir un vídeo" : "Cargar biblioteca"}</button></div>`;
     return;
   }
   list.innerHTML = state.library.map((item) => {
     const name = item.original_filename || item.filename || `Archivo ${item.id}`;
-    const metadata = [formatDuration(item.duration_seconds), formatBytes(item.size_bytes)];
+    const status = String(item.status || "").toLowerCase();
+    const statusClass = ["failed", "error", "rejected"].includes(status) ? "status-error" : ["completed", "complete"].includes(status) ? "status-complete" : "";
+    const thumbnail = item.thumbnail_url
+      ? `<img src="${escapeHtml(item.thumbnail_url)}" alt="" loading="lazy">`
+      : `<span class="library-thumb-fallback">${escapeHtml(item.format || "VIDEO")}</span>`;
     return `<button type="button" class="library-item ${String(item.id) === String(state.selectedId) ? "selected" : ""}" data-id="${escapeHtml(item.id)}">
-      <span class="library-item-top"><strong title="${escapeHtml(name)}">${escapeHtml(name)}</strong><span class="file-type">${escapeHtml(item.format || "VIDEO")}</span></span>
-      <span class="library-item-meta"><span>${metadata.join(" · ")}</span><span>${escapeHtml(statusLabel(item.status))}</span></span>
+      <span class="library-thumb" aria-hidden="true">${thumbnail}</span>
+      <span class="library-item-body">
+        <span class="library-item-top"><strong title="${escapeHtml(name)}">${escapeHtml(name)}</strong><span class="file-type">${escapeHtml(item.format || "VIDEO")}</span></span>
+        <span class="library-item-meta"><span>${formatDuration(item.duration_seconds)}</span><span>${formatBytes(item.size_bytes)}</span><span>${escapeHtml(formatDate(item.created_at))}</span></span>
+      </span>
+      <span class="library-item-status ${statusClass}">${escapeHtml(statusLabel(item.status))}</span>
     </button>`;
   }).join("");
+}
+
+function renderSummary() {
+  if (!state.libraryLoaded) return;
+  const pendingStatuses = new Set(["ready", "pending", "queued", "processing", "transcribing", "rendering", "downloading", "normalizing", "preparing_captions", "uploading", "uploading_captions", "validating_output"]);
+  const processedStatuses = new Set(["completed", "complete"]);
+  const errorStatuses = new Set(["failed", "error", "rejected", "interrupted"]);
+  const count = (statuses) => state.library.filter((item) => statuses.has(String(item.status || "").toLowerCase())).length;
+  byId("summary-pending").textContent = String(count(pendingStatuses));
+  byId("summary-processed").textContent = String(count(processedStatuses));
+  byId("summary-errors").textContent = String(count(errorStatuses));
+  byId("summary-pending-note").textContent = "Listos o en curso";
+  byId("summary-source").textContent = "Datos del servicio local";
 }
 
 function renderSelectedItem() {
@@ -277,6 +308,7 @@ function showOutput(outputId) {
   const url = outputMediaUrl(outputId);
   video.src = url;
   byId("output-link").href = url;
+  byId("output-empty").hidden = true;
   panel.hidden = false;
 }
 
@@ -284,6 +316,7 @@ function hideOutput() {
   const panel = byId("output-panel");
   const video = byId("output-video");
   panel.hidden = true;
+  byId("output-empty").hidden = false;
   video.pause();
   video.removeAttribute("src");
   video.load();
@@ -308,21 +341,35 @@ function renderStyle(style) {
   for (const [key, value] of Object.entries(style || {})) {
     const field = form.elements.namedItem(key);
     if (!field) continue;
-    if (field.type === "color") {
+    if (key === "emoji_by_keyword") {
+      field.value = value && typeof value === "object" ? JSON.stringify(value, null, 2) : "";
+    } else if (field.type === "color") {
       field.value = /^#[0-9a-f]{6}$/i.test(value) ? value : "#000000";
     } else field.value = value == null ? "" : value;
   }
   byId("style-fields").disabled = false;
+  byId("style-fields").hidden = false;
+  byId("save-style-button").disabled = false;
   byId("style-message").textContent = "Configuración real cargada. Puedes editarla y guardar los cambios.";
 }
 
 function collectStyle() {
   const data = {};
   const fields = byId("style-form").elements;
-  for (const key of ["font_family", "font_size", "font_color", "highlight_color", "stroke_color", "stroke_width", "animation_style", "caption_position", "caption_offset_y", "logo_path", "output_fps", "max_input_size_mb", "max_video_duration_seconds", "max_transcription_chunks", "openai_price_per_audio_minute_usd", "shotstack_price_per_render_minute_usd", "max_estimated_cost_usd"]) {
+  for (const key of ["font_family", "font_size", "font_color", "highlight_color", "stroke_color", "stroke_width", "animation_style", "caption_position", "caption_offset_y", "emoji_by_keyword", "logo_path", "logo_position", "logo_scale", "logo_offset_x", "logo_offset_y", "output_fps", "max_input_size_mb", "max_video_duration_seconds", "max_transcription_chunks", "openai_price_per_audio_minute_usd", "shotstack_price_per_render_minute_usd", "max_estimated_cost_usd"]) {
     const field = fields.namedItem(key);
     if (!field) continue;
-    if (field.type === "number") data[key] = field.value === "" ? null : Number(field.value);
+    if (key === "emoji_by_keyword") {
+      const raw = field.value.trim();
+      if (!raw) data[key] = null;
+      else {
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || Object.values(parsed).some((value) => typeof value !== "string")) {
+          throw new Error("Las reglas de emoji deben ser un objeto JSON con valores de texto.");
+        }
+        data[key] = parsed;
+      }
+    } else if (field.type === "number") data[key] = field.value === "" ? null : Number(field.value);
     else if (key === "logo_path") data[key] = field.value.trim() || null;
     else data[key] = field.value;
   }
@@ -345,6 +392,7 @@ async function refreshWorkspace() {
     else errors.push(`Estado del servicio: ${healthResult.reason.message}`);
     if (libraryResult.status === "fulfilled") {
       state.library = libraryResult.value;
+      state.libraryLoaded = true;
       if (!state.library.some((item) => String(item.id) === String(state.selectedId))) {
         state.selectedId = state.library[0]?.id ?? null;
       }
@@ -374,16 +422,20 @@ async function pollJob(jobId, sourceName) {
 byId("today-label").textContent = new Intl.DateTimeFormat("es", { day: "2-digit", month: "short", year: "numeric" }).format(new Date()).toLocaleUpperCase("es");
 byId("connect-button").addEventListener("click", refreshWorkspace);
 byId("refresh-button").addEventListener("click", refreshWorkspace);
-document.querySelectorAll('[data-action="connect"]').forEach((button) => button.addEventListener("click", refreshWorkspace));
+document.querySelector(".list-toolbar [data-action='upload']")?.addEventListener("click", () => byId("video-input").click());
 document.querySelectorAll("[data-scroll]").forEach((button) => button.addEventListener("click", () => {
   document.getElementById(button.dataset.scroll)?.scrollIntoView({ behavior: "smooth" });
-  document.querySelectorAll(".rail-link").forEach((link) => link.classList.toggle("active", link === button));
+  document.querySelectorAll("[data-scroll]").forEach((link) => link.classList.toggle("active", link.dataset.scroll === button.dataset.scroll));
 }));
 
 byId("library-list").addEventListener("click", (event) => {
-  const uploadButton = event.target.closest('[data-action="upload"]');
-  if (uploadButton) {
+  const actionButton = event.target.closest("[data-action]");
+  if (actionButton?.dataset.action === "upload") {
     byId("video-input").click();
+    return;
+  }
+  if (actionButton?.dataset.action === "connect") {
+    refreshWorkspace();
     return;
   }
   const itemButton = event.target.closest(".library-item");
@@ -412,6 +464,7 @@ byId("video-input").addEventListener("change", async (event) => {
     const returnedId = uploaded?.id ?? uploaded?.item?.id ?? uploaded?.source_id;
     const freshLibrary = await loadLibrary();
     state.library = freshLibrary;
+    state.libraryLoaded = true;
     state.selectedId = returnedId ?? freshLibrary.find((item) => item.filename === file.name || item.original_filename === file.name)?.id ?? freshLibrary[0]?.id ?? null;
     renderLibrary();
     renderSelectedItem();
@@ -485,6 +538,7 @@ byId("style-form").addEventListener("submit", async (event) => {
     const saved = await saveStyle(collectStyle());
     renderStyle(saved || collectStyle());
     state.library = await loadLibrary();
+    state.libraryLoaded = true;
     renderLibrary();
     renderSelectedItem();
     byId("style-message").textContent = "Cambios guardados en la configuración del servicio.";

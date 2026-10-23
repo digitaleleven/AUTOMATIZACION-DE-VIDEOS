@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import subprocess
 import threading
 import time
 from typing import Any
@@ -203,9 +204,11 @@ class VideoPanel:
     ):
         self.input_dir = Path(input_dir).resolve()
         self.output_dir = Path(output_dir).resolve()
+        self.thumbnail_dir = self.input_dir.parent / "thumbnails"
         self.style_path = Path(style_path).resolve()
         self.input_dir.mkdir(parents=True, exist_ok=True)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.thumbnail_dir.mkdir(parents=True, exist_ok=True)
         self.store = DashboardStore(database_path)
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="video-job")
         self.job_lock = threading.Lock()
@@ -280,6 +283,7 @@ class VideoPanel:
                     f"{style.max_video_duration_seconds} s."
                 )
             os.replace(temp_path, final_path)
+            self._create_thumbnail(final_path, file_id)
             public_metadata = _metadata_dict(metadata)
             self.store.add_upload(
                 file_id,
@@ -302,6 +306,30 @@ class VideoPanel:
             final_path.unlink(missing_ok=True)
             raise
         return self.library_item(file_id)
+
+    def _create_thumbnail(self, source_path: Path, file_id: str) -> Path | None:
+        """Create a local preview frame without changing or uploading the source."""
+        temporary = self.thumbnail_dir / f".{file_id}.tmp.jpg"
+        target = self.thumbnail_dir / f"{file_id}.jpg"
+        try:
+            subprocess.run(
+                [
+                    "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                    "-ss", "0.1", "-i", str(source_path), "-frames:v", "1",
+                    "-vf", "scale=320:-2:flags=fast_bilinear", "-q:v", "5", str(temporary),
+                ],
+                check=True,
+                capture_output=True,
+                timeout=15,
+            )
+            if not temporary.is_file() or temporary.stat().st_size == 0:
+                raise OSError("FFmpeg no produjo una miniatura válida.")
+            os.replace(temporary, target)
+            return target
+        except (OSError, subprocess.SubprocessError) as exc:
+            logger.warning("No se pudo generar la miniatura del vídeo %s: %s", file_id, exc)
+            temporary.unlink(missing_ok=True)
+            return None
 
     def _source_path(self, upload: dict[str, Any]) -> Path:
         path = (self.input_dir / upload["filename"]).resolve()
@@ -349,6 +377,12 @@ class VideoPanel:
             "id": upload["id"],
             "filename": upload["filename"],
             "original_filename": upload["original_filename"],
+            "created_at": upload["created_at"],
+            "thumbnail_url": (
+                f"/media/thumbnails/{upload['id']}"
+                if (self.thumbnail_dir / f"{upload['id']}.jpg").is_file()
+                else None
+            ),
             "format": Path(upload["filename"]).suffix.lstrip(".").upper(),
             "size_bytes": upload["size_bytes"],
             "duration_seconds": metadata["duration"],
@@ -558,7 +592,7 @@ class VideoPanelHandler(BaseHTTPRequestHandler):
             raise PanelError("JSON no válido.") from exc
 
     def _send_static(self, relative: str, head: bool = False) -> None:
-        allowed = {"app.js", "styles.css"}
+        allowed = {"app.js", "premium.css"}
         if relative not in allowed and relative != "index.html":
             raise PanelError("No se encontró el recurso solicitado.", 404)
         path = Path(__file__).resolve().parent.parent / "web" / relative
@@ -632,7 +666,7 @@ class VideoPanelHandler(BaseHTTPRequestHandler):
             if self.command in {"GET", "HEAD"}:
                 if path == "/":
                     self._send_static("index.html", head)
-                elif path in {"/app.js", "/styles.css"}:
+                elif path in {"/app.js", "/premium.css"}:
                     self._send_static(path.lstrip("/"), head)
                 elif path == "/api/health":
                     self._json(self.server.panel.health(), head=head)
@@ -651,6 +685,14 @@ class VideoPanelHandler(BaseHTTPRequestHandler):
                     output_id = unquote(path.rsplit("/", 1)[-1])
                     media, name = self.server.panel.output_path(output_id)
                     self._send_media(media, name, head)
+                elif path.startswith("/media/thumbnails/"):
+                    thumbnail_id = unquote(path.rsplit("/", 1)[-1])
+                    if not re.fullmatch(r"[0-9a-f]{32}", thumbnail_id):
+                        raise PanelError("Identificador de miniatura no válido.", 404)
+                    media = self.server.panel.thumbnail_dir / f"{thumbnail_id}.jpg"
+                    if not media.is_file() or media.resolve().parent != self.server.panel.thumbnail_dir:
+                        raise PanelError("No se encontró la miniatura.", 404)
+                    self._send_media(media, f"{thumbnail_id}.jpg", head)
                 else:
                     raise PanelError("Ruta no encontrada.", 404)
             elif self.command == "POST" and path == "/api/upload":
