@@ -181,7 +181,10 @@ class ShotstackClient:
         path = Path(asset_path)
         if not path.is_file():
             raise ShotstackError(f"Local asset does not exist: {path.name}")
-        if content_type not in {"video/mp4", "application/x-subrip", "image/png", "image/jpeg", "image/webp"}:
+        if content_type not in {
+            "video/mp4", "video/quicktime", "application/x-subrip",
+            "image/png", "image/jpeg", "image/webp",
+        }:
             raise ValueError(f"Unsupported Shotstack asset content type: {content_type}")
         try:
             response = self.session.post(
@@ -236,7 +239,9 @@ class ShotstackClient:
         raise ShotstackError("Timed out waiting for Shotstack to ingest the video.")
 
     def upload_local_video(self, video_path: str | Path) -> str:
-        return self.upload_local_asset(video_path, "video/mp4")
+        path = Path(video_path)
+        content_type = "video/quicktime" if path.suffix.lower() == ".mov" else "video/mp4"
+        return self.upload_local_asset(path, content_type)
 
     def submit_render(self, payload: dict[str, Any]) -> str:
         try:

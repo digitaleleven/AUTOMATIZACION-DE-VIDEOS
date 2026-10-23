@@ -3,9 +3,11 @@
 from dataclasses import dataclass
 import json
 import math
+import os
 from pathlib import Path
 import re
 from typing import Any
+import uuid
 
 
 class StyleConfigError(ValueError):
@@ -126,3 +128,17 @@ def load_video_style(path: str | Path = "video_style.json") -> VideoStyle:
             continue
         values[key] = float(values[key])
     return VideoStyle(**values)
+
+
+def save_video_style(data: dict[str, Any], path: str | Path = "video_style.json") -> VideoStyle:
+    """Validate the full style before atomically replacing the configuration."""
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        validated = load_video_style(temporary)
+        os.replace(temporary, target)
+        return validated
+    finally:
+        temporary.unlink(missing_ok=True)

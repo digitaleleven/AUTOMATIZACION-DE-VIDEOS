@@ -15,6 +15,12 @@ class VideoInfo:
     audio_codec: str | None = None
     fps: float = 0.0
     size_bytes: int = 0
+    rotation: int = 0
+    pixel_format: str = "unknown"
+    color_primaries: str | None = None
+    color_transfer: str | None = None
+    color_space: str | None = None
+    container: str = "unknown"
 
 
 @dataclass(frozen=True)

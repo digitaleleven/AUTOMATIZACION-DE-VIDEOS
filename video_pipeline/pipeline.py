@@ -9,9 +9,15 @@ import hashlib
 import json
 import math
 import mimetypes
+from collections.abc import Callable
 
 from .config import PipelineConfig
-from .media import probe_video, temporary_work_directory, validate_rendered_output
+from .media import (
+    prepare_video_for_shotstack,
+    probe_video,
+    temporary_work_directory,
+    validate_rendered_output,
+)
 from .models import SubtitleSegment, WordTiming
 from .shotstack import ShotstackClient, build_edit_payload
 from .state import ProcessingLedger
@@ -29,7 +35,7 @@ class LocalVideo:
 
 
 def find_local_mp4s(directory: str | Path) -> list[LocalVideo]:
-    """List MP4 files without opening, copying, or changing their contents."""
+    """List supported MP4 and MOV files without changing their contents."""
     root = Path(directory)
     if not root.exists():
         return []
@@ -39,7 +45,7 @@ def find_local_mp4s(directory: str | Path) -> list[LocalVideo]:
     return [
         LocalVideo(name=file.name, path=str(file), size_bytes=file.stat().st_size)
         for file in sorted(root.iterdir(), key=lambda item: item.name.lower())
-        if file.is_file() and file.suffix.lower() == ".mp4"
+        if file.is_file() and file.suffix.lower() in {".mp4", ".mov"}
     ]
 
 
@@ -59,7 +65,7 @@ def build_dry_run_plan(
             inspections.append(
                 {
                     **asdict(item),
-                    "valid_mp4": True,
+                    "valid_video": True,
                     "duration_seconds": metadata.duration,
                     "dimensions": {"width": metadata.width, "height": metadata.height},
                     "has_audio": metadata.has_audio,
@@ -74,7 +80,7 @@ def build_dry_run_plan(
                 }
             )
         except Exception as exc:
-            inspections.append({**asdict(item), "valid_mp4": False, "validation_error": str(exc)})
+            inspections.append({**asdict(item), "valid_video": False, "validation_error": str(exc)})
     return {
         "mode": "dry-run",
         "external_services_called": [],
@@ -140,8 +146,9 @@ def process_local_video(
     style: VideoStyle | None = None,
     state_db_path: str | Path = "data/processing.sqlite3",
     retry_failed: bool = False,
+    progress_callback: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
-    """Transcribe and render one local MP4; never modifies the source.
+    """Transcribe and render one local MP4/MOV; never modifies the source.
 
     Live OpenAI and Shotstack calls are blocked unless the caller explicitly
     opts in. Both credentials are checked before the first API request.
@@ -157,7 +164,13 @@ def process_local_video(
     if settings.shotstack_environment != "stage":
         raise ValueError("Production is disabled; all Shotstack jobs must use Stage.")
     source = Path(input_path).expanduser().resolve()
+    if progress_callback:
+        progress_callback("validating")
     video = probe_video(source)
+    if video.video_codec not in {"h264", "hevc"}:
+        raise ValueError(
+            f"Unsupported video codec {video.video_codec}; accepted codecs are H.264 and HEVC/H.265."
+        )
     if video.size_bytes > appearance.max_input_size_mb * 1024 * 1024:
         raise ValueError(
             f"Input is {video.size_bytes / (1024 * 1024):.1f} MB; the configured maximum is "
@@ -226,6 +239,9 @@ def process_local_video(
         ledger.update(source_hash, output_path=str(output_path))
         with temporary_work_directory() as work_dir:
             logger.info("Inspecting %s (%dx%d, %.2f seconds)", source.name, video.width, video.height, video.duration)
+            if progress_callback:
+                progress_callback("normalizing")
+            editing_video, conversion = prepare_video_for_shotstack(video, work_dir)
             if job.get("captions_json"):
                 captions = [
                     SubtitleSegment(**item)
@@ -234,6 +250,8 @@ def process_local_video(
                 logger.info("Reusing previously stored caption timings after a failed attempt")
                 words_count = sum(len(caption.text.split()) for caption in captions)
             else:
+                if progress_callback:
+                    progress_callback("transcribing")
                 words: list[WordTiming] = transcribe_video(
                     video,
                     work_dir,
@@ -247,6 +265,8 @@ def process_local_video(
                     captions_json=json.dumps([asdict(caption) for caption in captions], ensure_ascii=False),
                 )
             srt_path = Path(work_dir) / "captions.srt"
+            if progress_callback:
+                progress_callback("preparing_captions")
             srt_path.write_text(
                 captions_to_srt(captions, appearance.emoji_by_keyword),
                 encoding="utf-8",
@@ -256,12 +276,16 @@ def process_local_video(
             if job.get("shotstack_source_url"):
                 shotstack_source_url = job["shotstack_source_url"]
             else:
-                shotstack_source_url = renderer.upload_local_video(source)
+                if progress_callback:
+                    progress_callback("uploading")
+                shotstack_source_url = renderer.upload_local_video(editing_video.path)
                 ledger.update(source_hash, shotstack_source_url=shotstack_source_url)
 
             if job.get("subtitle_url"):
                 subtitle_url = job["subtitle_url"]
             else:
+                if progress_callback:
+                    progress_callback("uploading_captions")
                 subtitle_url = renderer.upload_local_asset(srt_path, "application/x-subrip")
                 ledger.update(source_hash, subtitle_url=subtitle_url)
 
@@ -279,8 +303,8 @@ def process_local_video(
                 subtitle_url,
                 style=appearance,
                 logo_url=logo_url,
-                source_width=video.width,
-                source_height=video.height,
+                source_width=editing_video.width,
+                source_height=editing_video.height,
             )
             render_id = job.get("render_id")
             render_url = None
@@ -297,15 +321,25 @@ def process_local_video(
                     render_id = None
             if not render_url:
                 if not render_id:
+                    if progress_callback:
+                        progress_callback("rendering")
                     render_id = renderer.submit_render(edit_payload)
                     ledger.update(source_hash, render_id=render_id)
+                elif progress_callback:
+                    progress_callback("rendering")
                 render_url = renderer.wait_for_render(render_id)
+            if progress_callback:
+                progress_callback("downloading")
             output = renderer.download_render(render_url, output_path)
+            if progress_callback:
+                progress_callback("validating_output")
             validated_output = validate_rendered_output(video, output, appearance)
             if _sha256_file(source) != source_hash:
                 raise RuntimeError("The source MP4 changed during processing; it remains unmodified by this pipeline.")
 
         ledger.mark_completed(source_hash, str(output))
+        if progress_callback:
+            progress_callback("completed")
         return {
             "source": str(source),
             "output": str(output),
@@ -323,6 +357,7 @@ def process_local_video(
             "render_id": render_id,
             "shotstack_environment": "stage",
             "source_modified": False,
+            "conversion": conversion,
             "estimated_cost_usd": _estimate_cost(video.duration, appearance),
             "cost_estimate_note": _cost_estimate_note(appearance),
             "paid_operations": {
