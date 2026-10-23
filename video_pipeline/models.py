@@ -11,6 +11,10 @@ class VideoInfo:
     width: int
     height: int
     has_audio: bool
+    video_codec: str = "unknown"
+    audio_codec: str | None = None
+    fps: float = 0.0
+    size_bytes: int = 0
 
 
 @dataclass(frozen=True)

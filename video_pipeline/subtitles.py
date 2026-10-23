@@ -174,3 +174,40 @@ def build_subtitle_segments(
         raise TranscriptionError("Subtitle grouping did not produce valid 2–4-word captions.")
     return captions
 
+
+def _srt_timestamp(seconds: float) -> str:
+    milliseconds = max(0, round(seconds * 1000))
+    hours, milliseconds = divmod(milliseconds, 3_600_000)
+    minutes, milliseconds = divmod(milliseconds, 60_000)
+    whole_seconds, milliseconds = divmod(milliseconds, 1000)
+    return f"{hours:02d}:{minutes:02d}:{whole_seconds:02d},{milliseconds:03d}"
+
+
+def captions_to_srt(
+    captions: Sequence[SubtitleSegment],
+    emoji_by_keyword: Mapping[str, str] | None = None,
+) -> str:
+    """Serialize timed 2–4-word captions into UTF-8 SubRip text."""
+    if not captions:
+        raise TranscriptionError("Cannot create an SRT file without captions.")
+    cues: list[str] = []
+    keyword_emojis = emoji_by_keyword or {}
+    for index, caption in enumerate(captions, start=1):
+        words = _split_text(caption.text)
+        if not 2 <= len(words) <= 4:
+            raise TranscriptionError("Every SRT cue must contain 2–4 words.")
+        if caption.start < 0 or caption.end <= caption.start:
+            raise TranscriptionError("SRT cue times must be positive and increasing.")
+        text = " ".join(caption.text.splitlines()).strip()
+        folded_text = text.casefold()
+        emoji = next(
+            (symbol for keyword, symbol in keyword_emojis.items() if keyword.casefold() in folded_text),
+            "",
+        )
+        if emoji:
+            text = f"{text} {emoji}"
+        cues.append(
+            f"{index}\n{_srt_timestamp(caption.start)} --> {_srt_timestamp(caption.end)}\n{text}"
+        )
+    return "\n\n".join(cues) + "\n"
+

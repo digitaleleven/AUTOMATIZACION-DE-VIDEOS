@@ -19,15 +19,15 @@ class PipelineConfig:
     local_input_dir: str = "data/incoming"
     output_dir: str = "outputs"
     openai_model: str = "whisper-1"
-    shotstack_environment: str = "v1"
+    shotstack_environment: str = "stage"
     shotstack_poll_seconds: float = 5.0
     shotstack_timeout_seconds: float = 900.0
 
     @classmethod
     def from_environment(cls) -> "PipelineConfig":
-        environment = os.getenv("SHOTSTACK_ENVIRONMENT", "v1").strip().lower()
-        if environment not in {"v1", "stage"}:
-            raise ValueError("SHOTSTACK_ENVIRONMENT must be 'v1' or 'stage'.")
+        environment = os.getenv("SHOTSTACK_ENVIRONMENT", "stage").strip().lower()
+        if environment != "stage":
+            raise ValueError("This project is locked to Shotstack Stage; production is disabled.")
         return cls(
             shotstack_environment=environment,
             shotstack_poll_seconds=float(os.getenv("SHOTSTACK_POLL_SECONDS", "5")),

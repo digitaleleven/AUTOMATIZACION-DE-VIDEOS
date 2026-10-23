@@ -8,12 +8,17 @@ import tempfile
 from collections.abc import Iterator
 
 from .models import VideoInfo
+from .style import VideoStyle
 
 logger = logging.getLogger(__name__)
 
 
 class MediaError(RuntimeError):
     """Raised for invalid media or FFmpeg/ffprobe failures."""
+
+
+class OutputValidationError(MediaError):
+    """Raised when a rendered MP4 does not meet the configured output contract."""
 
 
 def probe_video(path: str | Path) -> VideoInfo:
@@ -25,7 +30,8 @@ def probe_video(path: str | Path) -> VideoInfo:
 
     command = [
         "ffprobe", "-v", "error",
-        "-show_entries", "format=duration:stream=codec_type,width,height",
+        "-show_entries",
+        "format=duration,size:stream=codec_type,codec_name,width,height,r_frame_rate",
         "-of", "json", str(video),
     ]
     try:
@@ -49,12 +55,22 @@ def probe_video(path: str | Path) -> VideoInfo:
     if duration <= 0:
         raise MediaError("The MP4 has no valid duration.")
 
+    audio_stream = next((stream for stream in streams if stream.get("codec_type") == "audio"), None)
+    rate = str(video_stream.get("r_frame_rate", "0/1")).split("/", 1)
+    try:
+        fps = float(rate[0]) / float(rate[1]) if len(rate) == 2 and float(rate[1]) else 0.0
+    except (TypeError, ValueError, ZeroDivisionError):
+        fps = 0.0
     return VideoInfo(
         path=str(video),
         duration=duration,
         width=int(video_stream.get("width") or 0),
         height=int(video_stream.get("height") or 0),
-        has_audio=any(stream.get("codec_type") == "audio" for stream in streams),
+        has_audio=audio_stream is not None,
+        video_codec=str(video_stream.get("codec_name") or "unknown"),
+        audio_codec=str(audio_stream.get("codec_name")) if audio_stream else None,
+        fps=fps,
+        size_bytes=int(probe.get("format", {}).get("size") or video.stat().st_size),
     )
 
 
@@ -101,4 +117,36 @@ def extract_audio_chunks(
 
 def temporary_work_directory() -> tempfile.TemporaryDirectory[str]:
     return tempfile.TemporaryDirectory(prefix="video-pipeline-")
+
+
+def validate_rendered_output(
+    source: VideoInfo,
+    output_path: str | Path,
+    style: VideoStyle,
+) -> VideoInfo:
+    output = Path(output_path)
+    if not output.is_file() or output.stat().st_size <= 0:
+        raise OutputValidationError("Rendered output is missing or empty.")
+    if Path(source.path).resolve() == output.resolve():
+        raise OutputValidationError("Rendered output must not overwrite the original video.")
+    result = probe_video(output)
+    if (result.width, result.height) != (style.output_width, style.output_height):
+        raise OutputValidationError(
+            f"Unexpected output size {result.width}×{result.height}; "
+            f"expected {style.output_width}×{style.output_height}."
+        )
+    if result.video_codec != "h264":
+        raise OutputValidationError(f"Expected H.264 output, received {result.video_codec}.")
+    if not result.has_audio:
+        raise OutputValidationError("Rendered video has no audio stream.")
+    tolerance = max(2.0, source.duration * 0.02)
+    if abs(result.duration - source.duration) > tolerance:
+        raise OutputValidationError(
+            f"Output duration differs from source by more than {tolerance:.1f} seconds."
+        )
+    if result.fps and abs(result.fps - style.output_fps) > 1.5:
+        raise OutputValidationError(
+            f"Output frame rate {result.fps:.2f} does not match requested {style.output_fps} fps."
+        )
+    return result
 

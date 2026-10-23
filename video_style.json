@@ -1,0 +1,23 @@
+{
+  "font_family": "Roboto",
+  "font_size": 64,
+  "font_color": "#FFFFFF",
+  "highlight_color": "#FFD84D",
+  "stroke_color": "#000000",
+  "stroke_width": 4,
+  "animation_style": "highlight",
+  "caption_position": "bottom",
+  "caption_offset_y": 0.22,
+  "emoji_by_keyword": {},
+  "logo_path": null,
+  "logo_position": "topRight",
+  "logo_scale": 0.12,
+  "logo_offset_x": -0.06,
+  "logo_offset_y": -0.08,
+  "output_width": 1080,
+  "output_height": 1920,
+  "output_fps": 30,
+  "max_input_size_mb": 500,
+  "max_video_duration_seconds": 1800,
+  "max_transcription_chunks": 2
+}
