@@ -26,6 +26,7 @@ from .subtitles import build_subtitle_segments, captions_to_srt
 from .transcription import transcribe_video
 
 logger = logging.getLogger(__name__)
+from .drive import upload_new_file
 
 @dataclass(frozen=True)
 class LocalVideo:
@@ -104,7 +105,7 @@ def build_dry_run_plan(
             "transcribe with OpenAI (requires explicit paid-API authorization)",
             "prepare timed 2–4-word subtitle clips",
             "ingest and render 1080 × 1920 with Shotstack (requires explicit authorization)",
-            "download a new output file locally",
+            "download the verified render and create a new file in the processed Drive folder",
         ],
         "live_integrations_ready": {
             "google_drive": bool(os.getenv("GOOGLE_OAUTH_TOKEN")),
@@ -142,6 +143,7 @@ def process_local_video(
     paid_api_authorized: bool = False,
     openai_client: Any | None = None,
     shotstack_client: ShotstackClient | None = None,
+    drive_uploader: Any | None = None,
     config: PipelineConfig | None = None,
     style: VideoStyle | None = None,
     state_db_path: str | Path = "data/processing.sqlite3",
@@ -150,8 +152,9 @@ def process_local_video(
 ) -> dict[str, Any]:
     """Transcribe and render one local MP4/MOV; never modifies the source.
 
-    Live OpenAI and Shotstack calls are blocked unless the caller explicitly
-    opts in. Both credentials are checked before the first API request.
+    Paid provider calls are blocked unless the caller explicitly opts in.
+    Required credentials are checked before the first API request. Drive
+    receives a new file only after the render completes and validates.
     """
     if not paid_api_authorized:
         raise PermissionError(
@@ -218,7 +221,12 @@ def process_local_video(
         raise RuntimeError(
             "SHOTSTACK_API_KEY is not set in Replit Secrets. No Shotstack credential was created or assumed."
         )
-
+    drive_token = os.getenv("GOOGLE_OAUTH_TOKEN")
+    if drive_uploader is None and not drive_token:
+        raise RuntimeError(
+            "GOOGLE_OAUTH_TOKEN is required to create a new file in Drive. "
+            "No provider calls were made."
+        )
     renderer = shotstack_client or ShotstackClient(
         environment=settings.shotstack_environment,
         poll_seconds=settings.shotstack_poll_seconds,
@@ -337,12 +345,19 @@ def process_local_video(
             if _sha256_file(source) != source_hash:
                 raise RuntimeError("The source MP4 changed during processing; it remains unmodified by this pipeline.")
 
+        uploader = drive_uploader or upload_new_file
+        drive_file = uploader(
+            output,
+            folder_id=settings.processed_folder_id,
+            access_token=drive_token,
+        )
         ledger.mark_completed(source_hash, str(output))
         if progress_callback:
             progress_callback("completed")
         return {
             "source": str(source),
             "output": str(output),
+            "drive_output": drive_file,
             "duration_seconds": video.duration,
             "source_dimensions": {"width": video.width, "height": video.height},
             "source_video_codec": video.video_codec,
@@ -355,6 +370,7 @@ def process_local_video(
             "transcribed_word_count": words_count,
             "subtitle_segment_count": len(captions),
             "render_id": render_id,
+            "render_status_verified": True,
             "shotstack_environment": "stage",
             "source_modified": False,
             "conversion": conversion,
@@ -407,4 +423,3 @@ def _cost_estimate_note(style: VideoStyle) -> str:
             "to video_style.json. Hard limits and explicit authorization remain active."
         )
     return "Estimate uses the per-minute prices configured in video_style.json; provider billing may differ."
-

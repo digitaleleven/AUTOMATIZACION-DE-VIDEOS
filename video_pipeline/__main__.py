@@ -13,7 +13,10 @@ from .style import load_video_style
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Transcribe and render a local MP4. Live paid APIs require explicit opt-in."
+        description=(
+            "Transcribe and render a local MP4, then save a new Drive file. "
+            "Live paid APIs require explicit opt-in."
+        )
     )
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument(
@@ -54,7 +57,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--authorize-paid-apis",
         action="store_true",
-        help="Explicitly authorize sending this video to OpenAI and Shotstack and using their paid APIs.",
+        help=(
+            "Explicitly authorize sending this video to OpenAI and Shotstack, "
+            "using their paid APIs, and creating a new file in Drive."
+        ),
     )
     return parser
 
@@ -90,7 +96,8 @@ def main() -> int:
 
     if not args.authorize_paid_apis:
         parser.error(
-            "Live processing can incur charges and upload the source video to Shotstack. "
+            "Live processing can incur charges, upload the source video to Shotstack, "
+            "and create a new Drive file. "
             "Add --authorize-paid-apis only after explicitly approving those actions."
         )
 

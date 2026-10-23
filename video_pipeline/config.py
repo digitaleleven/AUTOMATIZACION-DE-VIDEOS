@@ -11,7 +11,7 @@ LOGOS_FOLDER_ID = "1t46UE2Mog9JRDSe9TzoPxfs96nE9qDTW"
 
 @dataclass(frozen=True)
 class PipelineConfig:
-    """Settings that are safe to log; credential values are never stored here."""
+    """Settings safe to log; credential values are read only at call time."""
 
     input_folder_id: str = INPUT_FOLDER_ID
     processed_folder_id: str = PROCESSED_FOLDER_ID
@@ -42,3 +42,6 @@ class PipelineConfig:
     def shotstack_api_key_present(self) -> bool:
         return bool(os.getenv("SHOTSTACK_API_KEY"))
 
+    @property
+    def google_oauth_token_present(self) -> bool:
+        return bool(os.getenv("GOOGLE_OAUTH_TOKEN"))
