@@ -1,45 +1,57 @@
-# Automatización de vídeos verticales
+# Vídeos verticales locales: OpenAI + Shotstack
 
-Esqueleto seguro para un pipeline de vídeos MP4 de Google Drive → OpenAI → Shotstack → Google Drive.
+El proyecto permite validar un MP4 local, transcribir su audio, agrupar captions temporizados y preparar un render vertical 1080 × 1920. Google Drive aún no participa en este flujo.
 
-## Estado actual
+## Qué hace el código
 
-- Configurados como constantes los IDs de las carpetas de entrada, procesados y logos.
-- Implementada la planificación `--dry-run`: detecta archivos `.mp4` locales y muestra las fases previstas.
-- La prueba local usa solo la biblioteca estándar de Python. No hace llamadas a Internet, Drive, OpenAI ni Shotstack, no lee contenido multimedia y no cambia los archivos.
-- El procesamiento real todavía no está implementado. El comando normal falla de forma explícita en lugar de simular un procesamiento.
-- La presencia de `OPENAI_API_KEY` se detecta sin imprimir su valor. No se necesita ni se consulta durante el dry run.
+- Valida el MP4 con `ffprobe` y extrae audio temporal con FFmpeg en fragmentos de 15 minutos.
+- Usa OpenAI `whisper-1` en formato `verbose_json`, solicitando timestamps de palabra y segmento. Si no hay tiempos por palabra, distribuye los tiempos de segmento entre sus palabras.
+- Agrupa las palabras en captions consecutivos de 2 a 4 palabras conservando sus marcas temporales.
+- Carga una copia del MP4 a Shotstack Ingest, crea una edición con vídeo recortado para vertical y captions visibles, solicita el render y descarga el MP4 terminado.
+- Mantiene el vídeo original intacto y asigna un nombre de salida nuevo. Si ya existe, elige otro nombre; no sobrescribe.
+- El audio extraído se borra al terminar. Los outputs locales se guardan en `outputs/`.
 
-## Prueba mínima
+## Pruebas sin costes
+
+Las pruebas usan únicamente datos sintéticos, mocks y funciones locales; no hacen llamadas a OpenAI/Shotstack ni consumen créditos:
 
 ```bash
 python -m unittest discover -s tests -v
 python -m video_pipeline --dry-run
 ```
 
-Para inspeccionar un directorio local sin copiar ni mover nada:
+El entorno verificado tiene Python 3.11, `ffmpeg`, `ffprobe`, OpenAI Python SDK 3.37.0 y Requests 2.34.2. `requirements.txt` fija versiones exactas de esas bibliotecas y sus dependencias de ejecución.
+
+## Primer procesamiento local real
+
+1. Coloca un MP4 de prueba en el workspace, por ejemplo `data/incoming/prueba.mp4`. No se copia ni modifica al hacerlo manualmente.
+2. `OPENAI_API_KEY` ya existe en Replit Secrets. No hace falta volver a configurarla.
+3. Para Shotstack hace falta que el usuario configure su propia `SHOTSTACK_API_KEY` en Replit Secrets. El proyecto no inventa ni contiene esa credencial.
+4. Cuando autorices expresamente los costes y el envío del archivo a esos servicios, ejecuta:
 
 ```bash
-python -m video_pipeline --dry-run --input-dir ./data/incoming
+python -m video_pipeline --process data/incoming/prueba.mp4 --authorize-paid-apis
 ```
 
-La búsqueda es solo del primer nivel del directorio. La carpeta `data/incoming` no se crea automáticamente.
+El flag `--authorize-paid-apis` es una barrera intencional: la transcripción de OpenAI puede tener coste; el MP4 se sube a Shotstack Ingest y el render puede consumir créditos/coste del plan. **No se han realizado esas llamadas en esta implementación.** Sin el flag no se contacta con esos servicios. Si falta `SHOTSTACK_API_KEY`, el programa se detiene antes de llamar a OpenAI.
 
-## Google Drive: acceso a carpetas existentes sin ampliar scopes
+El entorno Shotstack puede ser `v1` o `stage`:
 
-El scope OAuth actual `drive.file` no equivale a acceso general a carpetas existentes: da acceso a archivos concretos que el usuario abre/selecciona o que la aplicación crea. No debe intentarse resolver cambiándolo a `drive` ni autorizando scopes adicionales.
+```bash
+SHOTSTACK_ENVIRONMENT=stage python -m video_pipeline --process data/incoming/prueba.mp4 --authorize-paid-apis
+```
 
-La opción de menor alcance es mantener el OAuth actual y usar **Google Picker** para que el usuario seleccione explícitamente cada archivo existente que la aplicación debe procesar. La selección debe hacerse con el mismo proyecto OAuth que usa la automatización. Seleccionar una carpeta no debe darse por equivalente a acceso automático a todos sus archivos o a los que se añadan después: hay que probar el comportamiento con la API. En particular, no se puede afirmar que el proceso vaya a detectar sin intervención nuevos vídeos de Entrada mientras solo tenga autorización por archivo. Para probar el destino, crear únicamente un archivo nuevo de prueba en Procesados; no mover, renombrar ni sobrescribir originales. Si se necesita procesar automáticamente cualquier archivo nuevo de una carpeta existente, detenerse y solicitar autorización para acordar otro mecanismo; no ampliar permisos ni cambiar la compartición sin esa aprobación.
+`stage` sigue siendo una llamada remota y requiere la clave de Shotstack; no se usa automáticamente. El resultado se guarda en `outputs/<nombre>_vertical_subtitled.mp4` (o un nombre incremental si ya existe).
 
-Actualmente no hay un token/credencial de Google en Replit Secrets, así que no se puede afirmar que el proyecto ya acceda a Drive. No pegar credenciales en el chat; cuando se decida el método autorizado, guardarlas únicamente en Secrets y leerlas desde el entorno.
+## Limitaciones y comprobación final
 
-## Seguridad y siguiente implementación
+- No se ha transcrito un vídeo real ni enviado una solicitud real de render. Las pruebas validan la forma y la seguridad local del flujo, no garantizan la aceptación de cada propiedad por un proyecto Shotstack concreto ni la calidad final del encuadre/captions.
+- En el estado actual no hay `SHOTSTACK_API_KEY` configurada en el proyecto. No se solicitó ni se creó una.
+- El servicio remoto debe poder ingerir el MP4 y renderizarlo; el primer render real sigue pendiente de la clave de Shotstack y de tu autorización explícita.
+- Google Drive continúa sin conectarse. Este flujo acepta un archivo local y no modifica permisos OAuth.
 
-1. Implementar un cliente Drive de solo lectura para enumerar y descargar los MP4 originales y los logos.
-2. Transcribir con OpenAI y convertir segmentos temporizados en clips de subtítulos.
-3. Enviar a Shotstack una composición vertical 9:16 y esperar el render.
-4. Subir el render como archivo nuevo a la carpeta Procesados. Nunca usar `move`, `delete`, `update` sobre los originales ni reutilizar el nombre/ID original para sobrescribirlo.
-5. Añadir idempotencia y limpieza controlada de temporales antes de habilitar ejecución automática.
+## Referencias de API
 
-No se ha conectado Google Drive ni Shotstack, no se ha ejecutado OpenAI y no se han realizado operaciones de pago.
-
+- OpenAI, transcripción con timestamps: https://platform.openai.com/docs/api-reference/audio/createTranscription
+- Shotstack, edición/render: https://shotstack.io/docs/api
+- Shotstack, carga local mediante URL firmada: https://shotstack.io/docs/guide/ingesting-footage/sources.md
