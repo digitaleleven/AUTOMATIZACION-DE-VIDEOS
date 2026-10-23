@@ -1,6 +1,6 @@
-# Automatización local de vídeos verticales
+# MATRIX MOTION — VIDEO AUTOMATION STUDIO
 
-Este proyecto acepta vídeos locales `.MP4` y `.MOV` y prepara una edición 9:16 con OpenAI y Shotstack. La interfaz web guarda el resultado únicamente en `outputs/`; el comando CLI conserva, por defecto, la opción de crear una copia nueva en Procesados de Google Drive. Ningún flujo modifica el original ni amplía permisos OAuth.
+«De vídeo original a contenido listo para publicar». El proyecto acepta vídeos locales `.MP4` y `.MOV` y prepara una edición 9:16 con OpenAI y Shotstack. La interfaz web guarda el resultado únicamente en `outputs/`; el comando CLI conserva, por defecto, la opción de crear una copia nueva en Procesados de Google Drive. Ningún flujo modifica el original ni amplía permisos OAuth.
 
 ## Implementado
 
@@ -28,6 +28,29 @@ La configuración y el cliente rechazan cualquier entorno que no sea `stage`; no
 La transcripción y la carga/render de Shotstack siguen detrás de una autorización explícita. El panel nunca sube a Drive; el CLI sube solo si no se indica `--local-only`, y requiere `GOOGLE_OAUTH_TOKEN`. El render destinado a Drive se sube únicamente cuando su estado es `done` y el archivo pasa la validación local. Los reintentos automáticos del SDK de OpenAI están desactivados.
 
 Antes de contactar con proveedores, el proceso comprueba que existan `OPENAI_API_KEY`, `SHOTSTACK_API_KEY` y `GOOGLE_OAUTH_TOKEN`. El token de Drive debe poder crear archivos en Procesados. Si falta o Drive rechaza el destino, el proceso se detiene sin ampliar scopes.
+
+## Google Drive: estado y requisitos pendientes
+
+No se ha hecho ninguna llamada real a Drive. Los IDs configurados son:
+
+| Uso | ID |
+| --- | --- |
+| `01_ENTRADA` | `13xrMgSYEOkGANxrUYbmYw1t6TdvXWRYg` |
+| `02_PROCESADOS` | `1J6Z0bsWb2dQNKY4hyq4xl7tigtm_pQKN` |
+| `RECURSOS/LOGOS` | `1t46UE2Mog9JRDSe9TzoPxfs96nE9qDTW` |
+
+El estado del código es más limitado que una automatización de carpetas:
+
+- `video_pipeline/drive.py` implementa solo la creación reanudable de un archivo nuevo. El CLI la llama después de validar un render y usa `02_PROCESADOS`; no actualiza ni elimina el original.
+- No hay flujo OAuth en el proyecto ni código que declare scopes, renueve tokens, enumere carpetas o descargue vídeos/logos. El CLI espera un token ya disponible como `GOOGLE_OAUTH_TOKEN`. El panel web sigue siendo local y no tiene conexión con Drive.
+- La última comprobación `--dry-run` informó `google_drive: false`: `GOOGLE_OAUTH_TOKEN` no está disponible para el proceso en este entorno. Solo se comprobó la presencia de la variable, no se leyó ningún valor ni se intentó una conexión.
+- La configuración de Google Cloud indicada para este proyecto usa `drive.file`; eso no concede al programa acceso general a todos los archivos ya existentes. La presencia o validez de `GOOGLE_OAUTH_TOKEN` por sí sola no demuestra que Drive esté conectado ni que el token tenga los permisos esperados.
+
+La opción mínima que conserva `drive.file` es integrar Google Picker: obtener un token de usuario con ese mismo scope, permitir que la persona seleccione explícitamente los MP4/MOV de Entrada y los logos, y seleccionar/autorizar la carpeta de destino antes de crear allí el archivo final. El backend tendría que descargar los archivos seleccionados por ID y conectar esa selección con el pipeline. Seleccionar un clip en Picker es una concesión por archivo; no equivale a enumerar automáticamente todos los hijos de una carpeta. La lectura automatizada de archivos no seleccionados requeriría un scope más amplio y una nueva autorización, que no se ha solicitado ni realizado.
+
+Antes de implementar esa selección faltan la configuración web de Picker (OAuth client ID, clave de API, número del proyecto y orígenes permitidos), la adquisición/entrega segura del token al servidor, las rutas de descarga y el enlace de la selección con los IDs de las carpetas. Después hará falta una prueba con una cuenta real autorizada. No se han inventado credenciales ni se han cambiado permisos.
+
+Referencias oficiales: [scopes de Google Drive](https://developers.google.com/drive/api/guides/about-auth) y [Google Picker para aplicaciones web](https://developers.google.com/workspace/drive/picker/guides/web-picker).
 
 ## Pruebas sin llamadas externas
 
