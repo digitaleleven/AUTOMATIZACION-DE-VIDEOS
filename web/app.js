@@ -250,10 +250,13 @@ function renderJob(job, sourceName = "") {
   const status = String(job.status || "").toLowerCase();
   const progress = job.progress === null || job.progress === undefined ? Number.NaN : Number(job.progress);
   const progressText = Number.isFinite(progress) ? `${Math.max(0, Math.min(100, progress))}%` : "Progreso no cuantificado";
+  const progressMarkup = Number.isFinite(progress)
+    ? `<div class="job-progress-track" aria-label="${escapeHtml(progressText)}"><div class="job-progress-fill" style="width:${Math.max(0, Math.min(100, progress))}%"></div></div>`
+    : `<div class="job-progress-unmeasured">El servicio informa la fase, no un porcentaje.</div>`;
   const phase = job.phase ? statusLabel(job.phase) : statusLabel(job.status);
   byId("job-status-tag").textContent = statusLabel(job.status).toLocaleUpperCase("es");
   byId("job-content").innerHTML = `<div class="job-live">
-     <div><strong>${escapeHtml(sourceName || "Trabajo de procesamiento")}</strong><p>${escapeHtml(phase)} · ID ${escapeHtml(job.id ?? "No disponible")}</p><div class="job-progress-track" aria-label="${escapeHtml(progressText)}"><div class="job-progress-fill" style="width:${Number.isFinite(progress) ? Math.max(0, Math.min(100, progress)) : 0}%"></div></div></div>
+    <div><strong>${escapeHtml(sourceName || "Trabajo de procesamiento")}</strong><p>${escapeHtml(phase)} · ID ${escapeHtml(job.id ?? "No disponible")}</p>${progressMarkup}</div>
     <span class="job-progress-label">${escapeHtml(progressText)}</span>
     ${job.error ? `<div class="job-error">${escapeHtml(job.error)}</div>` : ""}
   </div>`;

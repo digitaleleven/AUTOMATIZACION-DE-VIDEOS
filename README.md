@@ -1,10 +1,12 @@
 # Automatización local de vídeos verticales
 
-Este proyecto procesa MP4 locales para preparar una edición 9:16 con OpenAI y Shotstack. Después de validar que el render terminó correctamente, puede crear una copia nueva en Procesados de Google Drive. No modifica el original ni amplía permisos OAuth.
+Este proyecto acepta vídeos locales `.MP4` y `.MOV` y prepara una edición 9:16 con OpenAI y Shotstack. La interfaz web guarda el resultado únicamente en `outputs/`; el comando CLI conserva, por defecto, la opción de crear una copia nueva en Procesados de Google Drive. Ningún flujo modifica el original ni amplía permisos OAuth.
 
 ## Implementado
 
-- Validación de MP4, duración, tamaño, audio, códecs, dimensiones y FPS mediante `ffprobe`.
+- Panel web en español, adaptable y accesible desde Replit Preview, con biblioteca local, reproducción original/editado, estados y errores reales, estimaciones no inventadas y controles de estilo.
+- Validación de MP4 y MOV, duración, tamaño, audio, H.264/HEVC, dimensiones, rotación y FPS mediante `ffprobe`.
+- Compatibilidad iPhone: conserva sin conversión los MP4/MOV H.264 con AAC y orientación normal; convierte HEVC a H.264 de alta calidad cuando hace falta para edición, y convierte audio no AAC a AAC. Las conversiones por códec, audio u orientación son temporales; la copia original queda intacta.
 - Extracción temporal de audio con FFmpeg en bloques de 15 minutos.
 - Transcripción `whisper-1` en `verbose_json`, solicitando timestamps por palabra y segmento. La salida se normaliza; si faltan tiempos por palabra, se estiman dentro del segmento.
 - Captions SRT de 2–4 palabras sincronizados con el audio.
@@ -15,7 +17,7 @@ Este proyecto procesa MP4 locales para preparar una edición 9:16 con OpenAI y S
 - Carga reanudable del render validado como un archivo nuevo en la carpeta Procesados. Drive solo se usa para crear ese archivo: no se enumeran ni descargan vídeos de entrada.
 - SQLite local (`data/processing.sqlite3`) para detectar vídeos ya completados, reanudar un render existente y permitir como máximo un reintento manual.
 - Límites por defecto: un vídeo por ejecución, 500 MB, 30 minutos de vídeo, dos bloques de transcripción y un nuevo render por intento. Se pueden ajustar en `video_style.json`.
-- `requirements.txt` fija las versiones usadas, incluidos los requisitos de ejecución de OpenAI/Requests.
+- `requirements.txt` fija las versiones usadas. El panel y su API usan la biblioteca estándar de Python y no añaden dependencias web.
 
 La animación activa destaca la palabra que se está pronunciando; el proyecto no realiza análisis semántico para decidir qué palabras son “importantes”. Los emojis son opcionales y solo se añaden si se configuran en `emoji_by_keyword`.
 
@@ -23,7 +25,7 @@ La animación activa destaca la palabra que se está pronunciando; el proyecto n
 
 La configuración y el cliente rechazan cualquier entorno que no sea `stage`; no hay una ruta de producción habilitada. Replit Secrets informa que existen `OPENAI_API_KEY` y `SHOTSTACK_API_KEY`, pero no se han leído ni mostrado sus valores. Tampoco se ha comprobado mediante una llamada que la clave de Shotstack corresponda a Stage, porque no se han realizado solicitudes externas.
 
-La transcripción, la carga/render de Shotstack y la subida final siguen detrás de `--authorize-paid-apis`. La transcripción real puede tener coste; el MP4, los subtítulos y el logo opcional se envían a Shotstack Ingest y se solicita un render Stage. El render solo se sube a Drive cuando su estado es `done` y el archivo pasa la validación local. Los reintentos automáticos del SDK de OpenAI están desactivados y una nueva tentativa requiere `--retry-failed` y la autorización explícita.
+La transcripción y la carga/render de Shotstack siguen detrás de una autorización explícita. El panel nunca sube a Drive; el CLI sube solo si no se indica `--local-only`, y requiere `GOOGLE_OAUTH_TOKEN`. El render destinado a Drive se sube únicamente cuando su estado es `done` y el archivo pasa la validación local. Los reintentos automáticos del SDK de OpenAI están desactivados.
 
 Antes de contactar con proveedores, el proceso comprueba que existan `OPENAI_API_KEY`, `SHOTSTACK_API_KEY` y `GOOGLE_OAUTH_TOKEN`. El token de Drive debe poder crear archivos en Procesados. Si falta o Drive rechaza el destino, el proceso se detiene sin ampliar scopes.
 
@@ -32,13 +34,23 @@ Antes de contactar con proveedores, el proceso comprueba que existan `OPENAI_API
 ```bash
 python -m unittest discover -s tests -v
 python -m video_pipeline --dry-run
+bash scripts/post-merge.sh
 ```
 
-Las pruebas usan un MP4 sintético generado y comprobado localmente, mocks de las APIs y payloads construidos sin enviarlos. Validan los límites, estado/idempotencia, SRT, animación, logo opcional, creación reanudable de un nuevo archivo, rechazo de Production y calidad técnica de un MP4 sintético 1080 × 1920. **No son prueba de una transcripción ni un render real de Shotstack o Drive.**
+Las pruebas usan MP4/MOV sintéticos, incluido un H.265 generado localmente, mocks de las APIs y payloads construidos sin enviarlos. También prueban la API local del panel, la validación y la reproducción por rangos. **No son prueba de una transcripción ni un render real de Shotstack o Drive.**
+
+## Abrir el panel y cargar un vídeo local
+
+1. En Replit, abre **Preview** (el servicio escucha en `0.0.0.0:5000`).
+2. Pulsa **Cargar biblioteca** para consultar el servicio local o **Añadir vídeo** para subir `.MP4` o `.MOV`.
+3. Espera la validación de FFprobe y revisa los metadatos y el coste estimado. Si no hay tarifas configuradas, se muestra “Desconocido”.
+4. Para procesar, marca la autorización de llamadas de pago y confirma el coste desconocido si se solicita. El panel escribe el resultado en `outputs/` y no intenta conectar con Drive.
+
+Para ejecutar el panel manualmente: `python main.py`. La biblioteca local se guarda en `data/incoming/`; los archivos originales subidos no se sobrescriben. El porcentaje de trabajo no se inventa: el panel muestra fases reales mientras el motor no disponga de una medición porcentual.
 
 ## Primer render real (todavía no autorizado)
 
-1. Coloca el MP4 local de prueba en `data/incoming/`.
+1. Coloca el MP4 o MOV local de prueba en `data/incoming/`.
 2. Comprueba su preflight sin llamadas remotas:
 
    ```bash
@@ -49,14 +61,15 @@ Las pruebas usan un MP4 sintético generado y comprobado localmente, mocks de la
 4. Solo cuando autorices el coste y el envío del archivo, ejecuta una sola vez:
 
    ```bash
-   python -m video_pipeline --process data/incoming/prueba.mp4 --authorize-paid-apis
+   python -m video_pipeline --process data/incoming/prueba.mp4 --authorize-paid-apis --local-only
    ```
 
-El render validado se guarda en `outputs/` y se carga como archivo nuevo en Procesados. Si el vídeo ya está marcado como completado, el hash impide procesarlo de nuevo. Para un fallo, revisa primero el estado y usa `--retry-failed` solo si autorizas otra posible llamada de pago.
+El render validado se guarda en `outputs/`. Con `--local-only` no se intenta subirlo a Drive. Sin esa opción, el CLI crea un archivo nuevo en Procesados y necesita un token autorizado previamente. Si el vídeo ya está marcado como completado, el hash impide procesarlo de nuevo.
 
 ## Pendiente y limitaciones
 
 - No hay vídeo real de usuario procesado y no se ha hecho ninguna llamada real a OpenAI o Shotstack. El secreto de Shotstack existe, pero no se ha verificado su correspondencia con Stage mediante API.
+- La compatibilidad se ha probado con vídeos sintéticos H.264/HEVC, no con un clip real de iPhone. La conversión de HDR/Dolby Vision y su resultado visual aún requieren validación con una muestra real.
 - Falta revisión visual y auditiva del primer resultado real; también hace falta comprobar la respuesta real de Shotstack y sus defaults de códec/fps. Los renders remotos no se simulan como verificados.
 - La composición centra y conserva fuentes no 9:16 con letterboxing; no hace seguimiento facial ni reencuadre semántico.
 - El logo se incorpora si se especifica un archivo local en `video_style.json`. El acceso al logo de Drive no está implementado.

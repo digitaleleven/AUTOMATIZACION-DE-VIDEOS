@@ -14,7 +14,7 @@ from .style import load_video_style
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Transcribe and render a local MP4, then save a new Drive file. "
+            "Transcribe and render a local MP4/MOV; optionally save a new Drive file. "
             "Live paid APIs require explicit opt-in."
         )
     )
@@ -22,12 +22,12 @@ def _parser() -> argparse.ArgumentParser:
     mode.add_argument(
         "--dry-run",
         action="store_true",
-        help="Scan local MP4 filenames and print a plan; never calls external APIs.",
+        help="Scan local MP4/MOV files and print a plan; never calls external APIs.",
     )
     mode.add_argument(
         "--process",
-        metavar="VIDEO.mp4",
-        help="Transcribe and render one local MP4 using OpenAI and Shotstack.",
+        metavar="VIDEO",
+        help="Transcribe and render one local MP4 or MOV using OpenAI and Shotstack.",
     )
     parser.add_argument(
         "--input-dir",
@@ -59,8 +59,13 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Explicitly authorize sending this video to OpenAI and Shotstack, "
-            "using their paid APIs, and creating a new file in Drive."
+            "using their paid APIs; Drive upload is enabled unless --local-only is set."
         ),
+    )
+    parser.add_argument(
+        "--local-only",
+        action="store_true",
+        help="Keep the rendered file in outputs/ and do not create a Google Drive file.",
     )
     return parser
 
@@ -79,6 +84,8 @@ def main() -> int:
             parser.error("--authorize-paid-apis cannot be used with --dry-run.")
         if args.retry_failed:
             parser.error("--retry-failed can only be used with --process.")
+        if args.local_only:
+            parser.error("--local-only can only be used with --process.")
         try:
             config = PipelineConfig.from_environment()
             style = load_video_style(args.style)
@@ -95,9 +102,10 @@ def main() -> int:
             return 2
 
     if not args.authorize_paid_apis:
+        drive_effect = "" if args.local_only else " y crear un archivo nuevo en Drive"
         parser.error(
-            "Live processing can incur charges, upload the source video to Shotstack, "
-            "and create a new Drive file. "
+            "El procesamiento real puede generar cargos, enviar el vídeo a Shotstack"
+            f"{drive_effect}. "
             "Add --authorize-paid-apis only after explicitly approving those actions."
         )
 
@@ -106,6 +114,7 @@ def main() -> int:
             args.process,
             output_dir=args.output_dir,
             paid_api_authorized=True,
+            upload_to_drive=not args.local_only,
             config=PipelineConfig.from_environment(),
             style=load_video_style(args.style),
             state_db_path=args.state_db,

@@ -7,7 +7,12 @@ from unittest.mock import Mock
 from unittest.mock import patch
 
 from video_pipeline.config import PipelineConfig
-from video_pipeline.media import extract_audio_chunks, probe_video, validate_rendered_output
+from video_pipeline.media import (
+    extract_audio_chunks,
+    prepare_video_for_shotstack,
+    probe_video,
+    validate_rendered_output,
+)
 from video_pipeline.models import SubtitleSegment, VideoInfo, WordTiming
 from video_pipeline.pipeline import (
     _new_output_path,
@@ -34,19 +39,21 @@ import json
 
 
 class PipelineDryRunTests(unittest.TestCase):
-    def test_finds_mp4_case_insensitively_without_touching_other_files(self):
+    def test_finds_mp4_and_mov_case_insensitively_without_touching_other_files(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             video = root / "clip.MP4"
+            movie = root / "phone.MOV"
             note = root / "notes.txt"
             video.write_bytes(b"test fixture, not a real video")
+            movie.write_bytes(b"test fixture, not a real video")
             note.write_text("leave unchanged", encoding="utf-8")
 
-            before = (video.read_bytes(), note.read_bytes())
+            before = (video.read_bytes(), movie.read_bytes(), note.read_bytes())
             found = find_local_mp4s(root)
 
-            self.assertEqual([item.name for item in found], ["clip.MP4"])
-            self.assertEqual((video.read_bytes(), note.read_bytes()), before)
+            self.assertEqual([item.name for item in found], ["clip.MP4", "phone.MOV"])
+            self.assertEqual((video.read_bytes(), movie.read_bytes(), note.read_bytes()), before)
 
     def test_dry_run_makes_no_external_calls_and_includes_drive_destinations(self):
         config = PipelineConfig(
@@ -294,6 +301,68 @@ class LocalMediaTests(unittest.TestCase):
             self.assertTrue(video_path.exists())
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg tools are required")
+    def test_probe_accepts_h264_mov_and_leaves_compatible_source_untouched(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "iphone.MOV"
+            work = root / "work"
+            work.mkdir()
+            subprocess.run(
+                [
+                    "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+                    "-f", "lavfi", "-i", "color=c=blue:s=360x640:d=1:r=30",
+                    "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                    "-shortest", str(source),
+                ],
+                check=True,
+                capture_output=True,
+                timeout=30,
+            )
+            original_bytes = source.read_bytes()
+
+            source_info = probe_video(source)
+            compatible, conversion = prepare_video_for_shotstack(source_info, work)
+
+            self.assertEqual(source_info.video_codec, "h264")
+            self.assertTrue(source_info.has_audio)
+            self.assertEqual((source_info.width, source_info.height), (360, 640))
+            self.assertEqual(Path(compatible.path), source.resolve())
+            self.assertFalse(conversion["converted"])
+            self.assertEqual(source.read_bytes(), original_bytes)
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg tools are required")
+    def test_hevc_mp4_is_transcoded_to_h264_without_changing_original(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "iphone-hevc.mp4"
+            work = root / "work"
+            work.mkdir()
+            subprocess.run(
+                [
+                    "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+                    "-f", "lavfi", "-i", "color=c=blue:s=360x640:d=1:r=24",
+                    "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+                    "-c:v", "libx265", "-x265-params", "pools=1:frame-threads=1:log-level=error",
+                    "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(source),
+                ],
+                check=True,
+                capture_output=True,
+                timeout=60,
+            )
+            original_bytes = source.read_bytes()
+
+            source_info = probe_video(source)
+            compatible, conversion = prepare_video_for_shotstack(source_info, work)
+
+            self.assertEqual(source_info.video_codec, "hevc")
+            self.assertEqual(probe_video(compatible.path).video_codec, "h264")
+            self.assertTrue(conversion["converted"])
+            self.assertEqual(conversion["method"], "transcode")
+            self.assertNotEqual(Path(compatible.path), source.resolve())
+            self.assertEqual(source.read_bytes(), original_bytes)
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg tools are required")
     def test_validates_synthetic_h264_1080x1920_output(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -431,8 +500,10 @@ class LocalMediaTests(unittest.TestCase):
             self.assertTrue(Path(result["output"]).is_file())
             self.assertEqual(result["drive_output"]["id"], "processed-drive-file-id")
             drive_uploader.assert_called_once()
+            self.assertFalse(result["drive_upload_skipped"])
             self.assertEqual(result["output_dimensions"], {"width": 1080, "height": 1920})
             self.assertEqual(result["shotstack_environment"], "stage")
+            self.assertFalse(result["drive_upload_skipped"])
             self.assertEqual(renderer.content_type, "application/x-subrip")
             self.assertIn("Hola mundo.", renderer.subtitle_srt)
             self.assertEqual(renderer.payload["timeline"]["tracks"][0]["clips"][0]["asset"]["type"], "rich-caption")
@@ -590,7 +661,10 @@ class ExplicitLivePipelineTests(unittest.TestCase):
         with patch.dict("os.environ", environment, clear=True):
             with patch(
                 "video_pipeline.pipeline.probe_video",
-                return_value=VideoInfo("missing.mp4", 2.0, 360, 640, True),
+                return_value=VideoInfo(
+                    "missing.mp4", 2.0, 360, 640, True,
+                    video_codec="h264", audio_codec="aac",
+                ),
             ) as probe:
                 with patch("video_pipeline.pipeline.transcribe_video") as transcribe:
                     with self.assertRaisesRegex(RuntimeError, "GOOGLE_OAUTH_TOKEN"):
@@ -603,8 +677,59 @@ class ExplicitLivePipelineTests(unittest.TestCase):
         probe.assert_called_once()
         transcribe.assert_not_called()
 
+    def test_local_only_mode_skips_drive_and_does_not_require_oauth(self):
+        environment = {
+            "OPENAI_API_KEY": "test-openai",
+            "SHOTSTACK_API_KEY": "test-shotstack",
+        }
+        renderer = Mock()
+        renderer.upload_local_video.return_value = "https://ingest.example/video.mp4"
+        renderer.upload_local_asset.return_value = "https://ingest.example/captions.srt"
+        renderer.submit_render.return_value = "render-id"
+        renderer.wait_for_render.return_value = "https://renders.example/render.mp4"
+
+        def save_render(_url, destination):
+            Path(destination).write_bytes(b"new-render")
+            return Path(destination)
+
+        renderer.download_render.side_effect = save_render
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.mp4"
+            source.write_bytes(b"original-video")
+            info = VideoInfo(
+                str(source), 1.0, 360, 640, True, video_codec="h264", audio_codec="aac"
+            )
+            with patch.dict("os.environ", environment, clear=True), patch(
+                "video_pipeline.pipeline.probe_video", return_value=info
+            ), patch(
+                "video_pipeline.pipeline.transcribe_video",
+                return_value=[WordTiming("Hola", 0.0, 0.5), WordTiming("mundo.", 0.5, 1.0)],
+            ), patch(
+                "video_pipeline.pipeline.validate_rendered_output",
+                return_value=Mock(width=1080, height=1920, video_codec="h264", audio_codec="aac", fps=30),
+            ), patch("video_pipeline.pipeline.upload_new_file") as drive_upload:
+                result = process_local_video(
+                    source,
+                    root / "outputs",
+                    paid_api_authorized=True,
+                    upload_to_drive=False,
+                    openai_client=Mock(),
+                    shotstack_client=renderer,
+                    config=PipelineConfig(shotstack_environment="stage"),
+                    state_db_path=root / "state.sqlite3",
+                )
+
+            self.assertTrue(Path(result["output"]).is_file())
+            self.assertTrue(result["drive_upload_skipped"])
+            self.assertIsNone(result["drive_output"])
+            self.assertEqual(source.read_bytes(), b"original-video")
+            drive_upload.assert_not_called()
+
     def test_new_render_is_uploaded_only_after_verified_render_and_source_is_untouched(self):
-        source_info = VideoInfo("source.mp4", 2.0, 360, 640, True)
+        source_info = VideoInfo(
+            "source.mp4", 2.0, 360, 640, True, video_codec="h264", audio_codec="aac"
+        )
         words = [WordTiming("Hola", 0.0, 0.5), WordTiming("mundo.", 0.5, 1.0)]
         renderer = Mock()
         renderer.upload_local_video.return_value = "https://ingest.example/video.mp4"
@@ -674,7 +799,9 @@ class ExplicitLivePipelineTests(unittest.TestCase):
         self.assertFalse(result["source_modified"])
 
     def test_failed_render_never_uploads_to_drive(self):
-        source_info = VideoInfo("source.mp4", 2.0, 360, 640, True)
+        source_info = VideoInfo(
+            "source.mp4", 2.0, 360, 640, True, video_codec="h264", audio_codec="aac"
+        )
         renderer = Mock()
         renderer.upload_local_video.return_value = "https://ingest.example/video.mp4"
         renderer.upload_local_asset.return_value = "https://ingest.example/captions.srt"

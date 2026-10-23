@@ -35,7 +35,7 @@ class LocalVideo:
     size_bytes: int
 
 
-def find_local_mp4s(directory: str | Path) -> list[LocalVideo]:
+def find_local_videos(directory: str | Path) -> list[LocalVideo]:
     """List supported MP4 and MOV files without changing their contents."""
     root = Path(directory)
     if not root.exists():
@@ -50,6 +50,11 @@ def find_local_mp4s(directory: str | Path) -> list[LocalVideo]:
     ]
 
 
+def find_local_mp4s(directory: str | Path) -> list[LocalVideo]:
+    """Backward-compatible name for listing all supported local videos."""
+    return find_local_videos(directory)
+
+
 def build_dry_run_plan(
     config: PipelineConfig,
     directory: str | Path,
@@ -57,7 +62,7 @@ def build_dry_run_plan(
 ) -> dict[str, Any]:
     """Probe local inputs and estimate call counts without contacting providers."""
     appearance = style or load_video_style()
-    videos = find_local_mp4s(directory)
+    videos = find_local_videos(directory)
     inspections = []
     for item in videos:
         try:
@@ -89,7 +94,9 @@ def build_dry_run_plan(
         "input_folder_id": config.input_folder_id,
         "processed_folder_id": config.processed_folder_id,
         "logos_folder_id": config.logos_folder_id,
-        "discovered_local_mp4_count": len(videos),
+        "discovered_local_video_count": len(videos),
+        "discovered_local_mp4_count": sum(Path(item.path).suffix.lower() == ".mp4" for item in videos),
+        "discovered_local_mov_count": sum(Path(item.path).suffix.lower() == ".mov" for item in videos),
         "videos": inspections,
         "shotstack_environment": "stage",
         "cost_estimate_note": _cost_estimate_note(appearance),
@@ -144,6 +151,7 @@ def process_local_video(
     openai_client: Any | None = None,
     shotstack_client: ShotstackClient | None = None,
     drive_uploader: Any | None = None,
+    upload_to_drive: bool = True,
     config: PipelineConfig | None = None,
     style: VideoStyle | None = None,
     state_db_path: str | Path = "data/processing.sqlite3",
@@ -154,7 +162,7 @@ def process_local_video(
 
     Paid provider calls are blocked unless the caller explicitly opts in.
     Required credentials are checked before the first API request. Drive
-    receives a new file only after the render completes and validates.
+    receives a new file only when upload_to_drive is enabled, after validation.
     """
     if not paid_api_authorized:
         raise PermissionError(
@@ -185,7 +193,7 @@ def process_local_video(
             f"{appearance.max_video_duration_seconds} seconds."
         )
     if not video.has_audio:
-        raise ValueError("Input MP4 has no audio stream to transcribe.")
+        raise ValueError("Input video has no audio stream to transcribe.")
     transcription_chunks = math.ceil(video.duration / 900)
     if transcription_chunks > appearance.max_transcription_chunks:
         raise ValueError(
@@ -222,7 +230,7 @@ def process_local_video(
             "SHOTSTACK_API_KEY is not set in Replit Secrets. No Shotstack credential was created or assumed."
         )
     drive_token = os.getenv("GOOGLE_OAUTH_TOKEN")
-    if drive_uploader is None and not drive_token:
+    if upload_to_drive and drive_uploader is None and not drive_token:
         raise RuntimeError(
             "GOOGLE_OAUTH_TOKEN is required to create a new file in Drive. "
             "No provider calls were made."
@@ -343,14 +351,16 @@ def process_local_video(
                 progress_callback("validating_output")
             validated_output = validate_rendered_output(video, output, appearance)
             if _sha256_file(source) != source_hash:
-                raise RuntimeError("The source MP4 changed during processing; it remains unmodified by this pipeline.")
+                raise RuntimeError("The source video changed during processing; it remains unmodified by this pipeline.")
 
-        uploader = drive_uploader or upload_new_file
-        drive_file = uploader(
-            output,
-            folder_id=settings.processed_folder_id,
-            access_token=drive_token,
-        )
+        drive_file = None
+        if upload_to_drive:
+            uploader = drive_uploader or upload_new_file
+            drive_file = uploader(
+                output,
+                folder_id=settings.processed_folder_id,
+                access_token=drive_token,
+            )
         ledger.mark_completed(source_hash, str(output))
         if progress_callback:
             progress_callback("completed")
@@ -358,6 +368,7 @@ def process_local_video(
             "source": str(source),
             "output": str(output),
             "drive_output": drive_file,
+            "drive_upload_skipped": not upload_to_drive,
             "duration_seconds": video.duration,
             "source_dimensions": {"width": video.width, "height": video.height},
             "source_video_codec": video.video_codec,

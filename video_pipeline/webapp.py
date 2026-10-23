@@ -20,7 +20,7 @@ import sqlite3
 import threading
 import time
 from typing import Any
-from urllib.parse import unquote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 import uuid
 
 from .config import PipelineConfig
@@ -432,6 +432,7 @@ class VideoPanel:
                 source_path,
                 self.output_dir,
                 paid_api_authorized=True,
+                upload_to_drive=False,
                 config=PipelineConfig.from_environment(),
                 style=style,
                 state_db_path=self.store.database_path,
@@ -526,7 +527,6 @@ class VideoPanelHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
-        self.send_header("X-Frame-Options", "SAMEORIGIN")
 
     def _json(self, payload: Any, status: int = 200, head: bool = False) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -603,8 +603,12 @@ class VideoPanelHandler(BaseHTTPRequestHandler):
         self._headers(content_type, length)
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Last-Modified", formatdate(path.stat().st_mtime, usegmt=True))
-        safe_name = filename.replace('"', "")
-        self.send_header("Content-Disposition", f'inline; filename="{safe_name}"')
+        safe_name = filename.encode("ascii", "ignore").decode("ascii").replace('"', "") or "video"
+        encoded_name = quote(filename, safe="")
+        self.send_header(
+            "Content-Disposition",
+            f'inline; filename="{safe_name}"; filename*=UTF-8\'\'{encoded_name}',
+        )
         if status == 206:
             self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
         self.end_headers()

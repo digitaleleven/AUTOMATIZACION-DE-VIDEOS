@@ -1,0 +1,1 @@
+- [Permisos y costes](drive-and-paid-apis.md) — No ampliar permisos de Drive ni activar llamadas de pago o renders reales sin autorización explícita.
