@@ -292,6 +292,68 @@ class VideoPanelApiTests(unittest.TestCase):
         )
         self.assertEqual(status, 429)
 
+    def test_preview_origin_uses_exact_replit_domains_from_environment(self):
+        preview_host = "temp-preview.replit.dev"
+        with patch.dict(
+            os.environ,
+            {
+                "REPLIT_DEV_DOMAIN": preview_host,
+                "REPLIT_DOMAINS": f"{preview_host},custom.example",
+            },
+        ):
+            status, _, _ = self.request(
+                "POST",
+                "/login",
+                body=b"probe",
+                headers={
+                    "Host": preview_host,
+                    "Origin": f"https://{preview_host}",
+                    "Content-Type": "text/plain",
+                },
+                authenticated=False,
+            )
+            self.assertEqual(status, 400)
+
+            status, _, _ = self.request(
+                "POST",
+                "/login",
+                body=b"probe",
+                headers={
+                    "Host": preview_host,
+                    "Origin": "https://attacker.example",
+                    "Content-Type": "text/plain",
+                },
+                authenticated=False,
+            )
+            self.assertEqual(status, 403)
+
+            status, _, _ = self.request(
+                "POST",
+                "/login",
+                body=b"probe",
+                headers={
+                    "Host": "attacker.example",
+                    "Origin": "https://attacker.example",
+                    "Content-Type": "text/plain",
+                },
+                authenticated=False,
+            )
+            self.assertEqual(status, 403)
+
+            status, _, _ = self.request(
+                "POST",
+                "/login",
+                body=b"probe",
+                headers={
+                    "Host": f"127.0.0.1:{self.port}",
+                    "X-Forwarded-Host": preview_host,
+                    "Origin": f"https://{preview_host}",
+                    "Content-Type": "text/plain",
+                },
+                authenticated=False,
+            )
+            self.assertEqual(status, 400)
+
     def test_idle_and_absolute_session_expiration_are_enforced(self):
         def expire_session(column):
             raw_token = self.session_cookie.split("=", 1)[1]

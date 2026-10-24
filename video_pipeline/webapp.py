@@ -667,8 +667,6 @@ required minlength="16" {disabled}>
         self.end_headers()
 
     def _handle_login(self) -> None:
-        if self.headers.get("Origin"):
-            self._check_origin()
         if not self.server.auth.configured:
             self._send_login_page(status=503)
             return
@@ -733,7 +731,6 @@ required minlength="16" {disabled}>
             raise PanelError("La solicitud no superó la comprobación de seguridad (CSRF).", 403)
 
     def _handle_logout(self, session) -> None:
-        self._check_origin()
         self._require_csrf(session)
         self.server.auth.logout(self._cookie_value(SESSION_COOKIE))
         self.send_response(204)
@@ -747,11 +744,78 @@ required minlength="16" {disabled}>
 
     def _check_origin(self) -> None:
         origin = self.headers.get("Origin")
+
+        def hostname(value: str) -> str | None:
+            if not value or value != value.strip() or "," in value or "*" in value:
+                return None
+            try:
+                parsed_host = urlsplit(f"//{value}")
+                if (
+                    not parsed_host.hostname
+                    or parsed_host.username
+                    or parsed_host.password
+                    or parsed_host.path
+                    or parsed_host.query
+                    or parsed_host.fragment
+                ):
+                    return None
+                parsed_host.port  # Validate that a supplied port is numeric and in range.
+            except ValueError:
+                return None
+            return parsed_host.hostname.rstrip(".").lower()
+
+        local_hosts = {"localhost", "127.0.0.1", "::1"}
+        allowed_hosts = set(local_hosts)
+        for variable in ("REPLIT_DEV_DOMAIN", "REPLIT_DOMAINS"):
+            for configured in os.getenv(variable, "").split(","):
+                configured = configured.strip()
+                if not configured:
+                    continue
+                if "://" in configured:
+                    configured = urlsplit(configured).netloc
+                configured_host = hostname(configured)
+                if configured_host:
+                    allowed_hosts.add(configured_host)
+
+        request_host = hostname(self.headers.get("Host", ""))
+        forwarded_header = self.headers.get("X-Forwarded-Host", "")
+        forwarded_host = hostname(forwarded_header) if forwarded_header else None
+        if (
+            not request_host
+            or request_host not in allowed_hosts
+            or (forwarded_header and forwarded_host not in allowed_hosts)
+        ):
+            raise PanelError("Solicitud rechazada: origen no permitido.", 403)
+
+        effective_host = request_host
+        if forwarded_host:
+            if request_host in local_hosts:
+                effective_host = forwarded_host
+            elif forwarded_host != request_host:
+                raise PanelError("Solicitud rechazada: origen no permitido.", 403)
+
         if not origin:
             return
-        host = self.headers.get("Host", "")
-        parsed = urlsplit(origin)
-        if not host or parsed.netloc.lower() != host.lower():
+
+        try:
+            parsed_origin = urlsplit(origin)
+            origin_host = hostname(parsed_origin.netloc)
+            origin_port = parsed_origin.port
+        except ValueError:
+            raise PanelError("Solicitud rechazada: origen no permitido.", 403) from None
+        if (
+            parsed_origin.scheme.lower() not in {"http", "https"}
+            or parsed_origin.username
+            or parsed_origin.password
+            or parsed_origin.path
+            or parsed_origin.query
+            or parsed_origin.fragment
+            or not origin_host
+            or origin_host not in allowed_hosts
+            or origin_host != effective_host
+            or (origin_host not in local_hosts and parsed_origin.scheme.lower() != "https")
+            or (origin_host not in local_hosts and origin_port not in {None, 443})
+        ):
             raise PanelError("Solicitud rechazada: origen no permitido.", 403)
 
     def _read_json(self) -> Any:
@@ -835,6 +899,7 @@ required minlength="16" {disabled}>
 
     def _dispatch(self, head: bool = False) -> None:
         try:
+            self._check_origin()
             path = urlsplit(self.path).path
             if path == "/login":
                 if self.command in {"GET", "HEAD"}:
@@ -857,7 +922,6 @@ required minlength="16" {disabled}>
                 return
 
             if self.command in {"POST", "PUT"}:
-                self._check_origin()
                 self._require_csrf(session)
                 if self.command == "POST" and path == "/logout":
                     self._handle_logout(session)
