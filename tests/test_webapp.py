@@ -272,6 +272,10 @@ class VideoPanelApiTests(unittest.TestCase):
         self.assertIn(b'id="muestra-q03e"', body)
         self.assertIn(b'id="q03e-sample-video"', body)
         self.assertIn(b'/media/q03e-sample', body)
+        self.assertIn(b'id="resultado-fase1"', body)
+        self.assertIn(b'id="phase1-final-video"', body)
+        self.assertIn(b'/media/outputs/IMG_1254-MATRIX-MOTION-FASE1.mp4', body)
+        self.assertIn(b'PENDIENTE DE REVISI\xc3\x93N HUMANA', body)
 
         status, headers, body = self.request("GET", "/premium.css")
         self.assertEqual(status, 200)
@@ -391,6 +395,7 @@ class VideoPanelApiTests(unittest.TestCase):
             "/media/q03d/candidates-25s",
             "/media/q03e-sample",
             "/media/q03e-comparison",
+            "/media/outputs/phase1-private.mp4",
         ):
             status, _, body = self.request("GET", path, authenticated=False)
             self.assertEqual(status, 401, path)
@@ -1211,6 +1216,14 @@ class VideoPanelApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(dict(headers)["Content-Type"], "video/mp4")
         self.assertEqual(body, output_path.read_bytes())
+        status, headers, body = self.request(
+            "GET",
+            f"/media/outputs/{output_path.name}",
+            headers={"Range": "bytes=0-9"},
+        )
+        self.assertEqual(status, 206)
+        self.assertEqual(body, output_path.read_bytes()[:10])
+        self.assertEqual(dict(headers)["Content-Type"], "video/mp4")
 
     def test_retry_is_locked_to_stage(self):
         _, job_id, _, _ = self.create_failed_0415_attempt()

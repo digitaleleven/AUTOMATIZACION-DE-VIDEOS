@@ -308,3 +308,17 @@ mtime_ms = 1792874946916
 storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/ddc8828e-af42-4ce0-a1cd-c88b1ebf592a/096188c6-fe8b-40d2-a10a-11bc14c84ac3"
 storage_version_token = "1792875128676129"
 content_type = "image/png"
+
+[[outputs]]
+id = "4gDhNxE3oJVGi4F3vThXT"
+uri = "file://generated-artifacts/drive-inspection/phase1/final-review-contact.jpg"
+type = "image"
+title = "MATRIX MOTION — fotogramas de revisión Fase 1"
+description = "Cuatro fotogramas de la edición completa para revisar subtítulos, encuadre y color. La conversión HLG→BT.709 aún no está aprobada."
+logical_id = "4235dfa0-29e6-4046-a7e9-b8fde6d66586"
+content_hash = "sha256:756f4a0a7c451664d7b4e283eb5b4df381632008fed4e7b045c8d69d7d776009"
+size = 211770
+mtime_ms = 1792876213953
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/4235dfa0-29e6-4046-a7e9-b8fde6d66586/f67b0fd1-0207-4fb9-b168-fbc7d7de9883"
+storage_version_token = "1792876371242692"
+content_type = "image/jpeg"
