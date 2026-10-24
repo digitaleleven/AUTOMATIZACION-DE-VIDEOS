@@ -269,6 +269,9 @@ class VideoPanelApiTests(unittest.TestCase):
         self.assertIn(b'id="muestra-q03d"', body)
         self.assertIn(b'/media/q03d/summary', body)
         self.assertIn(b'REVISI\xc3\x93N HUMANA PENDIENTE', body)
+        self.assertIn(b'id="muestra-q03e"', body)
+        self.assertIn(b'id="q03e-sample-video"', body)
+        self.assertIn(b'/media/q03e-sample', body)
 
         status, headers, body = self.request("GET", "/premium.css")
         self.assertEqual(status, 200)
@@ -342,6 +345,35 @@ class VideoPanelApiTests(unittest.TestCase):
                 self.assertEqual(status, 401)
                 self.assertIn("Inicia sesión", json.loads(body.decode("utf-8"))["detail"])
 
+    def test_q03e_sample_and_comparison_are_authenticated_range_media(self):
+        sample = self.root / "q03e-sample.mp4"
+        comparison = self.root / "q03e-comparison.png"
+        sample_bytes = b"q03e-video-bytes-for-range-test"
+        comparison_bytes = b"q03e-comparison-image-bytes"
+        sample.write_bytes(sample_bytes)
+        comparison.write_bytes(comparison_bytes)
+        self.panel.q03e_sample_path = sample
+        self.panel.q03e_comparison_path = comparison
+
+        status, headers, body = self.request(
+            "GET", "/media/q03e-sample", headers={"Range": "bytes=0-9"}
+        )
+        self.assertEqual(status, 206)
+        self.assertEqual(body, sample_bytes[:10])
+        self.assertEqual(dict(headers)["Content-Type"], "video/mp4")
+
+        status, headers, body = self.request(
+            "GET", "/media/q03e-comparison", headers={"Range": "bytes=0-9"}
+        )
+        self.assertEqual(status, 206)
+        self.assertEqual(body, comparison_bytes[:10])
+        self.assertEqual(dict(headers)["Content-Type"], "image/png")
+
+        for route in ("/media/q03e-sample", "/media/q03e-comparison"):
+            status, _, body = self.request("GET", route, authenticated=False)
+            self.assertEqual(status, 401, route)
+            self.assertIn("Inicia sesión", json.loads(body.decode("utf-8"))["detail"])
+
     def test_anonymous_requests_cannot_read_or_mutate_panel(self):
         for path in ("/", "/app.js", "/premium.css"):
             status, headers, _ = self.request("GET", path, authenticated=False)
@@ -357,6 +389,8 @@ class VideoPanelApiTests(unittest.TestCase):
             "/media/q03c-comparison",
             "/media/q03d/summary",
             "/media/q03d/candidates-25s",
+            "/media/q03e-sample",
+            "/media/q03e-comparison",
         ):
             status, _, body = self.request("GET", path, authenticated=False)
             self.assertEqual(status, 401, path)

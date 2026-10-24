@@ -733,10 +733,15 @@ h2 { color: #102326; font-size: 24px; }
 .q03d-warning { margin: 14px 0 0; padding: 12px 14px; border-left: 3px solid #bd7044; border-radius: 0 8px 8px 0; background: #fff4eb; color: #68402b; font-size: 12px; line-height: 1.55; }
 .q03d-warning strong { color: #65351e; }
 .q03d-pending { color: #8a4c2a; }
+.q03e-intro { max-width: 980px; margin: 0 0 16px; color: #52696b; font-size: 13px; line-height: 1.6; }
+.q03e-layout { grid-template-columns: minmax(260px, .72fr) minmax(0, 1.28fr); }
+.q03e-review-card { min-width: 0; }
+.q03e-pending { color: #8a4c2a; }
 @media (max-width: 850px) {
   .q03c-layout { grid-template-columns: 1fr; }
   .q03c-video { max-height: 520px; }
   .q03d-figure { padding: 10px; }
+  .q03e-layout { grid-template-columns: 1fr; }
 }
 
 .process-layout { grid-template-columns: minmax(0, 1fr) minmax(320px, 360px); }

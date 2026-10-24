@@ -23,6 +23,7 @@
           <button class="rail-link" type="button" data-scroll="biblioteca"><span class="nav-symbol">▤</span>Biblioteca</button>
           <button class="rail-link" type="button" data-scroll="estudio"><span class="nav-symbol">▣</span>Estudio de edición</button>
           <button class="rail-link" type="button" data-scroll="muestra-q03c"><span class="nav-symbol">▶</span>Muestra Q-03C</button>
+          <button class="rail-link" type="button" data-scroll="muestra-q03e"><span class="nav-symbol">▶</span>Prueba Q-03E</button>
           <button class="rail-link" type="button" data-scroll="procesamiento"><span class="nav-symbol">⌁</span>Procesamiento</button>
           <button class="rail-link" type="button" data-scroll="configuracion"><span class="nav-symbol">☷</span>Configuración</button>
         </nav>
@@ -232,6 +233,33 @@
             <p class="q03d-warning" role="note">
               <strong>No integrar todavía:</strong> Hable con <code>desat=0</code> es el candidato que mejor conserva piel y altas luces en estas tres muestras, pero necesita aprobación visual humana. Las comparativas usan la capa base HLG; no reproducen el RPU Dolby Vision completo.
             </p>
+          </section>
+
+          <section class="section-block q03e-section" id="muestra-q03e" aria-labelledby="q03e-title">
+            <div class="section-head">
+              <div><p class="eyebrow">Q-03E / MUESTRA LOCAL</p><h2 id="q03e-title">Validación HDR → SDR · 10 s</h2></div>
+              <span class="preview-status q03e-pending">PENDIENTE DE APROBACIÓN VISUAL</span>
+            </div>
+            <p class="q03e-intro">
+              Tramo 23,42–33,42 s de IMG_1254.MOV. Hable con <code>desat=0</code>, entrada HLG BT.2020 y rango limitado explícitos, intermedio RGB lineal completo, salida BT.709 limitada y un único escalado Lanczos.
+              Muestra de revisión solamente: no cambia el motor ni aprueba la conversión para el pipeline.
+            </p>
+            <div class="q03c-layout q03e-layout">
+              <article class="preview-card q03c-video-card">
+                <div class="preview-head"><span>REPRODUCCIÓN LOCAL</span><span>H.264 · 1080 × 1920 · 30 FPS</span></div>
+                <video id="q03e-sample-video" class="q03c-video" controls playsinline preload="metadata" aria-describedby="q03e-video-note">
+                  <source src="/media/q03e-sample" type="video/mp4">
+                  Tu navegador no puede reproducir esta muestra MP4.
+                </video>
+                <p class="q03c-video-note" id="q03e-video-note">10,00 s · CRF 17 · preset medium · AAC estéreo 48 kHz. Sin subtítulos, zoom ni otros efectos; el audio se recortó al mismo intervalo.</p>
+              </article>
+              <article class="preview-card q03e-review-card">
+                <div class="preview-head"><span>COMPARACIÓN DEL MISMO INSTANTE</span><span>25,00 s de la fuente</span></div>
+                <img class="q03c-comparison" src="/media/q03e-comparison" loading="lazy" alt="Comparación del fotograma de 25 segundos de Q03B, el MP4 Q03C, el fotograma Q03D y el vídeo Q03E">
+                <p class="q03c-comparison-note">Q03B con desat=0.2, fotograma real de Q03C, still Q03D con desat=0 y fotograma del MP4 Q03E. Las tres primeras columnas son referencias existentes; Q03E es el nuevo vídeo local.</p>
+                <p class="q03c-color-warning" role="note"><strong>Sin aprobar todavía:</strong> revise piel, producto y blancos en el vídeo completo de muestra. La fuente incluye Dolby Vision; este resultado convierte la capa base HLG y no aplica el RPU Dolby Vision.</p>
+              </article>
+            </div>
           </section>
 
           <section class="section-block" id="procesamiento">

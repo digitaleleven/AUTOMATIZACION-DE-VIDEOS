@@ -266,3 +266,31 @@ mtime_ms = 1792872237601
 storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/9a36d67b-75f2-48eb-8f8d-36c9cb203b21/fd2b6ac1-d7c3-4eb3-baf7-81e8224eb218"
 storage_version_token = "1792873029134487"
 content_type = "image/png"
+
+[[outputs]]
+id = "KVgmKW_ie6sBypfESuDVw"
+uri = "file://generated-artifacts/drive-inspection/q03e/IMG_1254-Q03E-hable0-10s.mp4"
+type = "video"
+title = "MATRIX MOTION · Q03E HDR→SDR · 10 s"
+description = "Muestra local de revisión Hable desat=0, 1080×1920, 30 FPS, con audio AAC. Sin aprobación de color todavía."
+logical_id = "a5599e9d-902b-4c97-80ed-9ba5e9b2c1ef"
+content_hash = "sha256:30537174f80f8dc3d8265bf9d6721ef30ac5e5452230e6b5439f9aeaf0ed8db7"
+size = 19845607
+mtime_ms = 1792873989280
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/a5599e9d-902b-4c97-80ed-9ba5e9b2c1ef/b7fc7073-f845-46a4-8642-7d234a9c5ab5"
+storage_version_token = "1792874264722127"
+content_type = "video/mp4"
+
+[[outputs]]
+id = "qA3uGVFukrV_SxOmuUzeW"
+uri = "file://generated-artifacts/drive-inspection/q03e/q03b-q03c-q03d-q03e-25s.png"
+type = "image"
+title = "Q03E · comparación del fotograma a 25 s"
+description = "Q03B, Q03C real, fotograma Q03D y fotograma del MP4 Q03E a la misma resolución de visualización."
+logical_id = "2f28ceed-bca5-4a7b-b341-1f3770ccd3d2"
+content_hash = "sha256:20968809b00ed5938718174614e2d8572c0f60cb25e4b2a3db5b5ea906294ca3"
+size = 942643
+mtime_ms = 1792874028217
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/2f28ceed-bca5-4a7b-b341-1f3770ccd3d2/0205c634-0ed5-4430-869b-b51c2756a212"
+storage_version_token = "1792874265462699"
+content_type = "image/png"

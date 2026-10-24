@@ -466,6 +466,9 @@ class VideoPanel:
         self.q03d_candidates_8s_path = q03d_dir / "candidate-grid-8s.png"
         self.q03d_candidates_25s_path = q03d_dir / "candidate-grid-25s.png"
         self.q03d_candidates_49s_path = q03d_dir / "candidate-grid-49s.png"
+        q03e_dir = project_root / "generated-artifacts/drive-inspection/q03e"
+        self.q03e_sample_path = q03e_dir / "IMG_1254-Q03E-hable0-10s.mp4"
+        self.q03e_comparison_path = q03e_dir / "q03b-q03c-q03d-q03e-25s.png"
         self.input_dir.mkdir(parents=True, exist_ok=True)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.thumbnail_dir.mkdir(parents=True, exist_ok=True)
@@ -2639,6 +2642,16 @@ required minlength="16" {disabled}>
                     media = media_files.get(path)
                     if media is None or not media.is_file():
                         raise PanelError("No se encontró la comparación visual Q-03D.", 404)
+                    self._send_media(media, media.name, head)
+                elif path == "/media/q03e-sample":
+                    media = self.server.panel.q03e_sample_path
+                    if not media.is_file():
+                        raise PanelError("No se encontró la muestra Q-03E.", 404)
+                    self._send_media(media, media.name, head)
+                elif path == "/media/q03e-comparison":
+                    media = self.server.panel.q03e_comparison_path
+                    if not media.is_file():
+                        raise PanelError("No se encontró la comparación visual Q-03E.", 404)
                     self._send_media(media, media.name, head)
                 elif path.startswith("/media/incoming/"):
                     file_id = path.rsplit("/", 1)[-1]
