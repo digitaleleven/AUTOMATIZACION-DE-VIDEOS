@@ -8,16 +8,16 @@
 - Panel web en español, adaptable y accesible desde Replit Preview, con biblioteca local, reproducción original/editado, estados y errores reales, estimaciones no inventadas y controles de estilo.
 - Validación de MP4 y MOV, duración, tamaño, audio, H.264/HEVC, dimensiones, rotación y FPS mediante `ffprobe`.
 - Compatibilidad iPhone: conserva sin conversión los MP4/MOV H.264 con AAC y orientación normal; convierte HEVC a H.264 de alta calidad cuando hace falta para edición, y convierte audio no AAC a AAC. Las conversiones por códec, audio u orientación son temporales; la copia original queda intacta.
-- Extracción temporal de audio con FFmpeg en bloques de 15 minutos.
+- Extracción temporal de audio con FFmpeg en bloques de hasta 15 minutos; cada bloque se codifica como MP3 mono a 16 kHz y 64 kb/s, con desplazamiento temporal aplicado a las palabras para mantener los subtítulos sincronizados.
 - Transcripción `whisper-1` en `verbose_json`, solicitando timestamps por palabra y segmento. La salida se normaliza; si faltan tiempos por palabra, se estiman dentro del segmento.
 - Captions SRT de 2–4 palabras sincronizados con el audio.
 - Edición Shotstack con `rich-caption`, animación/highlight por palabra, trazo legible y subtítulos en zona inferior segura.
 - Estilo configurable en `video_style.json`: fuente, colores, animación, posición, emojis asociados manualmente y logo local opcional.
 - Salida MP4 1080 × 1920 a 30 fps. Las fuentes con otra relación de aspecto usan `contain` para no cortar caras; solo se usa crop si el formato ya es prácticamente 9:16.
 - Ingest de MP4, SRT y, opcionalmente, logo a Shotstack. Resultado descargado como archivo nuevo; el original no se modifica ni sobrescribe.
-- Carga reanudable del render validado como un archivo nuevo en la carpeta Procesados. Drive solo se usa para crear ese archivo: no se enumeran ni descargan vídeos de entrada.
+- Carga del render validado a Drive en fragmentos de 8 MB como archivo nuevo, con consulta del avance y reanudación tras cortes. El estado local de la sesión se conserva con permisos restrictivos y no incluye el token OAuth.
 - SQLite local (`data/processing.sqlite3`) para detectar vídeos ya completados, reanudar un render existente y permitir como máximo un reintento manual.
-- Límites por defecto: un vídeo por ejecución, 500 MB, 30 minutos de vídeo, dos bloques de transcripción y un nuevo render por intento. Se pueden ajustar en `video_style.json`.
+- Límites por defecto: un vídeo por ejecución, sin límite fijo de tamaño de archivo, 30 minutos de vídeo, dos bloques de transcripción y un nuevo render por intento. La duración y el máximo de llamadas se pueden ajustar en `video_style.json`.
 - `requirements.txt` fija las versiones usadas. El panel y su API usan la biblioteca estándar de Python y no añaden dependencias web.
 
 La animación activa destaca la palabra que se está pronunciando; el proyecto no realiza análisis semántico para decidir qué palabras son “importantes”. Los emojis son opcionales y solo se añaden si se configuran en `emoji_by_keyword`.
@@ -48,7 +48,7 @@ La sincronización descarga los MP4 seleccionados a `data/incoming/` y los logos
 - No probado con una cuenta Google real: OAuth, permisos efectivos, descarga real ni creación real en Procesados.
 - No se han realizado llamadas reales a Google, OpenAI o Shotstack ni se han cambiado permisos.
 
-`video_pipeline/drive.py` conserva la subida reanudable de archivos nuevos. El CLI puede seguir usando `GOOGLE_OAUTH_TOKEN` en su ruta anterior.
+`video_pipeline/drive.py` sube archivos nuevos en fragmentos acotados y recupera el punto confirmado por Drive tras un corte. El estado de sesión guardado permite que un reintento posterior retome la transferencia sin leer el render completo en memoria. El CLI puede seguir usando `GOOGLE_OAUTH_TOKEN` en su ruta anterior.
 
 Referencias oficiales: [flujo OAuth web](https://developers.google.com/identity/protocols/oauth2/web-server), [scopes de Drive](https://developers.google.com/workspace/drive/api/guides/api-specific-auth), [listar archivos](https://developers.google.com/workspace/drive/api/reference/rest/v3/files/list) y [descargas/exportación](https://developers.google.com/workspace/drive/api/guides/manage-downloads).
 

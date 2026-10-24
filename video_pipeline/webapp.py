@@ -810,11 +810,6 @@ class VideoPanel:
         if existing:
             return self._public_library_item(existing)
         style = load_video_style(self.style_path)
-        if path.stat().st_size > style.max_input_size_mb * 1024 * 1024:
-            raise PanelError(
-                f"El vídeo descargado supera el límite de {style.max_input_size_mb} MB.",
-                413,
-            )
         try:
             metadata = probe_video(path)
         except (MediaError, OSError, ValueError) as exc:
@@ -1071,12 +1066,9 @@ class VideoPanel:
             raise PanelError(str(exc), 400) from exc
 
     def upload(self, filename: str, content_length: int, stream) -> dict[str, Any]:
-        style = load_video_style(self.style_path)
         if content_length <= 0:
             raise PanelError("El archivo está vacío.")
-        maximum = style.max_input_size_mb * 1024 * 1024
-        if content_length > maximum:
-            raise PanelError(f"El vídeo supera el límite configurado de {style.max_input_size_mb} MB.", 413)
+        style = load_video_style(self.style_path)
         original_name = filename.replace("\\", "/").rsplit("/", 1)[-1]
         original_name = "".join(char for char in original_name if char.isprintable()).strip()[:180]
         suffix = Path(original_name).suffix.lower()
@@ -1095,8 +1087,6 @@ class VideoPanel:
                     if not block:
                         raise PanelError("La carga terminó antes de recibir el archivo completo.")
                     written += len(block)
-                    if written > maximum:
-                        raise PanelError("El vídeo supera el límite configurado.", 413)
                     digest.update(block)
                     output.write(block)
             if written != content_length:
@@ -1382,8 +1372,6 @@ class VideoPanel:
             raise PanelError(str(exc)) from None
         if video.video_codec not in ALLOWED_CODECS:
             raise PanelError("El vídeo debe usar H.264 o HEVC/H.265.")
-        if video.size_bytes > style.max_input_size_mb * 1024 * 1024:
-            raise PanelError(f"El vídeo supera el límite configurado de {style.max_input_size_mb} MB.", 413)
         if video.duration > style.max_video_duration_seconds:
             raise PanelError(
                 f"El vídeo supera el límite configurado de {style.max_video_duration_seconds} segundos.",

@@ -1,5 +1,6 @@
 """Google Drive operations limited to files explicitly selected with Drive Picker."""
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -288,6 +289,76 @@ def create_test_file(
     return result
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _save_upload_state(path: Path, state: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(path.parent, 0o700)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("x", encoding="utf-8") as output:
+            os.chmod(temporary, 0o600)
+            json.dump(state, output)
+            output.write("\n")
+        os.replace(temporary, path)
+        os.chmod(path, 0o600)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _validated_upload_url(upload_url: str | None) -> str:
+    parsed_url = urlsplit(upload_url or "")
+    if (
+        parsed_url.scheme != "https"
+        or not parsed_url.hostname
+        or not (
+            parsed_url.hostname == "googleapis.com"
+            or parsed_url.hostname.endswith(".googleapis.com")
+        )
+    ):
+        raise DriveUploadError("Google Drive returned an invalid resumable upload URL.")
+    return upload_url
+
+
+def _acknowledged_offset(response: requests.Response, total_size: int) -> int:
+    acknowledged = response.headers.get("Range")
+    if not acknowledged:
+        return 0
+    match = re.fullmatch(r"bytes=0-(\d+)", acknowledged)
+    if not match:
+        raise DriveUploadError("Google Drive did not confirm the uploaded byte range.")
+    next_offset = int(match.group(1)) + 1
+    if next_offset > total_size:
+        raise DriveUploadError("Google Drive returned an invalid upload range.")
+    return next_offset
+
+
+def _query_upload_status(
+    client: Any,
+    upload_url: str,
+    *,
+    access_token: str,
+    total_size: int,
+) -> requests.Response:
+    return client.put(
+        upload_url,
+        data=b"",
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Length": "0",
+            "Content-Range": f"bytes */{total_size}",
+        },
+        timeout=(20, 60),
+        allow_redirects=False,
+    )
+
+
 def upload_new_file(
     video_path: str | Path,
     *,
@@ -296,8 +367,13 @@ def upload_new_file(
     session: requests.Session | None = None,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     app_properties: dict[str, str] | None = None,
+    upload_state_path: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Upload a render as a new Drive file; never updates or deletes a source."""
+    """Upload a render to Drive in bounded chunks and resume interrupted sessions.
+
+    When upload_state_path is provided, only the resumable session URL and
+    source identity are persisted; OAuth access tokens are never written.
+    """
     path = Path(video_path)
     if not access_token:
         raise DriveUploadError("A Drive OAuth access token is required to upload to Drive.")
@@ -309,6 +385,26 @@ def upload_new_file(
         raise ValueError("Drive chunk size must be a positive multiple of 256 KiB.")
 
     total_size = path.stat().st_size
+    source_fingerprint = _file_sha256(path)
+    state_path = Path(upload_state_path) if upload_state_path is not None else None
+    upload_url: str | None = None
+    if state_path and state_path.is_file():
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            raise DriveUploadError("The saved Google Drive upload state is invalid.") from None
+        if not isinstance(state, dict):
+            raise DriveUploadError("The saved Google Drive upload state is invalid.")
+        if (
+            state.get("source_sha256") != source_fingerprint
+            or state.get("size") != total_size
+            or state.get("folder_id") != folder_id
+        ):
+            raise DriveUploadError(
+                "A saved Drive upload belongs to a different render or destination; it was not reused."
+            )
+        upload_url = _validated_upload_url(state.get("upload_url"))
+
     headers = {
         "Authorization": f"Bearer {access_token}",
         "X-Upload-Content-Type": "video/mp4",
@@ -334,38 +430,81 @@ def upload_new_file(
             raise ValueError("Drive appProperties must contain short, valid string keys and values.")
         metadata["appProperties"] = app_properties
     client = session or requests.Session()
-    try:
-        response = client.post(
-            DRIVE_UPLOAD_URL,
-            params={
-                "uploadType": "resumable",
-                "fields": "id,name,mimeType,parents",
-            },
-            headers={**headers, "Content-Type": "application/json"},
-            json=metadata,
-            timeout=(10, 60),
-            allow_redirects=False,
-        )
-    except requests.RequestException:
-        raise DriveUploadError("Could not start the Google Drive upload.") from None
+    def start_session() -> str:
+        try:
+            response = client.post(
+                DRIVE_UPLOAD_URL,
+                params={
+                    "uploadType": "resumable",
+                    "fields": "id,name,mimeType,parents",
+                },
+                headers={**headers, "Content-Type": "application/json"},
+                json=metadata,
+                timeout=(10, 60),
+                allow_redirects=False,
+            )
+        except requests.RequestException:
+            raise DriveUploadError("Could not start the Google Drive upload.") from None
+        if response.status_code not in {200, 201}:
+            raise DriveUploadError(
+                f"Google Drive rejected upload initialization (HTTP {response.status_code})."
+            )
+        url = _validated_upload_url(response.headers.get("Location"))
+        if state_path:
+            _save_upload_state(
+                state_path,
+                {
+                    "upload_url": url,
+                    "source_sha256": source_fingerprint,
+                    "size": total_size,
+                    "folder_id": folder_id,
+                },
+            )
+        return url
 
-    if response.status_code not in {200, 201}:
-        raise DriveUploadError(
-            f"Google Drive rejected upload initialization (HTTP {response.status_code})."
-        )
-    upload_url = response.headers.get("Location")
-    parsed_url = urlsplit(upload_url or "")
-    if (
-        parsed_url.scheme != "https"
-        or not parsed_url.hostname
-        or not (
-            parsed_url.hostname == "googleapis.com"
-            or parsed_url.hostname.endswith(".googleapis.com")
-        )
-    ):
-        raise DriveUploadError("Google Drive returned an invalid resumable upload URL.")
+    def completed_result(response: requests.Response) -> dict[str, Any]:
+        try:
+            result = response.json()
+        except (ValueError, json.JSONDecodeError):
+            raise DriveUploadError(
+                "Google Drive returned invalid metadata for the created file."
+            ) from None
+        if not isinstance(result, dict) or not result.get("id"):
+            raise DriveUploadError("Google Drive did not confirm creation of the new video file.")
+        return result
 
-    offset = 0
+    if upload_url:
+        try:
+            status_response = _query_upload_status(
+                client,
+                upload_url,
+                access_token=access_token,
+                total_size=total_size,
+            )
+        except requests.RequestException:
+            raise DriveUploadError(
+                "Could not check the saved Google Drive upload session; the session was preserved."
+            ) from None
+        if status_response.status_code in {200, 201}:
+            result = completed_result(status_response)
+            state_path.unlink(missing_ok=True)
+            return result
+        if status_response.status_code == 308:
+            offset = _acknowledged_offset(status_response, total_size)
+        elif status_response.status_code in {404, 410}:
+            state_path.unlink(missing_ok=True)
+            upload_url = None
+            offset = 0
+        else:
+            raise DriveUploadError(
+                f"Google Drive could not resume the saved upload (HTTP {status_response.status_code})."
+            )
+    else:
+        offset = 0
+    if upload_url is None:
+        upload_url = start_session()
+
+    recovery_attempts = 0
     with path.open("rb") as video:
         while offset < total_size:
             video.seek(offset)
@@ -388,25 +527,47 @@ def upload_new_file(
                     allow_redirects=False,
                 )
             except requests.RequestException:
+                recovery_attempts += 1
+                if recovery_attempts > 3:
+                    raise DriveUploadError(
+                        "The resumable Google Drive upload was interrupted; its session was saved for retry."
+                    ) from None
+                try:
+                    status_response = _query_upload_status(
+                        client,
+                        upload_url,
+                        access_token=access_token,
+                        total_size=total_size,
+                    )
+                except requests.RequestException:
+                    continue
+                if status_response.status_code in {200, 201}:
+                    result = completed_result(status_response)
+                    if state_path:
+                        state_path.unlink(missing_ok=True)
+                    return result
+                if status_response.status_code == 308:
+                    next_offset = _acknowledged_offset(status_response, total_size)
+                    if next_offset > chunk_end + 1:
+                        raise DriveUploadError("Google Drive returned an invalid upload range.")
+                    offset = next_offset
+                    continue
+                if status_response.status_code in {404, 410}:
+                    raise DriveUploadError(
+                        "The Google Drive upload session expired; its saved state must be cleared before retrying."
+                    )
                 raise DriveUploadError(
-                    "The resumable Google Drive upload was interrupted."
-                ) from None
+                    f"Google Drive could not resume the interrupted upload (HTTP {status_response.status_code})."
+                )
 
             if upload_response.status_code in {200, 201}:
                 if chunk_end != total_size - 1:
                     raise DriveUploadError(
                         "Google Drive completed an upload before all bytes were sent."
                     )
-                try:
-                    result = upload_response.json()
-                except (ValueError, json.JSONDecodeError):
-                    raise DriveUploadError(
-                        "Google Drive returned invalid metadata for the created file."
-                    ) from None
-                if not isinstance(result, dict) or not result.get("id"):
-                    raise DriveUploadError(
-                        "Google Drive did not confirm creation of the new video file."
-                    )
+                result = completed_result(upload_response)
+                if state_path:
+                    state_path.unlink(missing_ok=True)
                 return result
 
             if upload_response.status_code != 308:
@@ -415,13 +576,7 @@ def upload_new_file(
                     f"(HTTP {upload_response.status_code})."
                 )
 
-            acknowledged = upload_response.headers.get("Range")
-            match = re.fullmatch(r"bytes=0-(\d+)", acknowledged or "")
-            if not match:
-                raise DriveUploadError(
-                    "Google Drive did not confirm the uploaded byte range."
-                )
-            next_offset = int(match.group(1)) + 1
+            next_offset = _acknowledged_offset(upload_response, total_size)
             if next_offset <= offset or next_offset > chunk_end + 1:
                 raise DriveUploadError("Google Drive returned an invalid upload range.")
             offset = next_offset

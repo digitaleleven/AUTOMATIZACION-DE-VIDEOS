@@ -35,7 +35,8 @@ class VideoStyle:
     output_height: int = 1920
     output_fps: int = 30
     output_quality: str = "high"
-    max_input_size_mb: int = 500
+    # Kept only to accept legacy config files; input size is no longer capped.
+    max_input_size_mb: int | None = None
     max_video_duration_seconds: int = 1800
     max_transcription_chunks: int = 2
     openai_price_per_audio_minute_usd: float | None = None
@@ -98,8 +99,12 @@ def load_video_style(path: str | Path = "video_style.json") -> VideoStyle:
         raise StyleConfigError("output_fps must be one of 25, 30, 50, or 60.")
     if not isinstance(values["output_quality"], str) or values["output_quality"] not in {"medium", "high"}:
         raise StyleConfigError("output_quality must be 'medium' or 'high'.")
-    if int(values["max_input_size_mb"]) <= 0 or int(values["max_video_duration_seconds"]) <= 0:
-        raise StyleConfigError("Input size and duration limits must be positive.")
+    legacy_size_limit = values["max_input_size_mb"]
+    if legacy_size_limit is not None and int(legacy_size_limit) <= 0:
+        raise StyleConfigError("max_input_size_mb must be positive when provided.")
+    values["max_input_size_mb"] = None
+    if int(values["max_video_duration_seconds"]) <= 0:
+        raise StyleConfigError("Video duration limit must be positive.")
     if int(values["max_transcription_chunks"]) <= 0:
         raise StyleConfigError("max_transcription_chunks must be positive.")
     for key in (
@@ -122,7 +127,7 @@ def load_video_style(path: str | Path = "video_style.json") -> VideoStyle:
 
     # Normalize numeric types so JSON values are checked and consumed consistently.
     for key in ("font_size", "stroke_width", "output_width", "output_height", "output_fps",
-                "max_input_size_mb", "max_video_duration_seconds", "max_transcription_chunks"):
+                "max_video_duration_seconds", "max_transcription_chunks"):
         values[key] = int(values[key])
     for key in (
         "caption_offset_y", "logo_scale", "logo_offset_x", "logo_offset_y",

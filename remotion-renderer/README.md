@@ -1,33 +1,26 @@
-# MATRIX MOTION — prueba aislada de Remotion
+# MATRIX MOTION — prueba local aislada de Remotion
 
-Este paquete no forma parte del pipeline Python, del panel ni del sandbox de diseño.
-No llama a Google Drive, OpenAI ni Shotstack.
+Este directorio solo contiene una prueba experimental. No se importa desde la
+aplicación Python, el panel ni Shotstack. El navegador de render se ejecuta con
+resolución de hosts externos bloqueada. El render no recibe clave de licencia
+ni llama al servicio de seguimiento de Remotion.
 
-## Requisitos de la prueba de Fase 1
+## Ejecución única
 
-- `remotion` y todos los paquetes `@remotion/*` directos fijados en `4.0.538`.
-- React y React DOM fijados en `19.1.0`; tipos y TypeScript también tienen versión exacta.
-- `pnpm-lock.yaml` fija el árbol reproducible; el paquete no añade dependencias al proyecto Python.
-- Entrada fija: `data/incoming/608c74727e18449da2899f75d426f8c9.mov`.
-- El SHA-256 auditado se comprueba antes y después.
-- Se crean una copia de trabajo y un WAV temporal dentro de `generated-artifacts/`.
-- El MP4 se escribe en una carpeta exclusiva de ejecución; nunca se reutiliza una ruta.
-- Configuración: 1080×1920, 50 fps, 285 fotogramas, concurrencia 1, H.264/AAC.
-- La composición usa tres segmentos locales, dos fundidos, zoom dinámico y un sticker SVG.
-- Chromium se ejecuta con red en segundo plano desactivada y resolución de hosts externos bloqueada.
-- Se omite `licenseKey` para no solicitar telemetría de Remotion en el render server-side.
-- Un error detiene la ejecución; no hay reintentos ni otro render automático.
-
-## Comandos
-
-Desde esta carpeta, verificar las dependencias con `pnpm install --frozen-lockfile`.
-La comprobación de tipos es `pnpm run typecheck`. El único comando de render autorizado
-para esta prueba es:
+Desde la raíz del repositorio, indica explícitamente la fuente y una ruta de
+salida nueva:
 
 ```sh
-pnpm run render:sample
+pnpm --dir remotion-renderer run render:sample -- \
+  --input "$PWD/data/incoming/video.mov" \
+  --output "$PWD/remotion-renderer/generated-artifacts/remotion/sample.mp4"
 ```
 
-La salida, el informe JSON, los registros y una hoja de contacto quedan en
-`generated-artifacts/remotion/<id-de-ejecución>/`. Los medios generados y `node_modules`
-están excluidos de Git y del despliegue.
+El script comprueba la entrada con FFprobe, trabaja sobre una copia temporal,
+produce 250 fotogramas (5 segundos, 1080 × 1920, 50 FPS), conserva el original,
+valida el MP4 con FFprobe y realiza una decodificación de lectura con FFmpeg.
+No reintenta el render. Los registros completos, informe y medición de recursos
+se guardan junto al MP4; los fallos conservan `error.log`.
+
+Las dependencias se fijan en `package.json` y `pnpm-lock.yaml`. Los paquetes,
+archivos de trabajo y medios generados se excluyen de Git y del despliegue.

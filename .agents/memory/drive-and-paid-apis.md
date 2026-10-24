@@ -32,3 +32,9 @@ La documentación oficial de Shotstack permite tamaños personalizados hasta 384
 **Why:** la capacidad técnica del API no demuestra que la cuenta tenga el plan necesario ni que un preset produzca una calidad/bitrate determinado.
 
 **How to apply:** mantener 720p y 1080p disponibles; no habilitar 1440p/4K ni afirmar calidad o coste final hasta verificar el plan con autorización y analizar un resultado renderizado.
+
+Las URL de sesiones de subida reanudable de Drive son credenciales de capacidad: persístelas solo si hace falta para reanudar, con permisos de archivo y directorio restrictivos; nunca guardes allí tokens OAuth y elimina el estado al completar la subida.
+
+**Why:** una reanudación tras reinicio necesita conservar la URL de sesión, pero esa URL concede acceso a la carga en curso.
+
+**How to apply:** al añadir recuperación de transferencias, limita el estado persistido al URL y a la identidad del archivo/destino, con permisos privados; bórralo al confirmar la creación en Drive.

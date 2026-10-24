@@ -15,7 +15,6 @@
   "logo_offset_x": -0.06,
   "logo_offset_y": -0.08,
   "output_fps": "30",
-  "max_input_size_mb": 500,
   "max_video_duration_seconds": 1800,
   "max_transcription_chunks": 2,
   "openai_price_per_audio_minute_usd": null,

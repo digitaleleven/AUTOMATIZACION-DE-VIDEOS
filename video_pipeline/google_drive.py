@@ -807,12 +807,22 @@ class GoogleDriveClient:
         # Import lazily to avoid an import cycle and preserve the existing resumable uploader.
         from .drive import upload_new_file
 
+        source_path = Path(path).expanduser().resolve()
+        content_digest = hashlib.sha256()
+        with source_path.open("rb") as source_file:
+            for block in iter(lambda: source_file.read(1024 * 1024), b""):
+                content_digest.update(block)
+        upload_identity = f"{source_key or ''}\0{source_path.name}\0{content_digest.hexdigest()}"
+        state_key = hashlib.sha256(
+            f"{folder_id}\0{upload_identity}".encode("utf-8")
+        ).hexdigest()
         result = upload_new_file(
             path,
             folder_id=folder_id,
             access_token=access_token or self.oauth.access_token(),
             app_properties=app_properties,
             session=self.http,
+            upload_state_path=Path("data/drive_upload_sessions") / f"{state_key}.json",
         )
         if not access_token:
             self.oauth.store.mark_verified()

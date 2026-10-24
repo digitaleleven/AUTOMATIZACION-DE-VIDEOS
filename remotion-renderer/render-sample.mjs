@@ -1,55 +1,29 @@
 import { bundle } from "@remotion/bundler";
 import { renderMedia, selectComposition } from "@remotion/renderer";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
+import { spawn } from "node:child_process";
 import {
   copyFile,
   mkdir,
-  readFile,
+  mkdtemp,
+  readdir,
   rm,
   stat,
   writeFile,
 } from "node:fs/promises";
-import { constants as fsConstants, createReadStream } from "node:fs";
-import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
 
 const PACKAGE_DIR = path.dirname(fileURLToPath(import.meta.url));
-const PROJECT_ROOT = path.resolve(PACKAGE_DIR, "..");
-const INPUT_PATH = path.join(
-  PROJECT_ROOT,
-  "data/incoming/608c74727e18449da2899f75d426f8c9.mov",
-);
-const EXPECTED_INPUT_SHA256 =
-  "8fbe91573d1867d185adc10e78cf57b6336b0db33dd2cf361a70eda2896861e5";
-const ARTIFACT_ROOT = path.join(
-  PROJECT_ROOT,
-  "generated-artifacts/remotion",
-);
 const FPS = 50;
-const EXPECTED_FRAMES = 285;
-const EXPECTED_DURATION = EXPECTED_FRAMES / FPS;
-const SOURCE_FRAMES = 941;
+const DURATION_SECONDS = 5;
+const DURATION_IN_FRAMES = FPS * DURATION_SECONDS;
 const CHROMIUM = path.join(PACKAGE_DIR, "tools/chromium-offline.sh");
 
-let runDir;
-let logPath;
-
-const log = async (message) => {
-  const line = `[${new Date().toISOString()}] ${message}`;
-  console.log(line);
-  if (logPath) {
-    await writeFile(logPath, `${line}\n`, { flag: "a" });
-  }
-};
-
-const run = (command, args, options = {}) =>
+const run = (command, args) =>
   new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      stdio: ["ignore", "pipe", "pipe"],
-      ...options,
-    });
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8");
@@ -60,126 +34,59 @@ const run = (command, args, options = {}) =>
     child.stderr.on("data", (chunk) => {
       stderr += chunk;
     });
-    child.on("error", reject);
+    child.on("error", (error) => reject(error));
     child.on("close", (code, signal) => {
       if (code === 0) {
-        resolve({ stdout, stderr, code, signal });
-      } else {
-        reject(
-          new Error(
-            `${command} terminó con código ${code ?? "null"}${
-              signal ? ` (${signal})` : ""
-            }: ${stderr.slice(-6000)}`,
-          ),
-        );
+        resolve({ stdout, stderr });
+        return;
       }
+      const error = new Error(
+        `${command} exited with code ${code ?? "null"}${signal ? ` (${signal})` : ""}`,
+      );
+      error.stdout = stdout;
+      error.stderr = stderr;
+      error.command = [command, ...args];
+      error.exitCode = code;
+      error.signal = signal;
+      reject(error);
     });
   });
 
-const sha256File = (filePath) =>
-  new Promise((resolve, reject) => {
-    const hash = createHash("sha256");
-    const stream = createReadStream(filePath);
-    stream.on("error", reject);
-    stream.on("data", (chunk) => hash.update(chunk));
-    stream.on("end", () => resolve(hash.digest("hex")));
-  });
+const hashFile = async (filePath) => {
+  const digest = createHash("sha256");
+  const { createReadStream } = await import("node:fs");
+  for await (const chunk of createReadStream(filePath)) digest.update(chunk);
+  return digest.digest("hex");
+};
 
-const readCgroupMetric = async (filePath, key = null) => {
-  try {
-    const text = await readFile(filePath, "utf8");
-    if (!key) {
-      return Number.parseInt(text.trim(), 10);
+const parseArguments = (args) => {
+  const forwardedArgs = args[0] === "--" ? args.slice(1) : args;
+  const parsed = {};
+  for (let index = 0; index < forwardedArgs.length; index += 1) {
+    const key = forwardedArgs[index];
+    if (!["--input", "--output"].includes(key) || !forwardedArgs[index + 1]) {
+      throw new Error("Usage: render-sample.mjs --input <video.mp4|video.mov> --output <sample.mp4>");
     }
-    const line = text
-      .split("\n")
-      .find((candidate) => candidate.startsWith(`${key} `));
-    return line ? Number.parseInt(line.split(/\s+/)[1], 10) : null;
-  } catch {
-    return null;
+    parsed[key.slice(2)] = forwardedArgs[++index];
   }
-};
-
-const readCpuQuota = async () => {
-  try {
-    const [quotaText, periodText] = (await readFile(
-      "/sys/fs/cgroup/cpu.max",
-      "utf8",
-    ))
-      .trim()
-      .split(/\s+/);
-    if (quotaText === "max") {
-      return null;
-    }
-    return Number(quotaText) / Number(periodText);
-  } catch {
-    return null;
+  if (!parsed.input || !parsed.output) {
+    throw new Error("Both --input and --output are required; no source path is hard-coded.");
   }
+  return parsed;
 };
 
-const startResourceMonitor = async () => {
-  const cpuLimitCores = await readCpuQuota();
-  let lastUsage = await readCgroupMetric(
-    "/sys/fs/cgroup/cpu.stat",
-    "usage_usec",
-  );
-  let lastTime = performance.now();
-  let peakMemoryBytes =
-    (await readCgroupMetric("/sys/fs/cgroup/memory.current")) ?? 0;
-  let maxCpuCores = 0;
-
-  const sample = async () => {
-    const [usage, memory] = await Promise.all([
-      readCgroupMetric("/sys/fs/cgroup/cpu.stat", "usage_usec"),
-      readCgroupMetric("/sys/fs/cgroup/memory.current"),
-    ]);
-    const now = performance.now();
-    if (usage !== null && lastUsage !== null) {
-      const elapsedUsec = (now - lastTime) * 1000;
-      if (elapsedUsec > 0) {
-        maxCpuCores = Math.max(
-          maxCpuCores,
-          Math.max(0, usage - lastUsage) / elapsedUsec,
-        );
-      }
-    }
-    if (memory !== null) {
-      peakMemoryBytes = Math.max(peakMemoryBytes, memory);
-    }
-    lastUsage = usage;
-    lastTime = now;
-  };
-
-  const timer = setInterval(() => {
-    sample().catch(() => {});
-  }, 250);
-
-  return {
-    async stop() {
-      clearInterval(timer);
-      await sample();
-      return {
-        cpuLimitCores,
-        maxCpuCores: Number(maxCpuCores.toFixed(3)),
-        maxCpuPercentOfLimit:
-          cpuLimitCores && cpuLimitCores > 0
-            ? Number(((maxCpuCores / cpuLimitCores) * 100).toFixed(1))
-            : null,
-        peakCgroupMemoryBytes: peakMemoryBytes,
-      };
-    },
-  };
+const parseRate = (value) => {
+  const [numerator, denominator] = String(value || "0/1").split("/");
+  const rate = Number(numerator) / Number(denominator);
+  return Number.isFinite(rate) && rate > 0 ? rate : 0;
 };
 
-const getProbe = async (filePath) => {
+const probe = async (filePath) => {
   const { stdout } = await run("ffprobe", [
     "-v",
     "error",
-    "-count_frames",
     "-show_entries",
-    "stream=index,codec_type,codec_name,width,height,avg_frame_rate,nb_read_frames,sample_rate,channels,duration",
-    "-show_entries",
-    "format=duration,size,format_name",
+    "format=duration,size,format_name:stream=codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate",
     "-of",
     "json",
     filePath,
@@ -187,518 +94,199 @@ const getProbe = async (filePath) => {
   return JSON.parse(stdout);
 };
 
-const parseFrameRate = (value) => {
-  if (typeof value !== "string" || !value.includes("/")) {
-    return null;
+const directoryBytes = async (directory) => {
+  let bytes = 0;
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) bytes += await directoryBytes(entryPath);
+    else if (entry.isFile()) bytes += (await stat(entryPath)).size;
   }
-  const [numerator, denominator] = value.split("/").map(Number);
-  return denominator ? numerator / denominator : null;
+  return bytes;
 };
 
-const validateOutput = (probe) => {
-  const video = probe.streams?.find((stream) => stream.codec_type === "video");
-  const audio = probe.streams?.find((stream) => stream.codec_type === "audio");
-  const duration = Number(probe.format?.duration);
-  const fps = parseFrameRate(video?.avg_frame_rate);
-  const failures = [];
-
-  if (!video) failures.push("falta la pista de vídeo");
-  if (!audio) failures.push("falta la pista de audio");
-  if (video?.codec_name !== "h264") failures.push("el vídeo no es H.264");
-  if (video?.width !== 1080 || video?.height !== 1920) {
-    failures.push("la resolución no es 1080×1920");
-  }
-  if (Math.abs((fps ?? 0) - FPS) > 0.001) {
-    failures.push("la frecuencia no es 50 fps");
-  }
-  if (audio?.codec_name !== "aac") failures.push("el audio no es AAC");
-  if (Math.abs(duration - EXPECTED_DURATION) > 0.06) {
-    failures.push(
-      `la duración ${duration.toFixed(3)}s difiere de ${EXPECTED_DURATION}s`,
-    );
-  }
-  if (Number(video?.nb_read_frames) !== EXPECTED_FRAMES) {
-    failures.push(
-      `el recuento de fotogramas es ${video?.nb_read_frames ?? "desconocido"}, ` +
-        `se esperaban ${EXPECTED_FRAMES}`,
-    );
-  }
-
-  return { valid: failures.length === 0, failures, video, audio, duration, fps };
+const formatError = (error) => {
+  const parts = [error?.stack || String(error)];
+  if (error?.command) parts.push(`Command: ${error.command.join(" ")}`);
+  if (error?.stdout) parts.push(`stdout:\n${error.stdout}`);
+  if (error?.stderr) parts.push(`stderr:\n${error.stderr}`);
+  if (error?.cause) parts.push(`Cause:\n${formatError(error.cause)}`);
+  return parts.join("\n\n");
 };
 
-const correlationAtOffsets = (reference, candidate, maxLagSamples) => {
-  const sampleCount = Math.min(reference.length, candidate.length);
-  if (sampleCount < 1000) {
-    return { correlation: null, lagSamples: null };
+let outputPath;
+let outputDirectory;
+let workDirectory;
+let succeeded = false;
+
+try {
+  const args = parseArguments(process.argv.slice(2));
+  const inputPath = path.resolve(args.input);
+  outputPath = path.resolve(args.output);
+  outputDirectory = path.dirname(outputPath);
+  await mkdir(outputDirectory, { recursive: true });
+
+  if (path.extname(inputPath).toLowerCase() !== ".mov" &&
+      path.extname(inputPath).toLowerCase() !== ".mp4") {
+    throw new Error("Input must be an MP4 or MOV file.");
+  }
+  if (inputPath === outputPath) {
+    throw new Error("The output path must not overwrite the source video.");
+  }
+  try {
+    await stat(outputPath);
+    throw new Error(`Refusing to overwrite existing output: ${outputPath}`);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  const inputStat = await stat(inputPath);
+  if (!inputStat.isFile() || inputStat.size === 0) {
+    throw new Error(`Input is not a non-empty regular file: ${inputPath}`);
+  }
+  const inputHashBefore = await hashFile(inputPath);
+  const inputProbe = await probe(inputPath);
+  const inputVideo = inputProbe.streams?.find((stream) => stream.codec_type === "video");
+  const inputAudio = inputProbe.streams?.find((stream) => stream.codec_type === "audio");
+  const inputDuration = Number(inputProbe.format?.duration);
+  const sourceFps = parseRate(inputVideo?.avg_frame_rate || inputVideo?.r_frame_rate);
+  if (!inputVideo || !Number.isFinite(inputDuration) || inputDuration < DURATION_SECONDS) {
+    throw new Error("Input must contain a video stream of at least five seconds.");
+  }
+  if (!sourceFps) throw new Error("FFprobe did not return a valid source frame rate.");
+
+  const sourceFrameCount = Math.round(inputDuration * sourceFps);
+  const trimAfter = Math.max(0, sourceFrameCount - Math.round(sourceFps * DURATION_SECONDS));
+  const sourceFile = `source${path.extname(inputPath).toLowerCase()}`;
+
+  console.log(`input=${inputPath}`);
+  console.log(`input_sha256=${inputHashBefore}`);
+  console.log(`input_probe=${JSON.stringify(inputProbe)}`);
+  console.log(`composition=${1080}x${1920} ${FPS}fps ${DURATION_IN_FRAMES} frames`);
+
+  workDirectory = await mkdtemp(path.join(outputDirectory, ".remotion-work-"));
+  const publicDirectory = path.join(workDirectory, "public");
+  await mkdir(publicDirectory, { recursive: true });
+  const copiedInput = path.join(publicDirectory, sourceFile);
+  await copyFile(inputPath, copiedInput);
+  if ((await hashFile(copiedInput)) !== inputHashBefore) {
+    throw new Error("The temporary source copy does not match the original.");
   }
 
-  const mean = (samples) => {
-    let total = 0;
-    for (let index = 0; index < sampleCount; index += 1) {
-      total += samples[index];
-    }
-    return total / sampleCount;
-  };
-  const referenceMean = mean(reference);
-  const candidateMean = mean(candidate);
-  let best = { correlation: -1, lagSamples: null };
-
-  for (let lag = -maxLagSamples; lag <= maxLagSamples; lag += 1) {
-    const referenceStart = lag < 0 ? -lag : 0;
-    const candidateStart = lag > 0 ? lag : 0;
-    const count = Math.min(
-      sampleCount - referenceStart,
-      sampleCount - candidateStart,
-    );
-    let dot = 0;
-    let referenceEnergy = 0;
-    let candidateEnergy = 0;
-    for (let index = 0; index < count; index += 1) {
-      const left = reference[referenceStart + index] - referenceMean;
-      const right = candidate[candidateStart + index] - candidateMean;
-      dot += left * right;
-      referenceEnergy += left * left;
-      candidateEnergy += right * right;
-    }
-    const denominator = Math.sqrt(referenceEnergy * candidateEnergy);
-    const correlation = denominator ? dot / denominator : 0;
-    if (correlation > best.correlation) {
-      best = { correlation, lagSamples: lag };
-    }
-  }
-
-  return best;
-};
-
-const extractAudioWindow = async (input, seekSeconds, durationSeconds, output) => {
-  await run("ffmpeg", [
-    "-nostdin",
-    "-hide_banner",
-    "-loglevel",
-    "error",
-    "-i",
-    input,
-    "-ss",
-    seekSeconds.toFixed(3),
-    "-t",
-    durationSeconds.toFixed(3),
-    "-vn",
-    "-ac",
-    "1",
-    "-ar",
-    "11025",
-    "-f",
-    "s16le",
-    "-y",
-    output,
-  ]);
-  const bytes = await readFile(output);
-  const samples = new Int16Array(bytes.length >> 1);
-  for (let index = 0; index < samples.length; index += 1) {
-    samples[index] = bytes.readInt16LE(index * 2);
-  }
-  return samples;
-};
-
-const verifyAudioAlignment = async ({
-  originalAudioPath,
-  outputVideoPath,
-  runDirectory,
-}) => {
-  const sourceStartSeconds = 5.6;
-  const outputStartSeconds = 2.2;
-  const durationSeconds = 0.6;
-  const sampleRate = 11025;
-  const expectedPath = path.join(runDirectory, "audio-sync-reference.raw");
-  const actualPath = path.join(runDirectory, "audio-sync-output.raw");
-  const [reference, candidate] = await Promise.all([
-    extractAudioWindow(
-      originalAudioPath,
-      sourceStartSeconds,
-      durationSeconds,
-      expectedPath,
-    ),
-    extractAudioWindow(
-      outputVideoPath,
-      outputStartSeconds,
-      durationSeconds,
-      actualPath,
-    ),
-  ]);
-  await Promise.all([rm(expectedPath, { force: true }), rm(actualPath, { force: true })]);
-
-  const maxLagSamples = Math.round(sampleRate * 0.05);
-  const match = correlationAtOffsets(reference, candidate, maxLagSamples);
-  const correlation =
-    match.correlation === null ? null : Number(match.correlation.toFixed(4));
-  const lagMilliseconds =
-    match.lagSamples === null
-      ? null
-      : Number(((match.lagSamples / sampleRate) * 1000).toFixed(2));
-
-  if (correlation === null || correlation < 0.65) {
-    return {
-      status: "inconclusive",
-      correlation,
-      lagMilliseconds,
-      sample: {
-        sourceStartSeconds,
-        outputStartSeconds,
-        durationSeconds,
-        sampleRate,
-      },
-      note: "La ventana no dio una correlación suficiente para confirmar sincronía.",
-    };
-  }
-
-  return {
-    status: Math.abs(lagMilliseconds) <= 35 ? "passed" : "failed",
-    correlation,
-    lagMilliseconds,
-    sample: {
-      sourceStartSeconds,
-      outputStartSeconds,
-      durationSeconds,
-      sampleRate,
-    },
-    note:
-      "Comparación de señal PCM mono en una ventana interior del segundo segmento, fuera de los fundidos.",
-  };
-};
-
-const main = async () => {
-  const runId = `0415-phase1-${new Date()
-    .toISOString()
-    .replaceAll(":", "-")}-${process.pid}-${randomUUID().slice(0, 8)}`;
-  await mkdir(ARTIFACT_ROOT, { recursive: true });
-  runDir = path.join(ARTIFACT_ROOT, runId);
-  await mkdir(runDir, { recursive: false });
-  logPath = path.join(runDir, "run.log");
-  const outputPath = path.join(runDir, "0415-remotion-phase1.mp4");
-  const publicDir = path.join(runDir, "public");
-  const bundleDir = path.join(runDir, "bundle");
-
-  await log(`run_id=${runId}`);
-  await log(`input=${INPUT_PATH}`);
-  await log(`output=${outputPath}`);
-  await log("No se configura licenseKey; el render es local/server-side.");
-
-  const originalStat = await stat(INPUT_PATH);
-  if (!originalStat.isFile()) {
-    throw new Error("La entrada no es un archivo regular.");
-  }
-  const originalHashBefore = await sha256File(INPUT_PATH);
-  if (originalHashBefore !== EXPECTED_INPUT_SHA256) {
-    throw new Error(
-      `El SHA-256 de 0415.mov no coincide con el valor auditado; ` +
-        `se cancela antes de renderizar. SHA actual: ${originalHashBefore}`,
-    );
-  }
-
-  const inputProbe = await getProbe(INPUT_PATH);
-  const sourceVideo = inputProbe.streams?.find(
-    (stream) => stream.codec_type === "video",
-  );
-  const sourceAudio = inputProbe.streams?.find(
-    (stream) => stream.codec_type === "audio",
-  );
-  if (
-    sourceVideo?.codec_name !== "h264" ||
-    sourceVideo?.width !== 2160 ||
-    sourceVideo?.height !== 3840 ||
-    parseFrameRate(sourceVideo?.avg_frame_rate) !== FPS ||
-    sourceAudio?.codec_name !== "aac"
-  ) {
-    throw new Error(
-      "0415.mov ya no coincide con el perfil H.264/AAC vertical de 50 fps auditado.",
-    );
-  }
-  if (Number(sourceVideo?.nb_read_frames) !== SOURCE_FRAMES) {
-    throw new Error(
-      `El recuento de fotogramas de origen cambió: ${sourceVideo?.nb_read_frames}.`,
-    );
-  }
-
-  await mkdir(publicDir, { recursive: false });
-  const copiedVideoPath = path.join(publicDir, "0415-source.mov");
-  const copiedAudioPath = path.join(publicDir, "0415-audio.wav");
-  await copyFile(INPUT_PATH, copiedVideoPath, fsConstants.COPYFILE_EXCL);
-  const copiedHash = await sha256File(copiedVideoPath);
-  if (copiedHash !== originalHashBefore) {
-    throw new Error("La copia de trabajo no coincide con el original.");
-  }
-
-  await log("Extrayendo temporalmente el audio PCM local desde una copia.");
-  await run("ffmpeg", [
-    "-nostdin",
-    "-hide_banner",
-    "-loglevel",
-    "error",
-    "-i",
-    copiedVideoPath,
-    "-map",
-    "0:a:0",
-    "-vn",
-    "-c:a",
-    "pcm_s16le",
-    "-ar",
-    "44100",
-    "-ac",
-    "2",
-    "-n",
-    copiedAudioPath,
-  ]);
-
-  const audioProbe = await getProbe(copiedAudioPath);
-  if (
-    !audioProbe.streams?.some(
-      (stream) =>
-        stream.codec_type === "audio" &&
-        stream.codec_name === "pcm_s16le" &&
-        stream.sample_rate === "44100" &&
-        stream.channels === 2,
-    )
-  ) {
-    throw new Error("La extracción local de audio PCM no pasó su validación.");
-  }
-
-  await log("Creando bundle local de Remotion.");
   const serveUrl = await bundle({
-    entryPoint: path.join(PACKAGE_DIR, "src/index.tsx"),
-    rootDir: PACKAGE_DIR,
-    publicDir,
-    outDir: bundleDir,
-    onProgress: (progress) => {
-      if (progress === 100 || progress % 25 === 0) {
-        void log(`bundle_progress=${progress}%`);
-      }
-    },
+    entryPoint: path.join(PACKAGE_DIR, "src/index.jsx"),
+    publicDir: publicDirectory,
+    onProgress: (progress) => console.log(`bundle_progress=${progress}%`),
   });
-
+  const inputProps = { sourceFile, trimAfter };
+  const browserOptions = { enableMultiProcessOnLinux: true };
   const composition = await selectComposition({
     serveUrl,
-    id: "MATRIX-MOTION-Remotion-Phase1",
+    id: "RemotionLocalSample",
+    inputProps,
     browserExecutable: CHROMIUM,
-    chromiumOptions: { enableMultiProcessOnLinux: true },
+    chromiumOptions: browserOptions,
   });
   if (
     composition.width !== 1080 ||
     composition.height !== 1920 ||
     composition.fps !== FPS ||
-    composition.durationInFrames !== EXPECTED_FRAMES
+    composition.durationInFrames !== DURATION_IN_FRAMES
   ) {
-    throw new Error(
-      `La composición no coincide con la especificación: ${JSON.stringify({
-        width: composition.width,
-        height: composition.height,
-        fps: composition.fps,
-        durationInFrames: composition.durationInFrames,
-      })}`,
-    );
+    throw new Error(`Unexpected composition metadata: ${JSON.stringify({
+      width: composition.width,
+      height: composition.height,
+      fps: composition.fps,
+      durationInFrames: composition.durationInFrames,
+    })}`);
   }
-  await log(
-    `composition=${composition.width}x${composition.height} ` +
-      `${composition.fps}fps ${composition.durationInFrames} frames`,
-  );
 
-  const resourceMonitor = await startResourceMonitor();
-  const renderStarted = performance.now();
-  await log("Inicio del único render autorizado; concurrencia=1.");
-  let renderError = null;
-  let renderMetrics;
-  try {
-    await renderMedia({
-      composition,
-      serveUrl,
-      codec: "h264",
-      outputLocation: outputPath,
-      browserExecutable: CHROMIUM,
-      chromiumOptions: { enableMultiProcessOnLinux: true },
-      concurrency: 1,
-      crf: 18,
-      pixelFormat: "yuv420p",
-      audioCodec: "aac",
-      audioBitrate: "192k",
-      logLevel: "warn",
-    });
-  } catch (error) {
-    renderError = error;
-  } finally {
-    const renderDurationSeconds = (performance.now() - renderStarted) / 1000;
-    const resourceMetrics = await resourceMonitor.stop();
-    renderMetrics = { renderDurationSeconds, resourceMetrics };
-    await log(`render_seconds=${renderDurationSeconds.toFixed(2)}`);
-    await log(`resource_metrics=${JSON.stringify(resourceMetrics)}`);
-  }
-  if (renderError) {
-    throw renderError;
-  }
-  await finishRender({
-    outputPath,
-    runDirectory: runDir,
-    runId,
-    originalStat,
-    originalHashBefore,
-    publicDir,
-    bundleDir,
-    renderMetrics,
+  const renderStart = performance.now();
+  await renderMedia({
+    composition,
+    serveUrl,
+    inputProps,
+    codec: "h264",
+    outputLocation: outputPath,
+    browserExecutable: CHROMIUM,
+    chromiumOptions: browserOptions,
+    concurrency: 1,
+    maxRetries: 0,
+    crf: 18,
+    pixelFormat: "yuv420p",
+    audioCodec: inputAudio ? "aac" : undefined,
+    licenseKey: null,
+    logLevel: "info",
   });
-};
-
-const finishRender = async ({
-  outputPath,
-  runDirectory,
-  runId,
-  originalStat,
-  originalHashBefore,
-  publicDir,
-  bundleDir,
-  renderMetrics,
-}) => {
-  const { renderDurationSeconds, resourceMetrics } = renderMetrics;
+  const renderSeconds = (performance.now() - renderStart) / 1000;
 
   const outputStat = await stat(outputPath);
-  if (outputStat.size <= 0) {
-    throw new Error("Remotion terminó sin generar un MP4 no vacío.");
+  if (outputStat.size === 0) throw new Error("Remotion created an empty output.");
+  const outputProbe = await probe(outputPath);
+  const outputVideo = outputProbe.streams?.find((stream) => stream.codec_type === "video");
+  const outputAudio = outputProbe.streams?.find((stream) => stream.codec_type === "audio");
+  const outputDuration = Number(outputProbe.format?.duration);
+  const outputFps = parseRate(outputVideo?.avg_frame_rate || outputVideo?.r_frame_rate);
+  const validation = {
+    duration: Number.isFinite(outputDuration) && Math.abs(outputDuration - DURATION_SECONDS) <= 0.06,
+    dimensions: outputVideo?.width === 1080 && outputVideo?.height === 1920,
+    fps: Math.abs(outputFps - FPS) < 0.01,
+    videoCodec: outputVideo?.codec_name === "h264",
+    audioCodec: inputAudio ? outputAudio?.codec_name === "aac" : !outputAudio,
+  };
+  if (Object.values(validation).some((valid) => !valid)) {
+    throw new Error(`FFprobe validation failed: ${JSON.stringify({
+      validation,
+      outputProbe,
+    })}`);
   }
-  const outputProbe = await getProbe(outputPath);
-  const validation = validateOutput(outputProbe);
-  const blackDetection = await run("ffmpeg", [
-    "-hide_banner",
-    "-loglevel",
-    "info",
+  const decodeCheck = await run("ffmpeg", [
+    "-v",
+    "error",
     "-i",
     outputPath,
-    "-vf",
-    "blackdetect=d=0.08:pix_th=0.10",
-    "-an",
     "-f",
     "null",
     "-",
   ]);
-  const blackEvents =
-    (blackDetection.stderr.match(/black_start:/g) ?? []).length;
-  const contactSheetPath = path.join(runDirectory, "contact-sheet.jpg");
-  await run("ffmpeg", [
-    "-nostdin",
-    "-hide_banner",
-    "-loglevel",
-    "error",
-    "-i",
-    outputPath,
-    "-vf",
-    "fps=2,scale=270:480:force_original_aspect_ratio=decrease,tile=3x4",
-    "-frames:v",
-    "1",
-    "-q:v",
-    "2",
-    "-y",
-    contactSheetPath,
-  ]);
+  if (decodeCheck.stderr.trim()) console.log(`ffmpeg_decode_warnings=${decodeCheck.stderr.trim()}`);
 
-  const originalHashAfter = await sha256File(INPUT_PATH);
-  const audioSync = await verifyAudioAlignment({
-    originalAudioPath: path.join(publicDir, "0415-audio.wav"),
-    outputVideoPath: outputPath,
-    runDirectory,
-  });
-  const originalUnchanged = originalHashBefore === originalHashAfter;
-  const status =
-    validation.valid &&
-    originalUnchanged &&
-    audioSync.status === "passed"
-      ? "validated"
-      : !validation.valid || !originalUnchanged || audioSync.status === "failed"
-        ? "failed_validation"
-        : "partial_validation";
+  const inputHashAfter = await hashFile(inputPath);
+  if (inputHashAfter !== inputHashBefore) {
+    throw new Error("The original source hash changed during processing.");
+  }
   const report = {
-    status,
-    runId,
-    input: {
-      path: INPUT_PATH,
-      bytes: originalStat.size,
-      sha256Before: originalHashBefore,
-      sha256After: originalHashAfter,
-      originalUnchanged: originalHashBefore === originalHashAfter,
-    },
-    output: {
-      path: outputPath,
-      bytes: outputStat.size,
-      probe: outputProbe,
-      validation,
-    },
-    render: {
-      width: 1080,
-      height: 1920,
-      fps: FPS,
-      frames: EXPECTED_FRAMES,
-      expectedDurationSeconds: EXPECTED_DURATION,
-      renderDurationSeconds,
-      concurrency: 1,
-      codec: "h264",
-      audioCodec: "aac",
-      resourceMetrics,
-      blackDetectionEvents: blackEvents,
-      contactSheetPath,
-      audioSourceMethod:
-        "PCM temporal extraído del original; segmentos alineados por los mismos fotogramas fuente que el vídeo y fundidos en las dos transiciones.",
-      audioSync,
-      audioListeningCheck:
-        "No se realizó escucha subjetiva; se conserva el MP4 para revisión.",
-    },
-    environment: {
-      node: process.version,
-      chromiumExecutable: CHROMIUM,
-      telemetry: "licenseKey omitted; Remotion server-side telemetry not requested.",
-      externalMediaSources: 0,
+    status: "success",
+    input: { path: inputPath, sha256Before: inputHashBefore, sha256After: inputHashAfter },
+    output: { path: outputPath, sizeBytes: outputStat.size, probe: outputProbe },
+    validation,
+    renderSeconds,
+    sourceSizeBytes: inputStat.size,
+    temporaryDirectoryBytesBeforeCleanup: await directoryBytes(outputDirectory),
+    nodeProcess: {
+      cpuUsageMicroseconds: process.cpuUsage(),
+      rssBytes: process.memoryUsage().rss,
     },
   };
   await writeFile(
-    path.join(runDirectory, "report.json"),
+    path.join(outputDirectory, "report.json"),
     `${JSON.stringify(report, null, 2)}\n`,
+    { flag: "wx" },
   );
-  await log(`validation=${validation.valid ? "passed" : "failed"}`);
-  await log(`black_detection_events=${blackEvents}`);
-  await log(`audio_sync=${JSON.stringify(audioSync)}`);
-  await log(`original_unchanged=${originalUnchanged}`);
-
-  if (!validation.valid) {
-    throw new Error(`FFprobe rechazó el resultado: ${validation.failures.join("; ")}`);
+  console.log(`render_seconds=${renderSeconds.toFixed(2)}`);
+  console.log(`output=${outputPath}`);
+  console.log(`output_probe=${JSON.stringify(outputProbe)}`);
+  console.log(`source_unchanged=${inputHashBefore === inputHashAfter}`);
+  console.log("ffmpeg_decode_check=passed");
+  succeeded = true;
+} catch (error) {
+  const errorText = formatError(error);
+  console.error(errorText);
+  if (outputDirectory) {
+    await writeFile(path.join(outputDirectory, "error.log"), `${errorText}\n`).catch(() => {});
   }
-  if (!originalUnchanged) {
-    throw new Error("El SHA-256 del original cambió durante la operación.");
-  }
-  if (audioSync.status === "failed") {
-    throw new Error(
-      `La comprobación de sincronía de audio encontró un desfase de ${audioSync.lagMilliseconds} ms.`,
-    );
-  }
-
-  await rm(publicDir, { recursive: true, force: true });
-  await rm(bundleDir, { recursive: true, force: true });
-  await log("Limpieza de la copia temporal y del bundle completada.");
-  await log(`${status === "validated" ? "MP4_VALIDADO" : "MP4_PARCIAL"}=${outputPath}`);
-  await log(`INFORME=${path.join(runDirectory, "report.json")}`);
-};
-
-main().catch(async (error) => {
-  const message = error instanceof Error ? error.stack ?? error.message : String(error);
-  try {
-    await log(`ERROR: ${message}`);
-    if (runDir) {
-      await writeFile(
-      path.join(runDir, "error.json"),
-        `${JSON.stringify(
-          { status: "failed", runId: path.basename(runDir), error: message },
-          null,
-          2,
-        )}\n`,
-      );
-    }
-  } catch (logError) {
-    console.error("No se pudo guardar el diagnóstico:", logError);
-  }
-  console.error("Render detenido; no se realizará ningún reintento automático.");
+  if (outputPath) await rm(outputPath, { force: true }).catch(() => {});
   process.exitCode = 1;
-});
+} finally {
+  if (workDirectory) await rm(workDirectory, { recursive: true, force: true }).catch(() => {});
+}
+
+if (succeeded) console.log("render_status=success");

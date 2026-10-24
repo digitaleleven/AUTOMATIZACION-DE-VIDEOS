@@ -103,8 +103,7 @@ def build_dry_run_plan(
                     ),
                     "estimated_cost_usd": estimated_usd,
                     "fits_limits": (
-                        metadata.size_bytes <= appearance.max_input_size_mb * 1024 * 1024
-                        and metadata.duration <= appearance.max_video_duration_seconds
+                        metadata.duration <= appearance.max_video_duration_seconds
                         and (metadata.has_audio or not transcription_required)
                         and (
                             not transcription_required
@@ -363,11 +362,6 @@ def process_local_video(
         raise ValueError(
             f"Unsupported video codec {video.video_codec}; accepted codecs are H.264 and HEVC/H.265."
         )
-    if video.size_bytes > appearance.max_input_size_mb * 1024 * 1024:
-        raise ValueError(
-            f"Input is {video.size_bytes / (1024 * 1024):.1f} MB; the configured maximum is "
-            f"{appearance.max_input_size_mb} MB."
-        )
     if video.duration > appearance.max_video_duration_seconds:
         raise ValueError(
             f"Input is {video.duration:.1f} seconds; the configured maximum is "
@@ -572,11 +566,17 @@ def process_local_video(
         drive_file = None
         if upload_to_drive:
             uploader = drive_uploader or upload_new_file
-            drive_file = uploader(
-                output,
-                folder_id=settings.processed_folder_id,
-                access_token=drive_token,
-            )
+            upload_options = {
+                "folder_id": settings.processed_folder_id,
+                "access_token": drive_token,
+            }
+            if drive_uploader is None:
+                render_hash = _sha256_file(output)
+                upload_options["upload_state_path"] = (
+                    Path("data/drive_upload_sessions")
+                    / f"{source_hash}_{render_hash}.json"
+                )
+            drive_file = uploader(output, **upload_options)
         ledger.mark_completed(source_hash, str(output))
         if progress_callback:
             progress_callback("completed")

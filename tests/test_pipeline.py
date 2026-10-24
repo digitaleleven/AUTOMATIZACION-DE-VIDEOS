@@ -84,6 +84,20 @@ class PipelineDryRunTests(unittest.TestCase):
             self.assertEqual(find_local_mp4s(missing), [])
             self.assertFalse(missing.exists())
 
+    def test_dry_run_does_not_reject_a_large_source_by_file_size(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "large.mp4"
+            source.write_bytes(b"synthetic")
+            metadata = VideoInfo(
+                str(source), 60, 1080, 1920, True, "h264", "aac",
+                size_bytes=750 * 1024 * 1024,
+            )
+            with patch("video_pipeline.pipeline.probe_video", return_value=metadata):
+                plan = build_dry_run_plan(PipelineConfig(), temp_dir)
+
+        self.assertTrue(plan["videos"][0]["fits_limits"])
+        self.assertIsNone(plan["operation_limits"]["max_input_size_mb"])
+
 class TranscriptionAndSubtitleTests(unittest.TestCase):
     def test_prefers_word_timestamps_and_applies_chunk_offset(self):
         response = {
@@ -513,6 +527,26 @@ class ProviderAdapterTests(unittest.TestCase):
         self.assertEqual(kwargs["response_format"], "verbose_json")
         self.assertEqual(kwargs["timestamp_granularities"], ["word", "segment"])
 
+    def test_audio_chunks_keep_source_offsets_for_long_transcription(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            paths = [Path(temp_dir) / "chunk-1.mp3", Path(temp_dir) / "chunk-2.mp3"]
+            for path in paths:
+                path.write_bytes(b"audio")
+            client = Mock()
+            client.audio.transcriptions.create.side_effect = [
+                {"words": [{"word": "primero", "start": 1.0, "end": 1.5}]},
+                {"words": [{"word": "segundo", "start": 2.0, "end": 2.5}]},
+            ]
+            video = VideoInfo("large.mp4", 1800, 1080, 1920, True)
+            with patch(
+                "video_pipeline.transcription.extract_audio_chunks",
+                return_value=iter([(paths[0], 0.0), (paths[1], 900.0)]),
+            ):
+                words = transcribe_video(video, temp_dir, client=client)
+
+        self.assertEqual([word.text for word in words], ["primero", "segundo"])
+        self.assertEqual([word.start for word in words], [1.0, 902.0])
+
     def test_shotstack_upload_flow_uses_signed_url_without_forwarding_api_key(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             source = Path(temp_dir) / "clip.mp4"
@@ -569,6 +603,30 @@ class ProviderAdapterTests(unittest.TestCase):
 
 
 class LocalMediaTests(unittest.TestCase):
+    def test_extracts_long_source_into_bounded_audio_chunks_with_absolute_offsets(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "large-source.mp4"
+            source.write_bytes(b"original video bytes")
+            original = source.read_bytes()
+            info = VideoInfo(str(source), 1801, 1080, 1920, True)
+            work_dir = root / "work"
+
+            def fake_ffmpeg(command, **kwargs):
+                Path(command[-1]).write_bytes(b"valid-audio-fixture")
+
+            with patch("video_pipeline.media.subprocess.run", side_effect=fake_ffmpeg) as ffmpeg:
+                chunks = list(extract_audio_chunks(info, work_dir, chunk_seconds=900))
+                self.assertTrue(all(path.stat().st_size > 0 for path, _ in chunks))
+                self.assertEqual(source.read_bytes(), original)
+
+        self.assertEqual([offset for _, offset in chunks], [0, 900, 1800])
+        commands = [call.args[0] for call in ffmpeg.call_args_list]
+        self.assertEqual([commands[index][commands[index].index("-ss") + 1] for index in range(3)],
+                         ["0.000", "900.000", "1800.000"])
+        self.assertTrue(all("-map" in command and "0:a:0" in command for command in commands))
+        self.assertTrue(all("-b:a" in command and "64k" in command for command in commands))
+
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg tools are required")
     def test_probes_and_extracts_audio_from_synthetic_local_mp4(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1038,10 +1096,14 @@ class StateAndStyleTests(unittest.TestCase):
     def test_style_file_validates_supported_visual_and_usage_options(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "style.json"
-            path.write_text('{"animation_style":"karaoke","font_size":72}', encoding="utf-8")
+            path.write_text(
+                '{"animation_style":"karaoke","font_size":72,"max_input_size_mb":500}',
+                encoding="utf-8",
+            )
             style = load_video_style(path)
             self.assertEqual(style.animation_style, "karaoke")
             self.assertEqual(style.font_size, 72)
+            self.assertIsNone(style.max_input_size_mb)
             path.write_text('{"animation_style":"made-up"}', encoding="utf-8")
             with self.assertRaises(StyleConfigError):
                 load_video_style(path)
@@ -1118,6 +1180,99 @@ class DriveUploadTests(unittest.TestCase):
         self.assertEqual(session.put.call_args_list[-1].kwargs["headers"]["Content-Range"],
                          f"bytes {2 * chunk_size}-{2 * chunk_size + 16}/{2 * chunk_size + 17}")
         self.assertTrue(all(not item.kwargs["allow_redirects"] for item in session.put.call_args_list))
+
+    def test_render_larger_than_100_mb_is_streamed_in_fixed_size_chunks(self):
+        chunk_size = 8 * 1024 * 1024
+        total_size = 101 * 1024 * 1024 + 17
+        expected_chunks = (total_size + chunk_size - 1) // chunk_size
+        uploads = []
+
+        class Session:
+            def post(self, *args, **kwargs):
+                response = Mock(status_code=200)
+                response.headers = {
+                    "Location": "https://www.googleapis.com/upload/drive/v3/files?upload_id=large"
+                }
+                return response
+
+            def put(self, url, *, data, headers, **kwargs):
+                uploads.append((len(data), dict(headers)))
+                if len(uploads) < expected_chunks:
+                    end = int(headers["Content-Range"].split("-", 1)[1].split("/", 1)[0])
+                    return Mock(status_code=308, headers={"Range": f"bytes=0-{end}"})
+                response = Mock(status_code=200, headers={})
+                response.json.return_value = {"id": "large-file-id"}
+                return response
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "large-render.mp4"
+            with source.open("wb") as output:
+                output.truncate(total_size)
+            result = upload_new_file(
+                source,
+                folder_id="processed-folder",
+                access_token="test-google-token",
+                session=Session(),
+            )
+
+        self.assertEqual(result["id"], "large-file-id")
+        self.assertEqual(len(uploads), expected_chunks)
+        self.assertTrue(all(0 < length <= chunk_size for length, _ in uploads))
+        self.assertEqual(sum(length for length, _ in uploads), total_size)
+
+    def test_interrupted_drive_upload_resumes_saved_session_without_reuploading_confirmed_bytes(self):
+        chunk_size = 256 * 1024
+        first_chunk = Mock(status_code=308, headers={"Range": f"bytes=0-{chunk_size - 1}"})
+        failed_status = Mock(status_code=503, headers={})
+        resumed_status = Mock(status_code=308, headers={"Range": f"bytes=0-{chunk_size - 1}"})
+        completed = Mock(status_code=200, headers={})
+        completed.json.return_value = {"id": "resumed-file-id"}
+        session = Mock()
+        session.post.return_value.status_code = 200
+        session.post.return_value.headers = {
+            "Location": "https://www.googleapis.com/upload/drive/v3/files?upload_id=opaque"
+        }
+        session.put.side_effect = [
+            first_chunk,
+            requests.ConnectionError("simulated connection loss"),
+            failed_status,
+            resumed_status,
+            completed,
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "large-render.mp4"
+            state_path = Path(temp_dir) / "upload-state.json"
+            source.write_bytes(b"r" * (chunk_size + 123))
+            with self.assertRaises(DriveUploadError):
+                upload_new_file(
+                    source,
+                    folder_id="processed-folder",
+                    access_token="test-google-token",
+                    session=session,
+                    chunk_size=chunk_size,
+                    upload_state_path=state_path,
+                )
+
+            self.assertTrue(state_path.exists())
+            saved_state = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertNotIn("access_token", saved_state)
+            result = upload_new_file(
+                source,
+                folder_id="processed-folder",
+                access_token="test-google-token",
+                session=session,
+                chunk_size=chunk_size,
+                upload_state_path=state_path,
+            )
+            self.assertFalse(state_path.exists())
+
+        self.assertEqual(result["id"], "resumed-file-id")
+        self.assertEqual(session.post.call_count, 1)
+        self.assertEqual(
+            session.put.call_args_list[-1].kwargs["headers"]["Content-Range"],
+            f"bytes {chunk_size}-{chunk_size + 122}/{chunk_size + 123}",
+        )
 
     def test_rejects_an_untrusted_upload_url_without_sending_video(self):
         session = Mock()
