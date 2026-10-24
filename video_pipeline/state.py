@@ -76,10 +76,16 @@ class ProcessingLedger:
         *,
         retry_failed: bool = False,
         max_attempts: int = 2,
+        allow_third_attempt: bool = False,
         stale_after_seconds: int = 3600,
         edit_options: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Claim a source, allowing at most one explicit retry after failure."""
+        """Claim a source, allowing a third attempt only through an explicit scoped gate."""
+        if allow_third_attempt:
+            if not retry_failed or max_attempts != 3:
+                raise RetryNotAllowedError("A third attempt requires the explicit controlled retry gate.")
+        elif max_attempts > 2:
+            raise RetryNotAllowedError("Only the controlled RENDER-001 path may reserve a third attempt.")
         requested_options = edit_options or {}
         requested_options_json = json.dumps(
             requested_options, sort_keys=True, separators=(",", ":"), ensure_ascii=False
@@ -93,6 +99,8 @@ class ProcessingLedger:
             now = self._now()
 
             if row is None:
+                if allow_third_attempt:
+                    raise RetryNotAllowedError("A third attempt cannot start without the two recorded failures.")
                 connection.execute(
                     """INSERT INTO processing_jobs
                     (source_sha256, source_path, status, attempts, edit_options_json, updated_at)
@@ -115,6 +123,8 @@ class ProcessingLedger:
                     "The requested edit settings differ from the previous attempt. "
                     "Use an unprocessed source copy rather than reusing cached provider assets."
                 )
+            if allow_third_attempt and int(job["attempts"]) != 2:
+                raise RetryNotAllowedError("The controlled third attempt requires exactly two prior attempts.")
             if job["status"] == "processing":
                 updated = datetime.fromisoformat(job["updated_at"])
                 if datetime.now(timezone.utc) - updated <= timedelta(seconds=stale_after_seconds):
@@ -169,7 +179,7 @@ class ProcessingLedger:
             )
 
     def mark_failed(self, source_sha256: str, error: str) -> None:
-        self.update(source_sha256, status="failed", error=error[:500])
+        self.update(source_sha256, status="failed", error=error[:1600])
 
     def mark_completed(self, source_sha256: str, output_path: str) -> None:
         self.update(source_sha256, status="completed", output_path=output_path, error=None)

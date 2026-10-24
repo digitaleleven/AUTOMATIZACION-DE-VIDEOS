@@ -325,6 +325,7 @@ def process_local_video(
     creative_plan: dict[str, Any] | None = None,
     state_db_path: str | Path = "data/processing.sqlite3",
     retry_failed: bool = False,
+    allow_third_attempt: bool = False,
     progress_callback: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     """Transcribe and render one local MP4/MOV; never modifies the source.
@@ -339,6 +340,8 @@ def process_local_video(
             "Paid API calls are disabled. Re-run with --authorize-paid-apis only "
             "when you explicitly approve OpenAI transcription and Shotstack ingest/render."
         )
+    if allow_third_attempt and not retry_failed:
+        raise PermissionError("A third attempt is allowed only as an explicitly authorized retry.")
 
     if subtitle_mode not in {"dynamic", "simple", "none"}:
         raise ValueError("subtitle_mode must be dynamic, simple, or none.")
@@ -428,7 +431,8 @@ def process_local_video(
         source_hash,
         str(source),
         retry_failed=retry_failed,
-        max_attempts=2,
+        max_attempts=3 if allow_third_attempt else 2,
+        allow_third_attempt=allow_third_attempt,
         edit_options={
             "subtitle_mode": subtitle_mode,
             "style": asdict(appearance),

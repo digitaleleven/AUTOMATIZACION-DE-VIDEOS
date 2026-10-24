@@ -5,6 +5,7 @@ The caller must explicitly authorize paid API calls before using the client.
 """
 
 import logging
+import math
 import os
 from pathlib import Path
 import re
@@ -46,46 +47,118 @@ def _redact_provider_text(value: Any, limit: int = 300) -> str:
 
 
 def _provider_error_summary(response: requests.Response) -> str | None:
-    """Extract only safe, structured error fields; never log the raw body."""
+    """Extract bounded safe details from every structured error; never log raw bodies."""
     try:
         payload = response.json()
     except (ValueError, TypeError):
         return None
 
-    candidates: list[dict[str, Any]] = []
-    if isinstance(payload, dict):
-        errors = payload.get("errors")
-        if isinstance(errors, list):
-            candidates.extend(item for item in errors if isinstance(item, dict))
-        for key in ("error", "response", "data"):
-            nested = payload.get(key)
-            if isinstance(nested, dict):
-                candidates.append(nested)
-        candidates.append(payload)
-    elif isinstance(payload, list):
-        candidates.extend(item for item in payload if isinstance(item, dict))
-    elif isinstance(payload, str):
-        value = _redact_provider_text(payload)
-        return value or None
+    candidates: list[dict[str, Any] | str] = []
+    nested_keys = (
+        "errors", "error", "response", "data", "details", "issues",
+        "validationErrors", "validation_errors",
+    )
+    visited = 0
 
-    parts: list[str] = []
+    def collect(value: Any, depth: int = 0) -> None:
+        nonlocal visited
+        if visited >= 48 or depth > 6:
+            return
+        visited += 1
+        if isinstance(value, dict):
+            if any(key in value for key in ("code", "title", "message", "detail", "source", "path", "pointer")):
+                candidates.append(value)
+            for key in nested_keys:
+                child = value.get(key)
+                if isinstance(child, (dict, list)):
+                    collect(child, depth + 1)
+                elif isinstance(child, str) and child.strip():
+                    candidates.append(child)
+        elif isinstance(value, list):
+            for child in value[:12]:
+                collect(child, depth + 1)
+        elif isinstance(value, str) and value.strip():
+            candidates.append(value)
+
+    collect(payload)
+    summaries: list[str] = []
+    seen: set[str] = set()
     for item in candidates:
-        for field in ("code", "title", "message", "detail", "error", "response"):
-            value = item.get(field)
-            if isinstance(value, (str, int, float)) and str(value).strip():
-                safe = _redact_provider_text(value, 220)
-                if safe and safe not in parts:
-                    parts.append(safe)
-        source = item.get("source")
-        pointer = source.get("pointer") if isinstance(source, dict) else None
-        if isinstance(pointer, str) and re.fullmatch(r"/[A-Za-z0-9_./~\-]{1,180}", pointer):
-            marker = f"field={pointer}"
-            if marker not in parts:
-                parts.append(marker)
-        if parts:
+        if isinstance(item, str):
+            summary = _redact_provider_text(item, 280)
+        else:
+            fields: list[str] = []
+            for field in ("code", "title", "message", "detail", "error", "response"):
+                value = item.get(field)
+                if isinstance(value, (str, int, float)) and str(value).strip():
+                    safe = _redact_provider_text(value, 220)
+                    if safe and safe not in fields:
+                        fields.append(safe)
+            source = item.get("source")
+            pointer = source.get("pointer") if isinstance(source, dict) else None
+            pointer = pointer or item.get("path") or item.get("pointer")
+            if isinstance(pointer, str) and re.fullmatch(r"/?[A-Za-z0-9_./~\-]{1,180}", pointer):
+                fields.append(f"field={pointer}")
+            summary = " | ".join(fields)
+        if summary and summary not in seen:
+            seen.add(summary)
+            summaries.append(summary)
+        if len(summaries) >= 8:
             break
-    summary = " | ".join(parts)
-    return summary[:700] or None
+    return " || ".join(summaries)[:1600] or None
+
+
+def validate_shotstack_payload(payload: dict[str, Any]) -> None:
+    """Fail locally on invalid output essentials or a misplaced video trim."""
+    if not isinstance(payload, dict):
+        raise ValueError("Shotstack edit payload must be an object.")
+    timeline = payload.get("timeline")
+    output = payload.get("output")
+    tracks = timeline.get("tracks") if isinstance(timeline, dict) else None
+    if not isinstance(tracks, list) or not tracks:
+        raise ValueError("Shotstack edit payload must include timeline tracks.")
+    video_assets = 0
+    for track_index, track in enumerate(tracks):
+        clips = track.get("clips") if isinstance(track, dict) else None
+        if not isinstance(clips, list):
+            raise ValueError(f"Shotstack track {track_index} must contain a clips array.")
+        for clip_index, clip in enumerate(clips):
+            if not isinstance(clip, dict) or not isinstance(clip.get("asset"), dict):
+                raise ValueError(f"Shotstack clip {track_index}/{clip_index} must contain an asset.")
+            if "trim" in clip:
+                raise ValueError(
+                    f"Shotstack Clip {track_index}/{clip_index} cannot contain trim; use asset.trim."
+                )
+            asset = clip["asset"]
+            if asset.get("type") == "video":
+                video_assets += 1
+                trim = asset.get("trim")
+                if (
+                    isinstance(trim, bool)
+                    or not isinstance(trim, (int, float))
+                    or not math.isfinite(trim)
+                    or trim < 0
+                ):
+                    raise ValueError(
+                        f"Shotstack VideoAsset {track_index}/{clip_index} requires a non-negative asset.trim."
+                    )
+    if not video_assets:
+        raise ValueError("Shotstack edit payload must include at least one video asset.")
+    if not isinstance(output, dict) or output.get("format") != "mp4":
+        raise ValueError("Shotstack output format must be MP4.")
+    size = output.get("size")
+    if not isinstance(size, dict) or any(
+        isinstance(size.get(dimension), bool)
+        or not isinstance(size.get(dimension), int)
+        or not 1 <= size[dimension] <= 3840
+        for dimension in ("width", "height")
+    ):
+        raise ValueError("Shotstack output dimensions are invalid.")
+    fps = output.get("fps")
+    if isinstance(fps, bool) or not isinstance(fps, (int, float)) or not math.isfinite(fps) or fps <= 0:
+        raise ValueError("Shotstack output FPS is invalid.")
+    if output.get("quality") not in {"medium", "high"}:
+        raise ValueError("Shotstack output quality must be medium or high.")
 
 
 def build_edit_payload(
@@ -263,7 +336,7 @@ def build_edit_payload(
     if not video_clips:
         raise ValueError("The edit plan does not leave any video clips.")
     tracks.append({"clips": video_clips})
-    return {
+    payload = {
         "timeline": {
             "background": "#000000",
             "tracks": tracks,
@@ -275,6 +348,8 @@ def build_edit_payload(
             "quality": style.output_quality,
         },
     }
+    validate_shotstack_payload(payload)
+    return payload
 
 
 class ShotstackClient:
