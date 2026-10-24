@@ -5,3 +5,5 @@ __pycache__/
 /data/
 /generated-artifacts/
 /remotion-renderer/node_modules/
+/remotion-renderer/generated-artifacts/
+/remotion-renderer/.tmp/
