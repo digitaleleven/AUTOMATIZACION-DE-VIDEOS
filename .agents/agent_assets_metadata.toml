@@ -42,3 +42,45 @@ mtime_ms = 1792864972795
 storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/29efec59-80a7-4ce4-9bf7-f62e290714f8/dfdb1970-ca64-4117-bee7-5ec9cbea151b"
 storage_version_token = "1792865058138070"
 content_type = "image/png"
+
+[[outputs]]
+id = "eG1GXC6ewRKEA4gqcm5PS"
+uri = "file://generated-artifacts/remotion/quality-q01-2026-10-24/q01-remotion-3s.mp4"
+type = "video"
+title = "MATRIX MOTION Q-01 — MP4 de prueba"
+description = "1080×1920, 50 FPS, vídeo H.264 de 3 s y audio AAC; FFprobe y decodificación completa aprobados."
+logical_id = "b860eeea-45e5-4b76-a21e-e4cb04b6a5de"
+content_hash = "sha256:3bc2df103a5e126ea5f03094af3310bc700b4ecb9b02dfd3485d143418aba884"
+size = 2944409
+mtime_ms = 1792865798667
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/b860eeea-45e5-4b76-a21e-e4cb04b6a5de/14527057-8da3-472b-806c-0950c7c853ea"
+storage_version_token = "1792865985352935"
+content_type = "video/mp4"
+
+[[outputs]]
+id = "l299vwGd1lanA7joazbsa"
+uri = "file://generated-artifacts/remotion/quality-q01-2026-10-24/q01-visual-comparison-1.52s.png"
+type = "image"
+title = "Comparativa Q-01 a 1,52 s"
+description = "Izquierda: original 4K reducido a 1080p. Centro: render anterior. Derecha: Q-01 nuevo. Fotogramas equivalentes; comparativa visual normalizada."
+logical_id = "109d193a-ff83-4e6e-beb8-3bf1f99c54b3"
+content_hash = "sha256:ee28dbd37e41e33c3fb68782e58844cc669755a0a8aa7e0df929cf3a9f3f5c0d"
+size = 1200307
+mtime_ms = 1792865906534
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/109d193a-ff83-4e6e-beb8-3bf1f99c54b3/33533455-ceba-4d8c-8a1a-7f03855e527a"
+storage_version_token = "1792865986055145"
+content_type = "image/png"
+
+[[outputs]]
+id = "lF-9mzmwqJc4FuhIEzCHD"
+uri = "file://generated-artifacts/remotion/quality-q01-2026-10-24/q01-detail-comparison-1.52s.png"
+type = "image"
+title = "Detalle Q-01 a 1,52 s"
+description = "Recorte idéntico de cabello y rostro en el original reducido, render anterior y render Q-01."
+logical_id = "69dcd55f-f1c8-4102-be1f-c2a340653e2c"
+content_hash = "sha256:9da1ba7d9c72ed474200871c3bdf1db923182d06616083b2d0e96df1f7982e92"
+size = 560191
+mtime_ms = 1792865907223
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/69dcd55f-f1c8-4102-be1f-c2a340653e2c/6d4c8a78-2a66-4647-9a33-fc2d6969a392"
+storage_version_token = "1792865986765621"
+content_type = "image/png"
