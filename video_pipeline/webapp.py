@@ -793,11 +793,14 @@ required minlength="16" {disabled}>
             origin_host = None
             origin_port = None
 
-        origin_label = (
-            f"{parsed_origin.scheme.lower()}://{origin_host}"
-            if parsed_origin and origin_host
-            else "missing" if not origin else "invalid"
-        )
+        if origin is None:
+            origin_label = "missing"
+        elif origin == "null":
+            origin_label = "null"
+        elif parsed_origin and origin_host:
+            origin_label = f"{parsed_origin.scheme.lower()}://{origin_host}"
+        else:
+            origin_label = "malformed"
 
         def reject(check: str) -> None:
             logger.warning(
