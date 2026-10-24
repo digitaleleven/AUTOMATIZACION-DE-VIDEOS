@@ -276,6 +276,9 @@ class VideoPanelApiTests(unittest.TestCase):
         self.assertIn(b'id="phase1-final-video"', body)
         self.assertIn(b'/media/outputs/IMG_1254-MATRIX-MOTION-FASE1.mp4', body)
         self.assertIn(b'PENDIENTE DE REVISI\xc3\x93N HUMANA', body)
+        self.assertIn(b'id="resultado-mm003"', body)
+        self.assertIn(b'id="mm003-final-video"', body)
+        self.assertIn(b'/media/outputs/IMG_1254-MATRIX-MOTION-MM003.mp4', body)
 
         status, headers, body = self.request("GET", "/premium.css")
         self.assertEqual(status, 200)
