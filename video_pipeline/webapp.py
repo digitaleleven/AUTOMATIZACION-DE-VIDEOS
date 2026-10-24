@@ -294,6 +294,7 @@ class VideoPanel:
             "shotstack_key_configured": bool(os.getenv("SHOTSTACK_API_KEY")),
             "shotstack_environment": environment,
             "drive_connected": bool(drive_status.get("ready") and drive_status.get("verified")),
+            "drive_oauth_ready": bool(drive_status.get("ready")),
             "drive_picker_configured": all(picker_configuration().get(key) for key in ("client_id", "api_key", "app_id")),
         }
 

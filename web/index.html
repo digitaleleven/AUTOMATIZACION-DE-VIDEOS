@@ -85,7 +85,7 @@
               <div><p class="eyebrow">PICKER OPCIONAL · DRIVE.FILE</p><h2 id="drive-title">Archivos de Google Drive</h2></div>
               <button id="drive-sync-button" class="outline-button" type="button" disabled>Listar y descargar Entrada + Logos</button>
             </div>
-            <p class="drive-copy">Google Picker sirve para autorizar archivos concretos. El botón «Conectar Google Drive (OAuth)» de abajo inicia la conexión de servidor sin necesitar la API key ni el App ID de Picker. Con el permiso actual <code>drive.file</code>, la app solo puede acceder a los archivos que se autoricen expresamente con Picker o que cree ella misma.</p>
+            <p class="drive-copy">Google Picker es opcional y autoriza archivos concretos mediante <code>drive.file</code>. «Conectar Google Drive (OAuth)» inicia el flujo de servidor sin requerir la API key ni el App ID de Picker; ese flujo solicita <code>drive.readonly</code> y <code>drive.file</code> para la cuenta secundaria, y el escáner se limita en código a las tres carpetas configuradas.</p>
             <div class="drive-folder-grid">
               <article class="drive-folder" data-drive-role="entrada">
                 <div><span class="drive-role">01 / ENTRADA</span><strong id="drive-folder-entrada">Sin seleccionar</strong><small id="drive-count-entrada">Elige una carpeta para seleccionar MP4.</small></div>

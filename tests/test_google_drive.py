@@ -9,7 +9,12 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 from unittest.mock import patch
 
-from video_pipeline.config import INPUT_FOLDER_ID, PROCESSED_FOLDER_ID
+from video_pipeline.config import (
+    INPUT_FOLDER_ID,
+    LOGOS_FOLDER_ID,
+    PROCESSED_FOLDER_ID,
+    PipelineConfig,
+)
 from video_pipeline.google_drive import (
     DRIVE_ACCESS_SCOPES,
     DRIVE_SCOPES,
@@ -48,8 +53,19 @@ class DriveScopeTests(unittest.TestCase):
         }
         with patch.dict(os.environ, env, clear=True):
             config = DriveOAuthConfig.from_environment()
+            pipeline_config = PipelineConfig.from_environment()
         self.assertTrue(config.ready)
         self.assertEqual(config.missing, [])
+        self.assertTrue(pipeline_config.google_oauth_configured)
+        self.assertFalse(pipeline_config.google_picker_configured)
+
+    def test_pipeline_uses_only_the_three_fixed_folders_without_picker(self):
+        with patch.dict(os.environ, {"SHOTSTACK_ENVIRONMENT": "stage"}, clear=True):
+            config = PipelineConfig.from_environment()
+        self.assertEqual(config.input_folder_id, INPUT_FOLDER_ID)
+        self.assertEqual(config.processed_folder_id, PROCESSED_FOLDER_ID)
+        self.assertEqual(config.logos_folder_id, LOGOS_FOLDER_ID)
+        self.assertFalse(config.google_picker_configured)
 
 
 class FakeResponse:
@@ -168,6 +184,28 @@ class GoogleDriveOAuthTests(unittest.TestCase):
             status["missing_scopes"],
             ["https://www.googleapis.com/auth/drive.readonly"],
         )
+
+    def test_oauth_rejects_a_grant_missing_drive_readonly(self):
+        http = FakeOAuthHttp(
+            [
+                FakeResponse(
+                    {
+                        "access_token": "partial-access-token",
+                        "refresh_token": "partial-refresh-token",
+                        "expires_in": 3600,
+                        "scope": (
+                            "https://www.googleapis.com/auth/drive.file openid email"
+                        ),
+                    }
+                )
+            ]
+        )
+        oauth = GoogleDriveOAuth(self.config, self.store, http=http)
+        _, state = oauth.authorization_url()
+        with self.assertRaisesRegex(GoogleDriveError, "no concedió los permisos"):
+            oauth.complete_authorization("code", state, state)
+        self.assertIsNone(self.store.token_bundle())
+        self.assertEqual(len(http.revoke_calls), 1)
 
     def test_pkce_state_one_time_callback_and_encrypted_refresh_token(self):
         http = FakeOAuthHttp(
@@ -335,6 +373,7 @@ class GoogleDriveApiTests(unittest.TestCase):
                 "access_token": "access-token-test",
                 "refresh_token": "refresh-token-test",
                 "expires_at": time.time() + 3600,
+                "scopes": list(DRIVE_SCOPES),
                 "account_email": "automation@gmail.com",
                 "identity_verified_at": time.time(),
             }
@@ -357,8 +396,15 @@ class GoogleDriveApiTests(unittest.TestCase):
     def test_list_paginates_and_marks_last_successful_drive_request(self):
         http = FakeDriveHttp(
             [
-                FakeResponse({"files": [{"id": "a" * 20}], "nextPageToken": "next"}),
-                FakeResponse({"files": [{"id": "b" * 20}]}),
+                FakeResponse(
+                    {
+                        "files": [{"id": "a" * 20, "parents": [INPUT_FOLDER_ID]}],
+                        "nextPageToken": "next",
+                    }
+                ),
+                FakeResponse(
+                    {"files": [{"id": "b" * 20, "parents": [INPUT_FOLDER_ID]}]}
+                ),
             ]
         )
         client = GoogleDriveClient(self.oauth, http=http)
@@ -367,6 +413,23 @@ class GoogleDriveApiTests(unittest.TestCase):
         self.assertEqual(len(http.calls), 2)
         self.assertIn(INPUT_FOLDER_ID, http.calls[0][2]["params"]["q"])
         self.assertTrue(self.oauth.status()["verified"])
+
+    def test_list_children_rejects_unconfigured_folder_before_network(self):
+        http = FakeDriveHttp([])
+        client = GoogleDriveClient(self.oauth, http=http)
+        with self.assertRaisesRegex(GoogleDriveError, "carpetas configuradas"):
+            client.list_children("x" * 20)
+        self.assertEqual(http.calls, [])
+
+    def test_upload_rejects_destinations_outside_processed_folder_before_network(self):
+        http = FakeDriveHttp([])
+        client = GoogleDriveClient(self.oauth, http=http)
+        with self.assertRaisesRegex(GoogleDriveError, "02_PROCESADOS"):
+            client.upload_new_file(
+                self.root / "not-created.mp4",
+                folder_id=INPUT_FOLDER_ID,
+            )
+        self.assertEqual(http.calls, [])
 
     def test_download_never_overwrites_local_destination_and_exports_docs(self):
         http = FakeDriveHttp(

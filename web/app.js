@@ -332,10 +332,12 @@ function renderHealth(health) {
   const env = health?.shotstack_environment;
   byId("health-environment").textContent = env == null || env === "" ? "No disponible" : String(env);
   const drive = health?.drive_connected;
-  const driveReady = health?.drive_picker_configured;
+  const driveReady = health?.drive_oauth_ready;
+  const pickerReady = health?.drive_picker_configured;
   byId("health-drive").textContent = drive === true ? "Conectado" : drive === false ? "No conectado" : "No disponible";
-  if (drive !== true && driveReady) byId("health-drive").textContent = "Picker listo";
-  byId("health-drive").className = drive === true || driveReady ? "health-ok" : "health-muted";
+  if (drive !== true && driveReady) byId("health-drive").textContent = "OAuth listo";
+  else if (drive !== true && pickerReady) byId("health-drive").textContent = "Picker opcional listo";
+  byId("health-drive").className = drive === true || driveReady || pickerReady ? "health-ok" : "health-muted";
   const connected = Boolean(health);
   byId("connection-label").textContent = connected ? "Servicio disponible" : "Sin conexión";
   $(".local-indicator").classList.toggle("connected", connected);
@@ -362,7 +364,7 @@ function renderDriveStatus(drive) {
     connect.textContent = "Reautorizar OAuth";
   } else if (drive.needs_reauthorization) {
     title.textContent = "Se necesitan permisos nuevos";
-    detail.textContent = "La conexión guardada no incluye drive.readonly. Pulsa «Reautorizar OAuth» para que la cuenta secundaria conceda los permisos solicitados.";
+    detail.textContent = "La conexión guardada no incluye todos los permisos OAuth requeridos. Pulsa «Reautorizar OAuth» para actualizarla desde la cuenta secundaria.";
     connect.textContent = "Reautorizar OAuth";
   } else if (drive.identity_mismatch) {
     title.textContent = "La conexión no corresponde a la cuenta autorizada";
@@ -1038,7 +1040,7 @@ async function loadDriveConfig() {
     byId("drive-message").classList.remove("error");
     byId("drive-message").textContent = configured
       ? "Picker opcional para seleccionar archivos. El escaneo automático usa OAuth de servidor y los IDs fijos de las carpetas."
-      : "Falta configurar GOOGLE_OAUTH_CLIENT_ID, GOOGLE_DRIVE_API_KEY y GOOGLE_DRIVE_APP_ID en Replit Secrets.";
+      : "Picker opcional no configurado; esto no afecta a la conexión OAuth ni al escaneo automático por IDs fijos.";
   } catch (error) {
     byId("drive-message").textContent = `No se pudo consultar la configuración de Drive: ${error.message}`;
     byId("drive-message").classList.add("error");

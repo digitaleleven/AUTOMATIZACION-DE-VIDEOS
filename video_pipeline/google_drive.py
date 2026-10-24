@@ -327,7 +327,13 @@ class GoogleDriveOAuth:
         bundle = self.store.token_bundle()
         stored_email = str(bundle.get("account_email") or "").strip().casefold() if bundle else ""
         allowed_email = self.config.allowed_email.strip().casefold()
-        granted_scopes = set(bundle.get("scopes") or []) if bundle else set()
+        raw_scopes = bundle.get("scopes") if bundle else None
+        if isinstance(raw_scopes, str):
+            granted_scopes = set(raw_scopes.split())
+        elif isinstance(raw_scopes, (list, tuple, set)):
+            granted_scopes = {str(scope) for scope in raw_scopes}
+        else:
+            granted_scopes = set()
         missing_scopes = sorted(set(DRIVE_ACCESS_SCOPES) - granted_scopes)
         identity_verified = bool(
             stored_email

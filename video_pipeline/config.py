@@ -1,4 +1,4 @@
-"""Configuration for local processing and explicitly selected Drive folders."""
+"""Configuration for local processing and the fixed MATRIX MOTION Drive folders."""
 
 from dataclasses import dataclass
 import os

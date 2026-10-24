@@ -789,7 +789,10 @@ class VideoPanelApiTests(unittest.TestCase):
         self.assertEqual(params["code_challenge_method"], ["S256"])
         self.assertEqual(
             params["scope"],
-            ["https://www.googleapis.com/auth/drive.file openid email"],
+            [
+                "https://www.googleapis.com/auth/drive.readonly "
+                "https://www.googleapis.com/auth/drive.file openid email"
+            ],
         )
         state_cookie = self.cookie_from_headers(
             headers, "matrix_motion_google_oauth_state"
@@ -860,14 +863,12 @@ class VideoPanelApiTests(unittest.TestCase):
             status, _, body = self.request(
                 "POST",
                 "/api/drive/test-write",
-                body=b'{"confirm":true,"access_token":"temporary-picker-token"}',
+                body=b'{"confirm":true}',
                 headers={"Content-Type": "application/json"},
             )
             self.assertEqual(status, 200)
             self.assertTrue(json.loads(body.decode("utf-8"))["created_and_deleted"])
-            write_probe.assert_called_once_with(
-                {"confirm": True, "access_token": "temporary-picker-token"}
-            )
+            write_probe.assert_called_once_with({"confirm": True})
 
     def test_write_probe_uploads_and_deletes_only_its_synthetic_mp4_with_fake_drive(self):
         class FakeDriveClient:
@@ -875,13 +876,12 @@ class VideoPanelApiTests(unittest.TestCase):
                 self.uploaded_name = None
                 self.deleted_id = None
 
-            def upload_new_file(self, path, *, folder_id, app_properties, access_token):
+            def upload_new_file(self, path, *, folder_id, app_properties):
                 path = Path(path)
                 self.uploaded_name = path.name
                 self.assert_valid = path.is_file() and path.stat().st_size > 0
                 self.assert_folder = folder_id
                 self.assert_source = app_properties["matrixMotionSource"]
-                self.assert_token = access_token
                 return {
                     "id": "f" * 20,
                     "name": path.name,
@@ -889,26 +889,24 @@ class VideoPanelApiTests(unittest.TestCase):
                     "parents": [folder_id],
                 }
 
-            def delete_created_file(self, file_id, *, access_token):
+            def delete_created_file(self, file_id):
                 self.deleted_id = file_id
-                self.deleted_token = access_token
 
         fake = FakeDriveClient()
-        self.panel.drive_oauth = SimpleNamespace(
-            verify_access_token_identity=lambda token: "automation@gmail.com"
-        )
+        self.panel.drive_oauth = SimpleNamespace()
         self.panel.drive_client = fake
-        with patch(
-            "video_pipeline.webapp.load_folder_selections",
+        with patch.object(
+            self.panel,
+            "drive_status",
             return_value={
-                "procesados": {
-                    "id": "1J6Z0bsWb2dQNKY4hyq4xl7tigtm_pQKN",
-                    "name": "Procesados",
-                }
+                "ready": True,
+                "authorized": True,
+                "identity_verified": True,
+                "needs_reauthorization": False,
             },
         ):
             result = self.panel.test_drive_output_write(
-                {"confirm": True, "access_token": "temporary-picker-token"}
+                {"confirm": True}
             )
         self.assertTrue(result["created_and_deleted"])
         self.assertEqual(result["mime_type"], "video/mp4")
@@ -919,8 +917,6 @@ class VideoPanelApiTests(unittest.TestCase):
         self.assertEqual(fake.assert_folder, "1J6Z0bsWb2dQNKY4hyq4xl7tigtm_pQKN")
         self.assertRegex(fake.assert_source, r"^[a-f0-9]{64}$")
         self.assertEqual(fake.deleted_id, "f" * 20)
-        self.assertEqual(fake.assert_token, "temporary-picker-token")
-        self.assertEqual(fake.deleted_token, "temporary-picker-token")
 
     def test_picker_drive_actions_fail_closed_before_using_unverified_tokens(self):
         token_payload = {"access_token": "temporary-token"}
@@ -956,7 +952,7 @@ class VideoPanelApiTests(unittest.TestCase):
                 with self.subTest(operation=operation):
                     with self.assertRaises(PanelError):
                         operation()
-            self.assertEqual(verify.call_count, 5)
+            self.assertEqual(verify.call_count, 3)
             get_folder.assert_not_called()
             get_drive_file.assert_not_called()
             sync_media.assert_not_called()
@@ -1072,30 +1068,35 @@ class VideoPanelApiTests(unittest.TestCase):
         original_bytes = original.read_bytes()
         video_remote_id = "drivevideo12345"
         doc_remote_id = "docfile1234567"
+        input_folder_id = "13xrMgSYEOkGANxrUYbmYw1t6TdvXWRYg"
+        logos_folder_id = "1t46UE2Mog9JRDSe9TzoPxfs96nE9qDTW"
 
         class FakeDriveClient:
             def __init__(self):
                 self.downloads = 0
-                self.requested_ids = []
+                self.listed_folders = []
 
-            def get_file(self, file_id):
-                self.requested_ids.append(file_id)
-                item = {
-                    video_remote_id: {
+            def list_children(self, folder_id):
+                self.listed_folders.append(folder_id)
+                if folder_id == input_folder_id:
+                    return [
+                        {
                         "id": video_remote_id,
                         "name": "clip.mp4",
                         "mimeType": "video/mp4",
                         "size": str(original.stat().st_size),
-                        "parents": ["selected-input"],
-                    },
-                    doc_remote_id: {
+                        "parents": [input_folder_id],
+                        },
+                        {
                         "id": doc_remote_id,
                         "name": "clip",
                         "mimeType": "application/vnd.google-apps.document",
-                        "parents": ["selected-input"],
-                    },
-                }
-                return item[file_id]
+                        "parents": [input_folder_id],
+                        },
+                    ]
+                if folder_id == logos_folder_id:
+                    return []
+                raise AssertionError("The scan tried to inspect an unconfigured Drive folder.")
 
             def export_document_text(self, file_id):
                 self.assert_doc_id = file_id
@@ -1110,21 +1111,12 @@ class VideoPanelApiTests(unittest.TestCase):
         self.panel.drive_client = fake_drive
         with (
             patch.object(
-                self.panel, "drive_status", return_value={"ready": True, "authorized": True}
-            ),
-            patch(
-                "video_pipeline.webapp.load_folder_selections",
+                self.panel,
+                "drive_status",
                 return_value={
-                    "entrada": {"id": "selected-input", "name": "Entrada"},
-                    "logos": {"id": "selected-logos", "name": "Logos"},
-                },
-            ),
-            patch(
-                "video_pipeline.webapp.load_file_selections",
-                return_value={
-                    "entrada": [{"id": video_remote_id, "name": "clip.mp4"}],
-                    "instrucciones": [{"id": doc_remote_id, "name": "clip"}],
-                    "logos": [],
+                    "ready": True,
+                    "authorized": True,
+                    "identity_verified": True,
                 },
             ),
         ):
@@ -1133,13 +1125,14 @@ class VideoPanelApiTests(unittest.TestCase):
             self.assertEqual(first["skipped"], 0)
             imported_id = first["imported"][0]["id"]
             self.assertEqual(self.panel._style_for_upload(imported_id).font_size, 72)
+            self.assertEqual(fake_drive.listed_folders, [input_folder_id, logos_folder_id])
 
             second = self.panel.scan_drive()
 
         self.assertEqual(second["imported"], [])
         self.assertEqual(second["skipped"], 1)
         self.assertEqual(fake_drive.downloads, 1)
-        self.assertEqual(set(fake_drive.requested_ids), {video_remote_id, doc_remote_id})
+        self.assertEqual(fake_drive.listed_folders, [input_folder_id, logos_folder_id] * 2)
         self.assertEqual(fake_drive.assert_doc_id, doc_remote_id)
         self.assertEqual(original.read_bytes(), original_bytes)
         self.assertEqual(second["items"][0]["source"], "google_drive")

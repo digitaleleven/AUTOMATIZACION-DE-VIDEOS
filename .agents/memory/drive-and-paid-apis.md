@@ -3,17 +3,17 @@ name: Permisos de Drive y costes de APIs
 description: Límites de autorización para Google Drive, OpenAI y Shotstack en este proyecto.
 ---
 
-No ampliar los permisos de Google Drive ni ejecutar llamadas de pago o renders reales sin autorización explícita de la usuaria.
+La usuaria autorizó solicitar únicamente `drive.readonly` y `drive.file` para el flujo OAuth de la cuenta secundaria permitida. No conectar la cuenta principal ni ampliar esos scopes sin nueva autorización. No ejecutar llamadas reales a Drive ni renders de pago sin autorización separada.
 
-**Why:** la usuaria estableció este límite para evitar cambios de acceso o cargos no aprobados en la automatización de vídeo.
+**Why:** `drive.readonly` amplía la capacidad técnica del token a lectura de todo el Drive secundario, aunque la aplicación debe limitar sus operaciones a las tres carpetas configuradas; la autorización de scopes no equivale a autorizar la conexión real.
 
-**How to apply:** mantener las pruebas con archivos sintéticos y dobles locales; exigir autorización explícita antes de cualquier llamada real y no ampliar OAuth al trabajar en la integración de Drive.
+**How to apply:** solicitar solo el par de scopes aprobado, mantener comprobación server-side de la identidad secundaria y limitar las operaciones de MATRIX MOTION a 01_ENTRADA, 02_PROCESADOS y RECURSOS/LOGOS. La propietaria autoriza OAuth y cualquier prueba real por separado.
 
-La propietaria aprobó como objetivo de producto la detección automática de vídeos nuevos en Drive, sin selección manual individual. Esa aprobación no autoriza por sí sola cambios de código, scopes, conexión de cuentas ni llamadas a APIs. MATRIX MOTION prevé STUDIO (uso de la propietaria), CLOUD (SaaS multiempresa) y PRIVATE (instalaciones independientes); esto es contexto futuro, no autorización para implementar esos modelos ahora.
+La propietaria aprobó la detección automática de vídeos nuevos en Drive sin selección manual individual. MATRIX MOTION prevé STUDIO (uso de la propietaria), CLOUD (SaaS multiempresa) y PRIVATE (instalaciones independientes); esto es contexto futuro, no autorización para implementar esos modelos ahora.
 
-**Why:** la auditoría separa la aprobación del objetivo de automatización de las decisiones de seguridad y ejecución que aún requieren aprobación.
+**Why:** separar la meta del producto de los límites concretos de acceso, conexión y coste evita interpretar una autorización limitada como permiso general.
 
-**How to apply:** diseña la propuesta actual para la detección automática, pero espera aprobación explícita antes de implementar o cambiar permisos; conserva una frontera proveedor-adaptador para futuras modalidades sin introducir multiusuario ahora.
+**How to apply:** no ampliar los scopes aprobados ni introducir multiusuario; conservar una frontera proveedor-adaptador para futuras modalidades y mantener la revisión humana antes de renders.
 
 La usuaria decidió conectar una segunda cuenta Gmail existente y no la cuenta principal, para que la documentación profesional o confidencial de la principal no quede expuesta a MATRIX MOTION. La identidad OAuth debe coincidir exactamente con el correo secundario configurado antes de guardar o usar tokens.
 
@@ -21,8 +21,8 @@ La usuaria decidió conectar una segunda cuenta Gmail existente y no la cuenta p
 
 **How to apply:** verificar server-side callbacks OAuth y tokens temporales de Picker; fallar cerrado, no registrar ni mostrar correo o tokens, y no ampliar ni revocar permisos por el flujo Picker sin autorización.
 
-El scope `drive.file` permite trabajar con archivos creados por la app o compartidos con ella expresamente mediante Picker; compartir una carpeta con la cuenta Google secundaria no equivale a compartirla con la app ni habilita por sí solo el descubrimiento automático.
+`drive.file` no habilita por sí solo el descubrimiento de archivos nuevos en carpetas compartidas; `drive.readonly` sí permite leer el Drive completo de la cuenta secundaria. La aplicación debe limitar las consultas y escrituras a las tres carpetas acordadas. El acceso real a esas carpetas y la escritura de resultados siguen pendientes de verificación con OAuth autorizado por la propietaria.
 
-**Why:** Google limita este scope por archivo para evitar acceso general a Drive.
+**Why:** los scopes de Google expresan capacidades de la aplicación a nivel de cuenta; el aislamiento por carpeta se impone además en el código y debe verificarse operativamente.
 
-**How to apply:** si se requiere detectar archivos nuevos en carpetas sin Picker, detenerse y solicitar autorización antes de pedir un scope más amplio; no dar por validado el escaneo automático con `drive.file`.
+**How to apply:** no afirmar que el flujo está completo hasta probar lectura de Entrada y creación en Procesados con la cuenta secundaria; nunca tratar las pruebas locales como evidencia de acceso a Drive real.
