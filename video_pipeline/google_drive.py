@@ -525,8 +525,12 @@ class GoogleDriveClient:
                 stream=True,
             )
             content_length = response.headers.get("Content-Length")
-            if content_length and int(content_length) > MAX_DRIVE_VIDEO_BYTES:
-                raise GoogleDriveError("El vídeo de Drive supera el límite de tamaño admitido.")
+            if content_length:
+                try:
+                    if int(content_length) > MAX_DRIVE_VIDEO_BYTES:
+                        raise GoogleDriveError("El vídeo de Drive supera el límite de tamaño admitido.")
+                except ValueError as exc:
+                    raise GoogleDriveError("Google Drive devolvió un tamaño de archivo no válido.") from exc
             with temporary.open("xb") as output:
                 for chunk in response.iter_content(chunk_size=1024 * 1024):
                     if not chunk:
@@ -554,12 +558,26 @@ class GoogleDriveClient:
             "GET",
             f"{DRIVE_API}/files/{quote(file_id, safe='')}/export",
             params={"mimeType": "text/plain"},
+            stream=True,
         )
-        content = response.content
-        if len(content) > MAX_DRIVE_DOC_BYTES:
+        content_length = response.headers.get("Content-Length")
+        if content_length:
+            try:
+                if int(content_length) > MAX_DRIVE_DOC_BYTES:
+                    raise GoogleDriveError("El documento de instrucciones supera el límite de tamaño admitido.")
+            except ValueError as exc:
+                raise GoogleDriveError("Google Drive devolvió un tamaño de documento no válido.") from exc
+        content = bytearray()
+        for chunk in response.iter_content(chunk_size=8192):
+            if not chunk:
+                continue
+            content.extend(chunk)
+            if len(content) > MAX_DRIVE_DOC_BYTES:
+                raise GoogleDriveError("El documento de instrucciones supera el límite de tamaño admitido.")
+        if not content:
             raise GoogleDriveError("El documento de instrucciones supera el límite de tamaño admitido.")
         try:
-            return content.decode("utf-8-sig")
+            return bytes(content).decode("utf-8-sig")
         except UnicodeDecodeError as exc:
             raise GoogleDriveError("El documento de instrucciones no contiene texto UTF-8 válido.") from exc
 
@@ -580,13 +598,15 @@ class GoogleDriveClient:
         # Import lazily to avoid an import cycle and preserve the existing resumable uploader.
         from .drive import upload_new_file
 
-        return upload_new_file(
+        result = upload_new_file(
             path,
             folder_id=folder_id,
             access_token=self.oauth.access_token(),
             app_properties=app_properties,
             session=self.http,
         )
+        self.oauth.store.mark_verified()
+        return result
 
     def find_output_by_source(self, source_key: str, folder_id: str = PROCESSED_FOLDER_ID) -> dict[str, Any] | None:
         if not re.fullmatch(r"[a-f0-9]{64}", source_key):

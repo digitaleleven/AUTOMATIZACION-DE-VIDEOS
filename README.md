@@ -26,9 +26,9 @@ La animación activa destaca la palabra que se está pronunciando; el proyecto n
 
 La configuración y el cliente rechazan cualquier entorno que no sea `stage`; no hay una ruta de producción habilitada. Replit Secrets informa que existen `OPENAI_API_KEY` y `SHOTSTACK_API_KEY`, pero no se han leído ni mostrado sus valores. Tampoco se ha comprobado mediante una llamada que la clave de Shotstack corresponda a Stage, porque no se han realizado solicitudes externas.
 
-La transcripción y la carga/render de Shotstack siguen detrás de una autorización explícita. El panel nunca sube a Drive; el CLI sube solo si no se indica `--local-only`, y requiere `GOOGLE_OAUTH_TOKEN`. El render destinado a Drive se sube únicamente cuando su estado es `done` y el archivo pasa la validación local. Los reintentos automáticos del SDK de OpenAI están desactivados.
+La transcripción y el render de Shotstack siguen detrás de una autorización explícita. El panel solo sube a Drive resultados de vídeos importados desde Drive, después de validar el render y con una autorización OAuth guardada; los vídeos locales se mantienen locales. El CLI conserva su ruta anterior, que requiere `GOOGLE_OAUTH_TOKEN` y no se ejecuta desde el panel. Los reintentos automáticos del SDK de OpenAI están desactivados.
 
-Antes de contactar con proveedores, el proceso comprueba que existan `OPENAI_API_KEY`, `SHOTSTACK_API_KEY` y `GOOGLE_OAUTH_TOKEN`. El token de Drive debe poder crear archivos en Procesados. Si falta o Drive rechaza el destino, el proceso se detiene sin ampliar scopes.
+Antes de procesar, la aplicación comprueba la presencia de las claves de OpenAI y Shotstack y bloquea Shotstack a Stage. Para una entrada de Drive necesita además una autorización Drive válida. Si Drive rechaza el destino, el render local se conserva y puede reintentarse solo la subida, sin volver a renderizar.
 
 ## Google Drive: automatización preparada, todavía desconectada
 

@@ -155,6 +155,17 @@ class DashboardStore:
             row = db.execute("SELECT * FROM dashboard_uploads WHERE id = ?", (file_id,)).fetchone()
         return dict(row) if row else None
 
+    def delete_upload_if_unused(self, file_id: str) -> bool:
+        with self.lock, self._connect() as db:
+            cursor = db.execute(
+                """DELETE FROM dashboard_uploads
+                   WHERE id = ? AND NOT EXISTS (
+                     SELECT 1 FROM dashboard_jobs WHERE source_id = ?
+                   )""",
+                (file_id, file_id),
+            )
+        return cursor.rowcount == 1
+
     def create_job(self, job_id: str, source_id: str, estimate: float | None) -> None:
         now = time.time()
         with self.lock, self._connect() as db:
@@ -250,6 +261,7 @@ class VideoPanel:
             logger.warning("Google Drive OAuth storage is unavailable because SESSION_SECRET is not configured.")
 
     def health(self) -> dict[str, Any]:
+        drive_status = self.drive_status()
         try:
             config = PipelineConfig.from_environment()
             environment = config.shotstack_environment
@@ -259,7 +271,7 @@ class VideoPanel:
             "openai_key_configured": bool(os.getenv("OPENAI_API_KEY")),
             "shotstack_key_configured": bool(os.getenv("SHOTSTACK_API_KEY")),
             "shotstack_environment": environment,
-            "drive_connected": bool(self.drive_oauth and self.drive_oauth.status()["connected"]),
+            "drive_connected": bool(drive_status.get("ready") and drive_status.get("verified")),
         }
 
     def drive_status(self) -> dict[str, Any]:
@@ -273,12 +285,27 @@ class VideoPanel:
                 "missing_configuration": ["SESSION_SECRET"],
                 "scopes": [],
             }
-        return self.drive_oauth.status()
+        try:
+            return self.drive_oauth.status()
+        except GoogleDriveError:
+            return {
+                "enabled": self.drive_oauth.config.enabled,
+                "configured": not self.drive_oauth.config.missing,
+                "ready": False,
+                "authorized": False,
+                "verified": False,
+                "connected": False,
+                "authorization_pending": True,
+                "storage_error": True,
+                "missing_configuration": self.drive_oauth.config.missing,
+                "scopes": [],
+            }
 
     def scan_drive(self) -> dict[str, Any]:
         if not self.drive_oauth or not self.drive_client or not self.drive_store:
             raise PanelError("El almacenamiento seguro de Drive no está disponible.", 503)
-        if not self.drive_oauth.status()["connected"]:
+        status = self.drive_status()
+        if not status.get("ready") or not status.get("authorized"):
             raise PanelError("Google Drive no está conectado. No se consultó ninguna carpeta.", 409)
         if not self.drive_scan_lock.acquire(blocking=False):
             raise PanelError("Ya hay un escaneo de Drive en curso.", 409)
@@ -300,6 +327,7 @@ class VideoPanel:
                 if not drive_file_id or self.drive_store.get_import(drive_file_id):
                     skipped += 1
                     continue
+                local_item = None
                 suffix = Path(filename).suffix.lower()
                 if suffix not in VIDEO_EXTENSIONS:
                     skipped += 1
@@ -331,7 +359,7 @@ class VideoPanel:
                             size = int(logo.get("size") or 0)
                         except (TypeError, ValueError):
                             size = 0
-                        if size <= 20 * 1024 * 1024:
+                        if 0 < size <= 20 * 1024 * 1024:
                             asset_dir = self.input_dir.parent / "drive_assets"
                             logo_suffix = Path(str(logo.get("name"))).suffix.lower()
                             asset_name = hashlib.sha256(
@@ -350,11 +378,13 @@ class VideoPanel:
                         staged_path = Path(staging) / f"{drive_file_id}{suffix}"
                         self.drive_client.download_file(drive_file_id, staged_path)
                         with staged_path.open("rb") as source:
-                            item = self.upload(filename, staged_path.stat().st_size, source)
+                            local_item = self.upload(
+                                filename, staged_path.stat().st_size, source
+                            )
 
                     added = self.drive_store.add_import(
                         drive_file_id=drive_file_id,
-                        local_upload_id=item["id"],
+                        local_upload_id=local_item["id"],
                         filename=filename,
                         md5_checksum=remote.get("md5Checksum"),
                         doc_file_id=doc_id,
@@ -363,8 +393,13 @@ class VideoPanel:
                     )
                     if not added:
                         raise PanelError("El vídeo ya se había importado en otro escaneo.", 409)
-                    imported.append({"id": item["id"], "filename": filename})
+                    imported.append({"id": local_item["id"], "filename": filename})
                 except Exception as exc:
+                    if local_item:
+                        row = self.store.get_upload(local_item["id"])
+                        if row and self.store.delete_upload_if_unused(local_item["id"]):
+                            (self.input_dir / row["filename"]).unlink(missing_ok=True)
+                            (self.thumbnail_dir / f"{local_item['id']}.jpg").unlink(missing_ok=True)
                     logger.warning(
                         "Drive import failed for file %s (%s)",
                         hashlib.sha256(drive_file_id.encode("utf-8")).hexdigest()[:12],
@@ -412,7 +447,8 @@ class VideoPanel:
             raise PanelError("Identificador de vídeo no válido.")
         if not self.drive_store or not self.drive_oauth or not self.drive_client:
             raise PanelError("La conexión de Google Drive no está disponible.", 503)
-        if not self.drive_status()["connected"]:
+        status = self.drive_status()
+        if not status.get("ready") or not status.get("authorized"):
             raise PanelError("Google Drive no está conectado.", 409)
         upload = self.store.get_upload(source_id)
         drive_import = self.drive_store.get_import_for_local_upload(source_id)
@@ -424,6 +460,11 @@ class VideoPanel:
                 "output_drive_file_id": drive_import.get("output_drive_file_id"),
                 "render_reused": True,
             }
+        if drive_import.get("status") != "upload_failed":
+            raise PanelError(
+                "La subida no está marcada como fallida. No se iniciará otra subida ni un render.",
+                409,
+            )
         latest_job = self.store.latest_job_for_source(source_id)
         if not latest_job or latest_job.get("status") not in {"failed", "completed"}:
             raise PanelError("No hay un resultado listo para volver a subir.", 409)
@@ -718,7 +759,10 @@ class VideoPanel:
             if self.drive_store
             else None
         )
-        if drive_import and not self.drive_status()["connected"]:
+        drive_status = self.drive_status()
+        if drive_import and (
+            not drive_status.get("ready") or not drive_status.get("authorized")
+        ):
             raise PanelError(
                 "El vídeo procede de Drive, pero la conexión no está activa. No se inició el procesamiento.",
                 409,

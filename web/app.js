@@ -325,9 +325,21 @@ function renderDriveStatus(drive) {
     scan.disabled = true;
     return;
   }
-  if (drive.connected) {
-    title.textContent = "Google Drive conectado";
-    detail.textContent = "No se escanean carpetas automáticamente. Usa el botón para detectar e importar vídeos nuevos.";
+  if (drive.storage_error) {
+    title.textContent = "No se pudo abrir la conexión guardada";
+    detail.textContent = "La clave de cifrado no coincide con la guardada. Activa OAuth y vuelve a autorizar Drive; no se han mostrado tokens.";
+    connect.textContent = "Reautorizar";
+  } else if (drive.authorized && drive.ready !== true) {
+    title.textContent = "Conexión guardada · integración desactivada";
+    detail.textContent = "El token cifrado se conserva, pero OAuth está desactivado y no se harán llamadas a Drive.";
+    connect.textContent = "Conectar Google Drive";
+  } else if (drive.verified) {
+    title.textContent = "Acceso a Google Drive verificado";
+    detail.textContent = "La última consulta de Drive respondió correctamente. Escanea 01_ENTRADA para buscar archivos nuevos.";
+    connect.textContent = "Reautorizar";
+  } else if (drive.authorized) {
+    title.textContent = "Autorización guardada · sin verificar";
+    detail.textContent = "El token cifrado está guardado. Escanea 01_ENTRADA para comprobar permisos y descargar vídeos nuevos.";
     connect.textContent = "Reautorizar";
   } else if (drive.ready) {
     title.textContent = "Autorización pendiente";
@@ -342,7 +354,18 @@ function renderDriveStatus(drive) {
     connect.textContent = "Conectar Google Drive";
   }
   connect.disabled = drive.ready !== true;
-  scan.disabled = drive.connected !== true;
+  scan.disabled = drive.authorized !== true || drive.ready !== true;
+  const healthDrive = byId("health-drive");
+  if (drive.verified) {
+    healthDrive.textContent = "Acceso verificado";
+    healthDrive.className = "health-ok";
+  } else if (drive.authorized) {
+    healthDrive.textContent = "Autorización guardada · sin verificar";
+    healthDrive.className = "health-muted";
+  } else {
+    healthDrive.textContent = "No conectado";
+    healthDrive.className = "health-muted";
+  }
 }
 
 function renderJob(job, sourceName = "") {
@@ -571,7 +594,7 @@ byId("drive-scan-button").addEventListener("click", async () => {
     message.textContent = `No se pudo escanear Drive: ${error.message}`;
     displayToast(`No se pudo escanear Drive: ${error.message}`, true);
   } finally {
-    button.disabled = state.drive?.connected !== true;
+    button.disabled = state.drive?.authorized !== true || state.drive?.ready !== true;
   }
 });
 byId("retry-drive-upload-button").addEventListener("click", async () => {

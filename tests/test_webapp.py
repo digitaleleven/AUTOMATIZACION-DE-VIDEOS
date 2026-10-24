@@ -9,10 +9,12 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
-from urllib.parse import quote, urlencode
+from types import SimpleNamespace
+from urllib.parse import parse_qs, quote, urlencode, urlsplit
 from unittest.mock import patch
 
 from video_pipeline.auth import OwnerAuth
+from video_pipeline.google_drive import DriveOAuthConfig, GoogleDriveOAuth
 from video_pipeline.webapp import VideoPanel, VideoPanelHandler, VideoPanelServer
 
 
@@ -25,6 +27,10 @@ class VideoPanelApiTests(unittest.TestCase):
                 "PANEL_OWNER_PASSWORD": "unit-test-owner-passphrase",
                 "SESSION_SECRET": "unit-test-session-secret-for-panel-auth-0123456789",
                 "PANEL_COOKIE_SECURE": "true",
+                "GOOGLE_DRIVE_OAUTH_ENABLED": "false",
+                "GOOGLE_OAUTH_CLIENT_ID": "",
+                "GOOGLE_OAUTH_CLIENT_SECRET": "",
+                "GOOGLE_OAUTH_REDIRECT_URI": "",
             },
         )
         self.env_patcher.start()
@@ -707,6 +713,245 @@ class VideoPanelApiTests(unittest.TestCase):
         saved = json.loads(body.decode("utf-8"))
         self.assertEqual(saved["font_size"], 72)
         self.assertEqual(saved["emoji_by_keyword"], {"viaje": "✈️"})
+
+    def test_drive_routes_require_owner_and_oauth_is_disabled_without_consent(self):
+        status, _, body = self.request(
+            "GET", "/api/drive/status", authenticated=False
+        )
+        self.assertEqual(status, 401)
+
+        status, _, body = self.request("GET", "/api/drive/status")
+        self.assertEqual(status, 200)
+        drive_status = json.loads(body.decode("utf-8"))
+        self.assertFalse(drive_status["enabled"])
+        self.assertFalse(drive_status["authorized"])
+        self.assertFalse(drive_status["verified"])
+        self.assertNotIn("client_secret", body.decode("utf-8"))
+
+        status, _, body = self.request(
+            "POST",
+            "/api/drive/oauth/start",
+            body=b"{}",
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 409)
+        self.assertIn("desactivada", json.loads(body.decode("utf-8"))["detail"])
+
+        status, _, body = self.request(
+            "POST",
+            "/api/drive/scan",
+            body=b"{}",
+            headers={"Content-Type": "application/json", "X-CSRF-Token": ""},
+        )
+        self.assertEqual(status, 403)
+
+        status, _, body = self.request(
+            "POST",
+            "/api/drive/scan",
+            body=b"{}",
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 409)
+        self.assertIn("no está conectado", json.loads(body.decode("utf-8"))["detail"])
+
+    def test_oauth_start_requires_owner_csrf_and_callback_requires_one_time_state(self):
+        self.panel.drive_oauth = GoogleDriveOAuth(
+            DriveOAuthConfig(
+                enabled=True,
+                client_id="test-client.apps.googleusercontent.com",
+                client_secret="test-client-secret",
+                redirect_uri="https://matrix.example.test/oauth/google/callback",
+                session_secret=os.environ["SESSION_SECRET"],
+            ),
+            self.panel.drive_store,
+        )
+
+        status, _, _ = self.request(
+            "POST",
+            "/api/drive/oauth/start",
+            body=b"{}",
+            headers={"Content-Type": "application/json"},
+            authenticated=False,
+        )
+        self.assertEqual(status, 401)
+
+        status, headers, body = self.request(
+            "POST",
+            "/api/drive/oauth/start",
+            body=b"{}",
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 200)
+        authorization_url = json.loads(body.decode("utf-8"))["authorization_url"]
+        params = parse_qs(urlsplit(authorization_url).query)
+        self.assertEqual(params["code_challenge_method"], ["S256"])
+        state_cookie = self.cookie_from_headers(
+            headers, "matrix_motion_google_oauth_state"
+        )
+        cookie_header = next(
+            value for name, value in headers
+            if name.lower() == "set-cookie"
+            and value.startswith("matrix_motion_google_oauth_state=")
+        )
+        self.assertIn("HttpOnly", cookie_header)
+        self.assertIn("Secure", cookie_header)
+        self.assertIn("SameSite=Lax", cookie_header)
+        self.assertIn("Path=/oauth/google/callback", cookie_header)
+
+        status, _, body = self.request(
+            "GET",
+            "/oauth/google/callback?state=wrong&code=unused",
+            headers={"Cookie": state_cookie},
+            authenticated=False,
+        )
+        self.assertEqual(status, 400)
+        self.assertNotIn("unused", body.decode("utf-8"))
+
+    def test_drive_upload_retry_reuses_render_without_starting_pipeline(self):
+        source_id = "a" * 32
+        source_hash = "b" * 64
+        drive_file_id = "abcdefghijABCDEFGHIJ"
+        source_path = self.panel.input_dir / "source.mp4"
+        source_path.write_bytes(b"untouched-original")
+        self.panel.store.add_upload(
+            source_id,
+            source_path.name,
+            "source.mp4",
+            source_hash,
+            source_path.stat().st_size,
+            {
+                "duration": 4.0,
+                "width": 1080,
+                "height": 1920,
+                "video_codec": "h264",
+                "audio_codec": "aac",
+                "rotation": 0,
+                "fps": 30,
+            },
+        )
+        output_path = self.panel.output_dir / "rendered.mp4"
+        output_path.write_bytes(b"previously-rendered-video")
+        self.panel.store.create_job("c" * 32, source_id, 0.02)
+        self.panel.store.update_job(
+            "c" * 32,
+            status="failed",
+            phase="failed",
+            error="Fallo simulado de subida Drive",
+        )
+        self.panel.drive_store.add_import(
+            drive_file_id=drive_file_id,
+            local_upload_id=source_id,
+            filename="source.mp4",
+            md5_checksum=None,
+            doc_file_id=None,
+            style_overrides={},
+            logo_path=None,
+        )
+        self.panel.drive_store.update_import(
+            drive_file_id, status="upload_failed", error="Fallo simulado"
+        )
+
+        class FakeDriveClient:
+            def __init__(self):
+                self.calls = []
+
+            def upload_new_file(self, path, **kwargs):
+                self.calls.append((path, kwargs))
+                return {"id": "new-drive-output"}
+
+        fake_drive = FakeDriveClient()
+        self.panel.drive_client = fake_drive
+        with (
+            patch.object(
+                self.panel,
+                "drive_status",
+                return_value={"ready": True, "authorized": True},
+            ),
+            patch("video_pipeline.webapp.probe_video", return_value=SimpleNamespace(width=1080, height=1920)),
+            patch.object(self.panel.store.ledger, "get", return_value={"output_path": str(output_path)}),
+            patch.object(self.panel.store.ledger, "mark_completed") as mark_completed,
+            patch("video_pipeline.webapp.process_local_video") as process_local_video,
+        ):
+            result = self.panel.retry_drive_upload(source_id)
+
+        self.assertTrue(result["render_reused"])
+        self.assertEqual(result["output_drive_file_id"], "new-drive-output")
+        self.assertEqual(len(fake_drive.calls), 1)
+        self.assertEqual(source_path.read_bytes(), b"untouched-original")
+        mark_completed.assert_called_once()
+        process_local_video.assert_not_called()
+        self.assertEqual(
+            self.panel.drive_store.get_import(drive_file_id)["status"], "uploaded"
+        )
+        self.assertEqual(self.panel.store.get_job("c" * 32)["status"], "completed")
+
+    def test_drive_scan_imports_new_video_matches_doc_and_skips_duplicate(self):
+        original = self.root / "drive-original.mp4"
+        subprocess.run(
+            [
+                "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                "-f", "lavfi", "-i", "color=c=black:s=1080x1920:r=24:d=0.5",
+                "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+                "-t", "0.5", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-shortest", str(original),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        original_bytes = original.read_bytes()
+        video_remote_id = "drivevideo12345"
+        doc_remote_id = "docfile1234567"
+
+        class FakeDriveClient:
+            def __init__(self):
+                self.downloads = 0
+
+            def list_children(self, folder_id):
+                if folder_id.endswith("DTW"):
+                    return []
+                return [
+                    {
+                        "id": video_remote_id,
+                        "name": "clip.mp4",
+                        "mimeType": "video/mp4",
+                        "size": str(original.stat().st_size),
+                    },
+                    {
+                        "id": doc_remote_id,
+                        "name": "clip",
+                        "mimeType": "application/vnd.google-apps.document",
+                    },
+                ]
+
+            def export_document_text(self, file_id):
+                self.assert_doc_id = file_id
+                return '{"font_size": 72}'
+
+            def download_file(self, file_id, destination):
+                self.downloads += 1
+                shutil.copyfile(original, destination)
+                return Path(destination)
+
+        fake_drive = FakeDriveClient()
+        self.panel.drive_client = fake_drive
+        with patch.object(
+            self.panel, "drive_status", return_value={"ready": True, "authorized": True}
+        ):
+            first = self.panel.scan_drive()
+            self.assertEqual(len(first["imported"]), 1)
+            self.assertEqual(first["skipped"], 0)
+            imported_id = first["imported"][0]["id"]
+            self.assertEqual(self.panel._style_for_upload(imported_id).font_size, 72)
+
+            second = self.panel.scan_drive()
+
+        self.assertEqual(second["imported"], [])
+        self.assertEqual(second["skipped"], 1)
+        self.assertEqual(fake_drive.downloads, 1)
+        self.assertEqual(fake_drive.assert_doc_id, doc_remote_id)
+        self.assertEqual(original.read_bytes(), original_bytes)
+        self.assertEqual(second["items"][0]["source"], "google_drive")
 
 
 if __name__ == "__main__":
