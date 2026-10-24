@@ -331,6 +331,73 @@ class VideoPanelApiTests(unittest.TestCase):
                 self.assertEqual(status, 200)
                 self.assertIn(b'<form method="post" action="/login"', body)
 
+            status, challenge_headers, login_page = self.request(
+                "GET",
+                "/login",
+                headers={
+                    "Host": preview_host,
+                    "X-Forwarded-Proto": "https",
+                },
+                authenticated=False,
+            )
+            self.assertEqual(status, 200)
+            challenge = re.search(
+                rb'name="csrf_token" value="([^"]+)"',
+                login_page,
+            ).group(1).decode("ascii")
+            challenge_cookie = self.cookie_from_headers(
+                challenge_headers,
+                "matrix_motion_login_csrf",
+            )
+            status, _, body = self.request(
+                "POST",
+                "/login",
+                body=urlencode({
+                    "password": "incorrect-owner-password",
+                    "csrf_token": challenge,
+                }),
+                headers={
+                    "Host": preview_host,
+                    "Origin": "null",
+                    "X-Forwarded-Proto": "https",
+                    "Cookie": challenge_cookie,
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+                authenticated=False,
+            )
+            self.assertEqual(status, 401)
+            self.assertIn("No se pudo iniciar sesión", body.decode("utf-8"))
+
+            status, _, body = self.request(
+                "POST",
+                "/login",
+                body=urlencode({
+                    "password": "incorrect-owner-password",
+                    "csrf_token": challenge,
+                }),
+                headers={
+                    "Host": preview_host,
+                    "Origin": "null",
+                    "X-Forwarded-Proto": "https",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+                authenticated=False,
+            )
+            self.assertEqual(status, 403)
+            self.assertIn("solicitud de acceso caducó", body.decode("utf-8").lower())
+
+            status, _, _ = self.request(
+                "GET",
+                "/api/library",
+                headers={
+                    "Host": preview_host,
+                    "Origin": "null",
+                    "X-Forwarded-Proto": "https",
+                },
+                authenticated=False,
+            )
+            self.assertEqual(status, 403)
+
             status, _, _ = self.request(
                 "POST",
                 "/login",

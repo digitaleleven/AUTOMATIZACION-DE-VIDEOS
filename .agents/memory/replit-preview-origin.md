@@ -3,8 +3,8 @@ name: Origen de Preview interno de Replit
 description: Validación segura de Host, Origin y cabeceras proxy en el Preview incrustado.
 ---
 
-El Preview interno puede presentar cabeceras distintas a la URL externa. En este proyecto, el registro real de un POST rechazado a `/login` mostró `Host` igual al dominio configurado de la app, `Origin` no analizable (registrado solo como `invalid`), `X-Forwarded-Host` ausente y `X-Forwarded-Proto=https`. El registro no conserva si el Origin literal era `null` u otro valor malformado.
+El Preview de este proyecto envió un POST real a `/login` con `Origin: null`, `Host` igual al dominio configurado de la app, `X-Forwarded-Host` ausente y `X-Forwarded-Proto=https`. Este origen opaco solo se admite para `POST /login` en el host exacto configurado y sobre HTTPS; el desafío doble CSRF de cookie y formulario sigue siendo obligatorio. Las demás rutas y otros Origin inválidos siguen rechazándose.
 
-**Why:** asumir que el Preview siempre envía `Origin: https://replit.com` junto a un `X-Forwarded-Host` válido puede llevar a excepciones de seguridad que no corresponden a la petición real.
+**Why:** la excepción anterior para `https://replit.com` no cubría el valor opaco `null` realmente enviado por el navegador y el login se rechazaba antes de validar el desafío CSRF.
 
-**How to apply:** diagnostica la petición real registrada antes de cambiar la allowlist. No aceptes un Origin no analizable ni relajes CSRF por inferencia. Al registrar rechazos, conserva solo Host normalizado, esquema/host de Origin cuando parseable, X-Forwarded-Host, X-Forwarded-Proto y el motivo; nunca registres cookies ni cuerpos.
+**How to apply:** trata `Origin: null` como excepción solo para el endpoint de login, con Host de aplicación exacto y HTTPS, y conserva la validación obligatoria del desafío CSRF. No lo aceptes globalmente. Al registrar rechazos, conserva solo Host normalizado, estado/esquema/host de Origin, X-Forwarded-Host, X-Forwarded-Proto y el motivo; nunca registres cookies ni cuerpos.

@@ -842,6 +842,18 @@ required minlength="16" {disabled}>
             return
 
         if not parsed_origin or not origin_host:
+            if origin == "null":
+                null_origin_login = (
+                    self.command == "POST"
+                    and urlsplit(self.path).path == "/login"
+                    and request_host in app_hosts
+                    and effective_host in app_hosts
+                    and forwarded_proto == "https"
+                    and (not forwarded_header or forwarded_host == request_host)
+                )
+                if null_origin_login:
+                    return
+                reject("opaque_origin_not_allowed")
             reject("invalid_origin")
         origin_scheme = parsed_origin.scheme.lower()
         if origin_host == "replit.com":
