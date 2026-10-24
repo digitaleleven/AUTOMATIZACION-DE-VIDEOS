@@ -525,6 +525,8 @@ function renderSelectedItem() {
     byId("cost-note").textContent = "Selecciona un vídeo para consultar la estimación disponible.";
     byId("unknown-cost-wrap").hidden = true;
     byId("retry-drive-upload-button").hidden = true;
+    byId("retry-render-button").hidden = true;
+    byId("retry-render-hint").hidden = true;
     updateProcessButton();
     return;
   }
@@ -560,10 +562,29 @@ function renderSelectedItem() {
   if (item.error) {
     byId("file-summary").insertAdjacentHTML("beforeend", `<div class="job-error">${escapeHtml(item.error)}</div>`);
   }
+  if (Array.isArray(item.attempt_history) && item.attempt_history.length) {
+    const attemptsMarkup = item.attempt_history.map((attempt) => {
+      const when = attempt.created_at ? formatDate(attempt.created_at) : "fecha no disponible";
+      const retryLabel = attempt.retry_of_job_id ? " · reintento del intento anterior" : "";
+      return `<li><strong>Intento ${escapeHtml(attempt.attempt_number)} · ${escapeHtml(statusLabel(attempt.status))}</strong><span>${escapeHtml(when)}${retryLabel}</span>${attempt.error ? `<p>${escapeHtml(attempt.error)}</p>` : ""}</li>`;
+    }).join("");
+    byId("file-summary").insertAdjacentHTML(
+      "beforeend",
+      `<section class="attempt-history" aria-label="Historial de intentos"><strong>Historial de intentos</strong><ol>${attemptsMarkup}</ol></section>`,
+    );
+  }
   if (item.drive_error) {
     byId("file-summary").insertAdjacentHTML("beforeend", `<div class="job-error">El render local se conserva. Error al guardar en Drive: ${escapeHtml(item.drive_error)}</div>`);
   }
   byId("retry-drive-upload-button").hidden = item.can_retry_drive_upload !== true;
+  const retryButton = byId("retry-render-button");
+  const retryHint = byId("retry-render-hint");
+  retryButton.hidden = item.can_retry_render !== true;
+  retryButton.disabled = false;
+  retryHint.hidden = item.can_retry_render !== true;
+  retryHint.textContent = item.retry_remote_status_check_available
+    ? "Al autorizar, el servidor comprobará primero el estado del render registrado."
+    : "No hay ID remoto: el estado en Shotstack no se puede consultar. Se solicitará confirmación antes de permitir el único reenvío.";
   updateProcessButton();
 }
 
@@ -974,6 +995,79 @@ byId("retry-drive-upload-button").addEventListener("click", async () => {
   } catch (error) {
     displayToast(`No se pudo reintentar solo la subida a Drive: ${error.message}`, true);
   } finally {
+    button.disabled = false;
+  }
+});
+byId("retry-render-button").addEventListener("click", async () => {
+  const item = getSelectedItem();
+  if (!item?.can_retry_render || !item.latest_job_id) return;
+  const settings = item.retry_settings || {};
+  const plan = settings.creative_plan || {};
+  const zooms = Array.isArray(plan.zooms) ? plan.zooms : [];
+  const stickers = Array.isArray(plan.stickers) ? plan.stickers : [];
+  const zoomSummary = zooms.length
+    ? zooms.map((zoom) => `${Number(zoom.start_seconds).toFixed(0)}–${Number(zoom.end_seconds).toFixed(0)} s`).join(", ")
+    : "ninguno";
+  const stickerSummary = stickers.length
+    ? stickers.map((sticker) => `${sticker.sticker === "sparkle" ? "Destello" : sticker.sticker}, ${Number(sticker.start_seconds).toFixed(1)} s durante ${Number(sticker.duration_seconds).toFixed(1)} s`).join("; ")
+    : "ninguno";
+  const outputLabel = settings.output_profile === "1080p" ? "1080 × 1920" : String(settings.output_profile || "configuración guardada");
+  const estimatedCost = item.retry_estimated_cost_usd;
+  const costLine = estimatedCost === null || estimatedCost === undefined
+    ? "Coste estimado desconocido; el envío puede consumir créditos."
+    : `Coste estimado guardado: ${formatCost(estimatedCost)}; el importe real puede variar.`;
+  const driveWriteLine = item.retry_will_upload_to_drive
+    ? "Al terminar, se creará un MP4 nuevo en 02_PROCESADOS. El original de Drive no se modificará."
+    : "";
+  const message = [
+    `Se autorizará un único reintento para ${item.original_filename || item.filename}.`,
+    `Configuración guardada: ${settings.subtitle_mode === "none" ? "sin subtítulos" : "subtítulos " + settings.subtitle_mode}; ${outputLabel}, ${settings.output_fps} FPS, calidad ${settings.output_quality}; zoom ${zoomSummary}; sticker ${stickerSummary}.`,
+    costLine,
+    driveWriteLine,
+    "Se enviará a Shotstack Stage. ¿Autorizas este único intento?",
+  ].filter(Boolean).join("\n");
+  if (!window.confirm(message)) return;
+  const remoteStatusAvailable = item.retry_remote_status_check_available === true;
+  if (!remoteStatusAvailable && !window.confirm(
+    "El primer intento terminó con HTTP 400 y no devolvió un ID de render. No se puede consultar el estado remoto. MATRIX MOTION impedirá un segundo reintento local. ¿Confirmas que autorizas reenviar exactamente la edición guardada una vez?",
+  )) return;
+  const unknownCost = estimatedCost === null || estimatedCost === undefined;
+  if (unknownCost && !window.confirm("El coste no puede estimarse con los datos guardados. ¿Aceptas continuar con coste desconocido?")) return;
+
+  const button = byId("retry-render-button");
+  button.disabled = true;
+  button.textContent = "Solicitando reintento…";
+  try {
+    const response = await requestJson(`/api/jobs/${encodeURIComponent(item.latest_job_id)}/retry`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        authorize_paid_apis: true,
+        confirm_single_retry: true,
+        confirm_no_render_id: !remoteStatusAvailable,
+        confirm_drive_output_write: item.retry_will_upload_to_drive === true,
+        unknown_cost_acknowledged: unknownCost,
+      }),
+    });
+    const job = response?.job || response;
+    state.activeJob = job;
+    state.library = await loadLibrary();
+    state.libraryLoaded = true;
+    renderLibrary();
+    renderSelectedItem();
+    renderJob(job, item.original_filename || item.filename);
+    if (job.id && !["completed", "complete", "failed", "error", "rejected"].includes(String(job.status || "").toLowerCase())) {
+      clearInterval(state.pollTimer);
+      state.pollTimer = setInterval(() => pollJob(job.id, item.original_filename || item.filename), 2500);
+      await pollJob(job.id, item.original_filename || item.filename);
+    }
+    displayToast(response?.resumes_existing_render
+      ? "Reanudada la descarga del render existente; no se creó otro render."
+      : "Reintento único solicitado en Shotstack Stage.");
+  } catch (error) {
+    displayToast(`No se pudo autorizar el reintento: ${error.message}`, true);
+  } finally {
+    button.textContent = "Autorizar un reintento único en Stage";
     button.disabled = false;
   }
 });

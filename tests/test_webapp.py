@@ -8,7 +8,9 @@ import subprocess
 import tempfile
 import threading
 import unittest
+from dataclasses import asdict, replace
 from pathlib import Path
+from types import SimpleNamespace
 from types import SimpleNamespace
 from urllib.parse import parse_qs, quote, urlencode, urlsplit
 from unittest.mock import patch
@@ -151,6 +153,71 @@ class VideoPanelApiTests(unittest.TestCase):
             },
         )
         return status, json.loads(body.decode("utf-8"))
+
+    def create_failed_0415_attempt(self, render_id=None):
+        temp_video = self.create_movie(".mov")
+        source = self.root / "0415.mov"
+        shutil.copyfile(temp_video, source)
+        status, response = self.upload(source)
+        self.assertEqual(status, 201)
+        source_id = response["item"]["id"]
+        upload = self.panel.store.get_upload(source_id)
+        style = replace(
+            self.panel._style_for_upload(source_id),
+            output_width=1080,
+            output_height=1920,
+            output_fps=50,
+            output_quality="high",
+        )
+        creative_plan = {
+            "cuts": [],
+            "zooms": [{"start_seconds": 10.0, "end_seconds": 13.0, "effect": "zoomIn"}],
+            "stickers": [{
+                "sticker": "sparkle",
+                "start_seconds": 4.0,
+                "duration_seconds": 1.5,
+                "position": "topRight",
+                "effect": "zoomIn",
+                "color": "#FFD84D",
+            }],
+        }
+        processing_options = {
+            "subtitle_mode": "none",
+            "style": asdict(style),
+            "creative_plan": creative_plan,
+        }
+        source_path = self.panel._source_path(upload)
+        self.panel.store.ledger.claim(
+            upload["source_sha256"],
+            str(source_path),
+            edit_options=processing_options,
+        )
+        self.panel.store.ledger.mark_failed(
+            upload["source_sha256"],
+            "Shotstack render submission failed (HTTP 400).",
+        )
+        if render_id:
+            self.panel.store.ledger.update(upload["source_sha256"], render_id=render_id)
+        job_id = "a" * 32
+        self.panel.store.create_job(
+            job_id,
+            source_id,
+            None,
+            {
+                "subtitle_mode": "none",
+                "output_profile": "1080p",
+                "output_quality": "high",
+                "output_fps": 50,
+                "creative_plan": creative_plan,
+            },
+        )
+        self.panel.store.update_job(
+            job_id,
+            status="failed",
+            phase="failed",
+            error="Shotstack render submission failed (HTTP 400).",
+        )
+        return source_id, job_id, upload, processing_options
 
     def test_panel_serves_real_empty_state_and_secret_presence_only(self):
         status, _, body = self.request("GET", "/")
@@ -703,6 +770,234 @@ class VideoPanelApiTests(unittest.TestCase):
         self.assertEqual(status, 403)
         self.assertIn("autorización explícita", json.loads(body.decode("utf-8"))["detail"])
         self.assertEqual(self.panel.library()[0]["status"], "ready")
+
+    def test_retry_endpoint_requires_owner_session(self):
+        source_id, job_id, _, _ = self.create_failed_0415_attempt()
+        status, _, body = self.request(
+            "POST",
+            f"/api/jobs/{job_id}/retry",
+            body=json.dumps({
+                "authorize_paid_apis": True,
+                "confirm_single_retry": True,
+                "confirm_no_render_id": True,
+                "unknown_cost_acknowledged": True,
+            }).encode(),
+            headers={"Content-Type": "application/json"},
+            authenticated=False,
+        )
+        self.assertEqual(status, 401)
+        self.assertEqual(self.panel.store.latest_job_for_source(source_id)["id"], job_id)
+
+    def test_authenticated_dashboard_includes_the_controlled_retry_action(self):
+        status, _, body = self.request("GET", "/")
+        self.assertEqual(status, 200)
+        html = body.decode("utf-8")
+        self.assertIn('id="retry-render-button"', html)
+        self.assertIn("Autorizar un reintento único en Stage", html)
+        status, _, script = self.request("GET", "/app.js")
+        self.assertEqual(status, 200)
+        self.assertIn("/retry", script.decode("utf-8"))
+
+    def test_retry_requires_no_id_ack_and_reserves_one_independent_attempt(self):
+        source_id, job_id, upload, saved = self.create_failed_0415_attempt()
+        first_library_item = next(item for item in self.panel.library() if item["id"] == source_id)
+        self.assertTrue(first_library_item["can_retry_render"])
+        self.assertFalse(first_library_item["retry_remote_status_check_available"])
+        base_payload = {
+            "authorize_paid_apis": True,
+            "confirm_single_retry": True,
+            "unknown_cost_acknowledged": True,
+        }
+        with (
+            patch.object(self.panel, "health", return_value={
+                "shotstack_key_configured": True,
+                "openai_key_configured": False,
+                "shotstack_environment": "stage",
+            }),
+            patch.object(self.panel.executor, "submit") as submit,
+            patch("video_pipeline.webapp.ShotstackClient", side_effect=AssertionError("no render ID: no provider call")),
+        ):
+            status, _, body = self.request(
+                "POST",
+                f"/api/jobs/{job_id}/retry",
+                body=json.dumps({
+                    **base_payload,
+                    "authorize_paid_apis": False,
+                    "confirm_no_render_id": True,
+                }).encode(),
+                headers={"Content-Type": "application/json"},
+            )
+            self.assertEqual(status, 403)
+            self.assertIn("autorización expresa", json.loads(body.decode())["detail"])
+            submit.assert_not_called()
+
+            status, _, body = self.request(
+                "POST",
+                f"/api/jobs/{job_id}/retry",
+                body=json.dumps({**base_payload, "confirm_no_render_id": False}).encode(),
+                headers={"Content-Type": "application/json"},
+            )
+            self.assertEqual(status, 403)
+            self.assertIn("No existe ID", json.loads(body.decode())["detail"])
+            submit.assert_not_called()
+            self.assertEqual(len(self.panel.store.job_history_for_source(source_id)), 1)
+
+            status, _, body = self.request(
+                "POST",
+                f"/api/jobs/{job_id}/retry",
+                body=json.dumps({**base_payload, "confirm_no_render_id": True}).encode(),
+                headers={"Content-Type": "application/json"},
+            )
+            self.assertEqual(status, 202)
+            retry = json.loads(body.decode())
+            self.assertEqual(retry["attempt_number"], 2)
+            self.assertEqual(retry["retry_of_job_id"], job_id)
+            self.assertFalse(retry["resumes_existing_render"])
+            self.assertEqual(retry["edit_options"]["subtitle_mode"], "none")
+            self.assertEqual(retry["edit_options"]["output_profile"], "1080p")
+            self.assertEqual(retry["edit_options"]["output_quality"], "high")
+            self.assertEqual(retry["edit_options"]["output_fps"], 50)
+            self.assertEqual(retry["edit_options"]["creative_plan"], saved["creative_plan"])
+            submit.assert_called_once()
+
+            history = self.panel.store.job_history_for_source(source_id)
+            self.assertEqual([row["attempt_number"] for row in history], [1, 2])
+            self.assertEqual(history[0]["id"], job_id)
+            self.assertEqual(history[0]["error"], "Shotstack render submission failed (HTTP 400).")
+            self.assertEqual(history[1]["retry_of_job_id"], job_id)
+
+            status, _, _ = self.request(
+                "POST",
+                f"/api/jobs/{job_id}/retry",
+                body=json.dumps({**base_payload, "confirm_no_render_id": True}).encode(),
+                headers={"Content-Type": "application/json"},
+            )
+            self.assertEqual(status, 409)
+            self.assertEqual(len(self.panel.store.job_history_for_source(source_id)), 2)
+
+        # Model a second 400 without contacting Shotstack; the original row
+        # remains unchanged and the one-retry allowance is exhausted.
+        source_path = self.panel._source_path(upload)
+        self.panel.store.ledger.claim(
+            upload["source_sha256"],
+            str(source_path),
+            retry_failed=True,
+            edit_options=saved,
+        )
+        second_error = "Shotstack render submission failed (HTTP 400): INVALID_EDIT | field=/output/quality"
+        self.panel.store.ledger.mark_failed(upload["source_sha256"], second_error)
+        self.panel.store.update_job(retry["id"], status="failed", phase="failed", error=second_error)
+        library_item = next(item for item in self.panel.library() if item["id"] == source_id)
+        self.assertFalse(library_item["can_retry_render"])
+        self.assertEqual(len(library_item["attempt_history"]), 2)
+        self.assertEqual(library_item["attempt_history"][0]["error"], "Shotstack render submission failed (HTTP 400).")
+        self.assertEqual(library_item["attempt_history"][1]["error"], second_error)
+        status, _, job_body = self.request("GET", f"/api/jobs/{retry['id']}")
+        self.assertEqual(status, 200)
+        self.assertIn("INVALID_EDIT", json.loads(job_body.decode())["error"])
+
+    def test_retry_is_locked_to_stage(self):
+        _, job_id, _, _ = self.create_failed_0415_attempt()
+        with (
+            patch.dict(os.environ, {"SHOTSTACK_ENVIRONMENT": "v1"}),
+            patch.object(self.panel, "health", return_value={
+                "shotstack_key_configured": True,
+                "openai_key_configured": False,
+                "shotstack_environment": "v1",
+            }),
+            patch("video_pipeline.webapp.ShotstackClient") as client_class,
+            patch.object(self.panel.executor, "submit") as submit,
+        ):
+            with self.assertRaises(PanelError) as blocked:
+                self.panel.retry_job(job_id, {
+                    "authorize_paid_apis": True,
+                    "confirm_single_retry": True,
+                    "confirm_no_render_id": True,
+                    "unknown_cost_acknowledged": True,
+                })
+        self.assertEqual(blocked.exception.status_code, 409)
+        self.assertIn("Stage", str(blocked.exception))
+        client_class.assert_not_called()
+        submit.assert_not_called()
+
+    def test_drive_retry_requires_explicit_new_output_confirmation(self):
+        source_id, job_id, _, _ = self.create_failed_0415_attempt()
+        drive_import = {
+            "drive_file_id": "drive-file-id",
+            "status": "render_failed",
+        }
+        with (
+            patch.object(
+                self.panel.drive_store,
+                "get_import_for_local_upload",
+                return_value=drive_import,
+            ),
+            patch.object(
+                self.panel,
+                "drive_status",
+                return_value={"ready": True, "authorized": True},
+            ),
+            patch.object(self.panel, "drive_client", new=SimpleNamespace()),
+            patch(
+                "video_pipeline.webapp.PipelineConfig.from_environment",
+                return_value=SimpleNamespace(
+                    shotstack_environment="stage",
+                    processed_folder_id="processed-folder",
+                ),
+            ),
+            patch.object(self.panel, "health", return_value={
+                "shotstack_key_configured": True,
+                "openai_key_configured": False,
+                "shotstack_environment": "stage",
+            }),
+            patch.object(self.panel.executor, "submit") as submit,
+            patch("video_pipeline.webapp.ShotstackClient", side_effect=AssertionError("no remote ID")),
+        ):
+            item = next(item for item in self.panel.library() if item["id"] == source_id)
+            self.assertTrue(item["can_retry_render"])
+            self.assertTrue(item["retry_will_upload_to_drive"])
+            consent = {
+                "authorize_paid_apis": True,
+                "confirm_single_retry": True,
+                "confirm_no_render_id": True,
+                "unknown_cost_acknowledged": True,
+            }
+            with self.assertRaises(PanelError) as missing_consent:
+                self.panel.retry_job(job_id, consent)
+            self.assertEqual(missing_consent.exception.status_code, 403)
+            self.assertIn("MP4 nuevo", str(missing_consent.exception))
+            self.assertEqual(len(self.panel.store.job_history_for_source(source_id)), 1)
+            submit.assert_not_called()
+
+            retry = self.panel.retry_job(
+                job_id,
+                {**consent, "confirm_drive_output_write": True},
+            )
+            self.assertEqual(retry["attempt_number"], 2)
+            submit.assert_called_once()
+
+    def test_retry_blocks_when_shotstack_reports_an_active_remote_render(self):
+        source_id, job_id, _, _ = self.create_failed_0415_attempt(render_id="stage-render-id")
+        with (
+            patch.object(self.panel, "health", return_value={
+                "shotstack_key_configured": True,
+                "openai_key_configured": False,
+                "shotstack_environment": "stage",
+            }),
+            patch("video_pipeline.webapp.ShotstackClient") as client_class,
+            patch.object(self.panel.executor, "submit") as submit,
+        ):
+            client_class.return_value.render_status.return_value = ("rendering", None)
+            with self.assertRaises(PanelError) as blocked:
+                self.panel.retry_job(job_id, {
+                    "authorize_paid_apis": True,
+                    "confirm_single_retry": True,
+                    "unknown_cost_acknowledged": True,
+                })
+        self.assertEqual(blocked.exception.status_code, 409)
+        self.assertIn("activo", str(blocked.exception))
+        self.assertEqual(len(self.panel.store.job_history_for_source(source_id)), 1)
+        submit.assert_not_called()
 
     def test_local_edit_proposal_defaults_to_no_subtitles_without_provider_calls(self):
         status, response = self.upload(self.create_movie(".mov"))

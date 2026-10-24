@@ -1205,13 +1205,16 @@ class VideoPanel:
                 latest_options = {}
         attempts_used = int(processing.get("attempts") or 0)
         has_retry = any(int(attempt.get("attempt_number") or 1) > 1 for attempt in attempt_history)
+        prior_error = f"{job.get('error') or ''} {processing.get('error') or ''}" if job else ""
+        remote_status_check_available = bool(processing.get("render_id"))
         result.update({
             "attempt_history": attempt_history,
             "latest_job_id": job.get("id") if job else None,
             "latest_attempt_number": int(job.get("attempt_number") or 1) if job else None,
             "retry_settings": latest_options if isinstance(latest_options, dict) else {},
             "retry_estimated_cost_usd": job.get("estimated_cost_usd") if job else None,
-            "retry_remote_status_check_available": bool(processing.get("render_id")),
+            "retry_remote_status_check_available": remote_status_check_available,
+            "retry_will_upload_to_drive": bool(drive_import),
             "can_retry_render": bool(
                 job
                 and job.get("status") == "failed"
@@ -1219,7 +1222,7 @@ class VideoPanel:
                 and processing.get("status") == "failed"
                 and attempts_used == 1
                 and not has_retry
-                and not drive_import
+                and (remote_status_check_available or "HTTP 400" in prior_error)
             ),
         })
         return result
@@ -1604,10 +1607,21 @@ class VideoPanel:
                 else None
             )
             if drive_import:
-                raise PanelError(
-                    "Este reintento está limitado a vídeos locales; no modificará ni consultará Google Drive.",
-                    409,
-                )
+                drive_status = self.drive_status()
+                if not drive_status.get("ready") or not drive_status.get("authorized"):
+                    raise PanelError(
+                        "El vídeo procede de Drive, pero la conexión no está activa; no se inició el reintento.",
+                        409,
+                    )
+                if not self.drive_client:
+                    raise PanelError("El cliente de Google Drive no está disponible.", 409)
+                if not PipelineConfig.from_environment().processed_folder_id:
+                    raise PanelError("No está configurada la carpeta de salida de Drive.", 409)
+                if payload.get("confirm_drive_output_write") is not True:
+                    raise PanelError(
+                        "Confirma que se creará un MP4 nuevo en 02_PROCESADOS sin modificar el original.",
+                        403,
+                    )
 
             processing = self.store.ledger.get(upload["source_sha256"])
             if processing.get("status") != "failed" or int(processing.get("attempts") or 0) != 1:
