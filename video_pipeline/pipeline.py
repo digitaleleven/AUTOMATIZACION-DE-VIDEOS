@@ -29,6 +29,7 @@ from .subtitles import build_subtitle_segments, captions_to_srt
 from .transcription import transcribe_video
 
 logger = logging.getLogger(__name__)
+RENDER001_THIRD_RETRY_SOURCE_SHA256 = "8fbe91573d1867d185adc10e78cf57b6336b0db33dd2cf361a70eda2896861e5"
 from .drive import (
     DriveAccessError,
     download_drive_file,
@@ -426,6 +427,8 @@ def process_local_video(
         timeout_seconds=settings.shotstack_timeout_seconds,
     )
     source_hash = _sha256_file(source)
+    if allow_third_attempt and source_hash != RENDER001_THIRD_RETRY_SOURCE_SHA256:
+        raise PermissionError("The third attempt is restricted to the approved RENDER-001 source file.")
     ledger = ProcessingLedger(state_db_path)
     job = ledger.claim(
         source_hash,

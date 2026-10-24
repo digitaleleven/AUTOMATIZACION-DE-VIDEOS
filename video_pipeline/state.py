@@ -114,6 +114,8 @@ class ProcessingLedger:
                 raise DuplicateProcessingError(
                     f"This video was already processed. Existing output: {job.get('output_path')}"
                 )
+            if allow_third_attempt and job["status"] != "failed":
+                raise RetryNotAllowedError("The controlled third attempt requires a failed prior attempt.")
             try:
                 previous_options = json.loads(job.get("edit_options_json") or "{}")
             except (TypeError, json.JSONDecodeError):

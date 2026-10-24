@@ -61,7 +61,13 @@ from .drive import (
     save_file_selections,
     save_folder_selection,
 )
-from .pipeline import _cost_estimate_note, _estimate_cost, process_local_video, sync_drive_media
+from .pipeline import (
+    RENDER001_THIRD_RETRY_SOURCE_SHA256,
+    _cost_estimate_note,
+    _estimate_cost,
+    process_local_video,
+    sync_drive_media,
+)
 from .shotstack import ShotstackClient, ShotstackError
 from .state import ProcessingLedger
 from .style import VideoStyle, load_video_style, save_video_style
@@ -76,6 +82,41 @@ OUTPUT_PROFILES = {
 }
 TERMINAL_STATUSES = {"completed", "failed"}
 GOOGLE_OAUTH_STATE_COOKIE = "matrix_motion_google_oauth_state"
+RENDER001_THIRD_RETRY_TARGET = {
+    "job_id": "8ec0c6cb1ff84b6f94d8dd0c64a56747",
+    "previous_job_id": "621e5ca005984410bd922aea07144588",
+    "source_id": "608c74727e18449da2899f75d426f8c9",
+    "source_sha256": RENDER001_THIRD_RETRY_SOURCE_SHA256,
+    "filename": "0415.mov",
+}
+RENDER001_THIRD_RETRY_PLAN = {
+    "cuts": [],
+    "zooms": [{"start_seconds": 10.0, "end_seconds": 13.0, "effect": "zoomIn"}],
+    "stickers": [{
+        "sticker": "sparkle",
+        "start_seconds": 4.0,
+        "duration_seconds": 1.5,
+        "position": "topRight",
+        "effect": "zoomIn",
+        "color": "#FFD84D",
+    }],
+}
+
+
+def _matches_render001_third_retry_configuration(
+    style: VideoStyle,
+    subtitle_mode: str,
+    creative_plan: dict[str, Any],
+) -> bool:
+    return (
+        subtitle_mode == "none"
+        and style.output_width == 1080
+        and style.output_height == 1920
+        and style.output_fps == 50
+        and style.output_quality == "high"
+        and not style.logo_path
+        and creative_plan == RENDER001_THIRD_RETRY_PLAN
+    )
 
 
 class PanelError(RuntimeError):
@@ -246,8 +287,13 @@ class DashboardStore:
         job_id: str,
         estimate: float | None,
         edit_options: dict[str, Any],
+        *,
+        attempt_number: int = 2,
     ) -> dict[str, Any]:
-        """Atomically reserve the single permitted retry for one failed attempt."""
+        """Atomically append exactly the next attempt, preserving all prior rows."""
+        if attempt_number not in {2, 3}:
+            raise PanelError("Número de intento no permitido.", 409)
+        expected_history = list(range(1, attempt_number))
         now = time.time()
         with self.lock, self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -263,27 +309,32 @@ class DashboardStore:
                    ORDER BY created_at DESC, rowid DESC LIMIT 1""",
                 (previous["source_id"],),
             ).fetchone()
-            retry_count = db.execute(
-                "SELECT COUNT(*) AS count FROM dashboard_jobs WHERE source_id = ? AND attempt_number > 1",
+            history = db.execute(
+                """SELECT attempt_number FROM dashboard_jobs WHERE source_id = ?
+                   ORDER BY attempt_number ASC, created_at ASC, rowid ASC""",
                 (previous["source_id"],),
-            ).fetchone()["count"]
+            ).fetchall()
+            history_numbers = [int(row["attempt_number"] or 1) for row in history]
             if previous["status"] != "failed":
                 raise PanelError("Solo se puede reintentar un intento que terminó con error.", 409)
-            if int(previous.get("attempt_number") or 1) != 1 or retry_count:
-                raise PanelError("Ya se utilizó el único reintento permitido para este vídeo.", 409)
+            if int(previous.get("attempt_number") or 1) != attempt_number - 1:
+                raise PanelError("El intento anterior no coincide con la secuencia autorizada.", 409)
+            if history_numbers != expected_history:
+                raise PanelError("El historial cambió o ya se reservó este intento.", 409)
             if not latest or latest["id"] != previous_job_id:
                 raise PanelError("El intento seleccionado ya no es el más reciente.", 409)
             try:
                 db.execute(
                     """INSERT INTO dashboard_jobs
                        (id, source_id, status, phase, progress, estimated_cost_usd,
-                        edit_options_json, attempt_number, retry_of_job_id, created_at, updated_at)
-                       VALUES (?, ?, 'queued', 'queued', NULL, ?, ?, 2, ?, ?, ?)""",
+                    edit_options_json, attempt_number, retry_of_job_id, created_at, updated_at)
+                   VALUES (?, ?, 'queued', 'queued', NULL, ?, ?, ?, ?, ?, ?)""",
                     (
                         job_id,
                         previous["source_id"],
                         estimate,
                         json.dumps(edit_options, ensure_ascii=False),
+                        attempt_number,
                         previous_job_id,
                         now,
                         now,
@@ -1207,6 +1258,48 @@ class VideoPanel:
         has_retry = any(int(attempt.get("attempt_number") or 1) > 1 for attempt in attempt_history)
         prior_error = f"{job.get('error') or ''} {processing.get('error') or ''}" if job else ""
         remote_status_check_available = bool(processing.get("render_id"))
+        try:
+            saved_processing_options = json.loads(processing.get("edit_options_json") or "{}")
+            if not isinstance(saved_processing_options, dict):
+                saved_processing_options = {}
+            saved_style_data = saved_processing_options.get("style") or {}
+            saved_style = VideoStyle(**saved_style_data)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            saved_processing_options = {}
+            saved_style = None
+        target = RENDER001_THIRD_RETRY_TARGET
+        exact_target = (
+            upload["id"] == target["source_id"]
+            and upload["source_sha256"] == target["source_sha256"]
+            and upload["original_filename"] == target["filename"]
+            and job is not None
+            and job.get("id") == target["job_id"]
+            and job.get("retry_of_job_id") == target["previous_job_id"]
+        )
+        failed_history = (
+            len(attempt_history) == 2
+            and [int(attempt.get("attempt_number") or 1) for attempt in attempt_history] == [1, 2]
+            and attempt_history[0].get("id") == target["previous_job_id"]
+            and attempt_history[1].get("id") == target["job_id"]
+            and all("HTTP 400" in str(attempt.get("error") or "") for attempt in attempt_history)
+        )
+        active_job = self.store.get_job(self.active_job_id) if self.active_job_id else None
+        no_active_job = not active_job or active_job.get("status") in TERMINAL_STATUSES
+        saved_plan = saved_processing_options.get("creative_plan")
+        saved_mode = saved_processing_options.get("subtitle_mode")
+        third_retry_options_match = bool(
+            saved_style
+            and _matches_render001_third_retry_configuration(
+                saved_style,
+                saved_mode,
+                saved_plan if isinstance(saved_plan, dict) else {},
+            )
+            and latest_options.get("subtitle_mode") == "none"
+            and latest_options.get("output_profile") == "1080p"
+            and latest_options.get("output_quality") == "high"
+            and latest_options.get("output_fps") == 50
+            and latest_options.get("creative_plan") == RENDER001_THIRD_RETRY_PLAN
+        )
         result.update({
             "attempt_history": attempt_history,
             "latest_job_id": job.get("id") if job else None,
@@ -1223,6 +1316,17 @@ class VideoPanel:
                 and attempts_used == 1
                 and not has_retry
                 and (remote_status_check_available or "HTTP 400" in prior_error)
+            ),
+            "can_run_controlled_third_render": bool(
+                exact_target
+                and failed_history
+                and job.get("status") == "failed"
+                and processing.get("status") == "failed"
+                and attempts_used == 2
+                and not remote_status_check_available
+                and "HTTP 400" in prior_error
+                and third_retry_options_match
+                and no_active_job
             ),
         })
         return result
@@ -1572,14 +1676,28 @@ class VideoPanel:
         self.executor.submit(self._run_job, job_id, upload, estimate, style, edit_options)
         return self.store.get_job(job_id) or {}
 
-    def retry_job(self, job_id: str, payload: Any) -> dict[str, Any]:
-        """Reserve one owner-authorized retry, preserving the original attempt."""
+    def retry_job(
+        self,
+        job_id: str,
+        payload: Any,
+        *,
+        controlled_third_attempt: bool = False,
+    ) -> dict[str, Any]:
+        """Reserve an owner-authorized retry; the one-off third attempt is target-locked."""
         if not isinstance(payload, dict):
             raise PanelError("La solicitud de reintento debe ser un objeto JSON.")
         if payload.get("authorize_paid_apis") is not True or payload.get("confirm_single_retry") is not True:
             raise PanelError("Falta la autorización expresa para un único reintento en Shotstack Stage.", 403)
         if not re.fullmatch(r"[0-9a-f]{32}", job_id):
             raise PanelError("Identificador de trabajo no válido.")
+        expected_previous_attempt = 2 if controlled_third_attempt else 1
+        if controlled_third_attempt:
+            target = RENDER001_THIRD_RETRY_TARGET
+            if (
+                job_id != target["job_id"]
+                or payload.get("confirm_final_third_attempt") is not True
+            ):
+                raise PanelError("La tercera prueba requiere autorización explícita y está limitada a RENDER-001.", 403)
 
         with self.job_lock:
             previous = self.store.get_job(job_id)
@@ -1587,12 +1705,19 @@ class VideoPanel:
                 raise PanelError("No se encontró el intento fallido.", 404)
             if previous["status"] != "failed":
                 raise PanelError("Solo se puede reintentar un intento que terminó con error.", 409)
-            if int(previous.get("attempt_number") or 1) != 1:
-                raise PanelError("Este trabajo ya es el reintento único permitido.", 409)
+            if int(previous.get("attempt_number") or 1) != expected_previous_attempt:
+                raise PanelError("El intento anterior no coincide con el límite de reintentos autorizado.", 409)
 
             upload = self.store.get_upload(previous["source_id"])
             if not upload:
                 raise PanelError("No se encontró el vídeo original.", 404)
+            if controlled_third_attempt and (
+                upload["id"] != target["source_id"]
+                or upload["source_sha256"] != target["source_sha256"]
+                or upload["original_filename"] != target["filename"]
+                or previous.get("retry_of_job_id") != target["previous_job_id"]
+            ):
+                raise PanelError("El trabajo no coincide exactamente con el vídeo autorizado para esta prueba.", 403)
             latest = self.store.latest_job_for_source(upload["id"])
             if not latest or latest["id"] != job_id:
                 raise PanelError("El intento seleccionado ya no es el más reciente.", 409)
@@ -1624,13 +1749,33 @@ class VideoPanel:
                     )
 
             processing = self.store.ledger.get(upload["source_sha256"])
-            if processing.get("status") != "failed" or int(processing.get("attempts") or 0) != 1:
+            if (
+                processing.get("status") != "failed"
+                or int(processing.get("attempts") or 0) != expected_previous_attempt
+            ):
                 raise PanelError(
-                    "El estado local no confirma un único intento fallido; se bloquea el reenvío.",
+                    "El estado local no confirma exactamente los intentos fallidos requeridos; se bloquea el reenvío.",
                     409,
                 )
-            if self.store.job_history_for_source(upload["id"])[-1]["id"] != job_id:
+            history = self.store.job_history_for_source(upload["id"])
+            if (
+                not history
+                or history[-1]["id"] != job_id
+                or [int(attempt.get("attempt_number") or 1) for attempt in history]
+                != list(range(1, expected_previous_attempt + 1))
+            ):
                 raise PanelError("El historial cambió; actualiza el panel antes de reintentar.", 409)
+            if controlled_third_attempt and (
+                len(history) != 2
+                or history[0].get("id") != target["previous_job_id"]
+                or history[1].get("id") != target["job_id"]
+                or any(
+                    attempt.get("status") != "failed"
+                    or "HTTP 400" not in str(attempt.get("error") or "")
+                    for attempt in history
+                )
+            ):
+                raise PanelError("No se verifican los dos rechazos HTTP 400 previos de RENDER-001.", 409)
 
             saved = json.loads(processing.get("edit_options_json") or "{}")
             if not isinstance(saved, dict) or not isinstance(saved.get("style"), dict):
@@ -1643,6 +1788,12 @@ class VideoPanel:
             creative_plan = saved.get("creative_plan")
             if subtitle_mode not in {"none", "simple", "dynamic"} or not isinstance(creative_plan, dict):
                 raise PanelError("Faltan opciones guardadas para reproducir la misma edición.", 409)
+            if controlled_third_attempt and not _matches_render001_third_retry_configuration(
+                style,
+                subtitle_mode,
+                creative_plan,
+            ):
+                raise PanelError("La configuración guardada no coincide con la edición aprobada para RENDER-001.", 409)
 
             original_options = previous.get("edit_options") or {}
             output_profile = next(
@@ -1735,6 +1886,7 @@ class VideoPanel:
                 retry_id,
                 estimate,
                 retry_options,
+                attempt_number=expected_previous_attempt + 1,
             )
             self.active_job_id = retry_id
 
@@ -1747,6 +1899,7 @@ class VideoPanel:
                 style,
                 retry_options,
                 retry_failed=True,
+                allow_third_attempt=controlled_third_attempt,
             )
         except RuntimeError:
             self.store.update_job(
@@ -1760,6 +1913,7 @@ class VideoPanel:
                     self.active_job_id = None
             raise PanelError("No se pudo iniciar el reintento local.", 503) from None
         retry["resumes_existing_render"] = resume_existing_render
+        retry["controlled_third_attempt"] = controlled_third_attempt
         return retry
 
     def _run_job(
@@ -1771,6 +1925,7 @@ class VideoPanel:
         edit_options: dict[str, Any],
         *,
         retry_failed: bool = False,
+        allow_third_attempt: bool = False,
     ) -> None:
         drive_import = (
             self.drive_store.get_import_for_local_upload(upload["id"])
@@ -1811,6 +1966,7 @@ class VideoPanel:
                 creative_plan=edit_options.get("creative_plan"),
                 state_db_path=self.store.database_path,
                 retry_failed=retry_failed,
+                allow_third_attempt=allow_third_attempt,
                 progress_callback=update_phase,
             )
             if drive_import and self.drive_store:
@@ -1848,7 +2004,7 @@ class VideoPanel:
                 status="failed",
                 phase="failed",
                 progress=None,
-                error=str(exc)[:500],
+                error=str(exc)[:1600],
                 estimated_cost_usd=estimate,
             )
         finally:
@@ -2475,6 +2631,19 @@ required minlength="16" {disabled}>
                 self._json(self.server.panel.prepare_proposal(self._read_json()), 200)
             elif self.command == "POST" and path == "/api/jobs":
                 self._json(self.server.panel.start_job(self._read_json()), 202)
+            elif (
+                self.command == "POST"
+                and re.fullmatch(r"/api/jobs/[0-9a-f]{32}/retry-third", path)
+            ):
+                failed_job_id = path.split("/")[3]
+                self._json(
+                    self.server.panel.retry_job(
+                        failed_job_id,
+                        self._read_json(),
+                        controlled_third_attempt=True,
+                    ),
+                    202,
+                )
             elif (
                 self.command == "POST"
                 and re.fullmatch(r"/api/jobs/[0-9a-f]{32}/retry", path)

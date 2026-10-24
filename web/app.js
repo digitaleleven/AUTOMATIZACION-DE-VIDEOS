@@ -527,6 +527,8 @@ function renderSelectedItem() {
     byId("retry-drive-upload-button").hidden = true;
     byId("retry-render-button").hidden = true;
     byId("retry-render-hint").hidden = true;
+    byId("retry-final-render-button").hidden = true;
+    byId("retry-final-render-hint").hidden = true;
     updateProcessButton();
     return;
   }
@@ -585,6 +587,12 @@ function renderSelectedItem() {
   retryHint.textContent = item.retry_remote_status_check_available
     ? "Al autorizar, el servidor comprobará primero el estado del render registrado."
     : "No hay ID remoto: el estado en Shotstack no se puede consultar. Se solicitará confirmación antes de permitir el único reenvío.";
+  const finalRetryButton = byId("retry-final-render-button");
+  const finalRetryHint = byId("retry-final-render-hint");
+  finalRetryButton.hidden = item.can_run_controlled_third_render !== true;
+  finalRetryButton.disabled = false;
+  finalRetryHint.hidden = item.can_run_controlled_third_render !== true;
+  finalRetryHint.textContent = "Acción de una sola vez reservada para 0415.mov. Los dos intentos anteriores se conservarán.";
   updateProcessButton();
 }
 
@@ -998,9 +1006,12 @@ byId("retry-drive-upload-button").addEventListener("click", async () => {
     button.disabled = false;
   }
 });
-byId("retry-render-button").addEventListener("click", async () => {
+async function authorizeRenderRetry(finalAttempt = false) {
   const item = getSelectedItem();
-  if (!item?.can_retry_render || !item.latest_job_id) return;
+  const canAuthorize = finalAttempt
+    ? item?.can_run_controlled_third_render
+    : item?.can_retry_render;
+  if (!canAuthorize || !item.latest_job_id) return;
   const settings = item.retry_settings || {};
   const plan = settings.creative_plan || {};
   const zooms = Array.isArray(plan.zooms) ? plan.zooms : [];
@@ -1020,30 +1031,39 @@ byId("retry-render-button").addEventListener("click", async () => {
     ? "Al terminar, se creará un MP4 nuevo en 02_PROCESADOS. El original de Drive no se modificará."
     : "";
   const message = [
-    `Se autorizará un único reintento para ${item.original_filename || item.filename}.`,
+    finalAttempt
+      ? `Se autorizará la única tercera y última prueba de RENDER-001 para ${item.original_filename || item.filename}.`
+      : `Se autorizará un único reintento para ${item.original_filename || item.filename}.`,
     `Configuración guardada: ${settings.subtitle_mode === "none" ? "sin subtítulos" : "subtítulos " + settings.subtitle_mode}; ${outputLabel}, ${settings.output_fps} FPS, calidad ${settings.output_quality}; zoom ${zoomSummary}; sticker ${stickerSummary}.`,
     costLine,
     driveWriteLine,
-    "Se enviará a Shotstack Stage. ¿Autorizas este único intento?",
+    finalAttempt
+      ? "Los dos intentos anteriores permanecerán intactos. Se enviará exactamente una vez a Shotstack Stage. ¿Autorizas esta prueba final?"
+      : "Se enviará a Shotstack Stage. ¿Autorizas este único intento?",
   ].filter(Boolean).join("\n");
   if (!window.confirm(message)) return;
   const remoteStatusAvailable = item.retry_remote_status_check_available === true;
   if (!remoteStatusAvailable && !window.confirm(
-    "El primer intento terminó con HTTP 400 y no devolvió un ID de render. No se puede consultar el estado remoto. MATRIX MOTION impedirá un segundo reintento local. ¿Confirmas que autorizas reenviar exactamente la edición guardada una vez?",
+    finalAttempt
+      ? "Los dos intentos anteriores terminaron con HTTP 400 y no devolvieron un ID de render. No es posible consultar el estado remoto. MATRIX MOTION bloqueará cualquier cuarto intento. ¿Confirmas que autorizas exactamente esta tercera y última prueba?"
+      : "El primer intento terminó con HTTP 400 y no devolvió un ID de render. No se puede consultar el estado remoto. MATRIX MOTION impedirá un segundo reintento local. ¿Confirmas que autorizas reenviar exactamente la edición guardada una vez?",
   )) return;
   const unknownCost = estimatedCost === null || estimatedCost === undefined;
   if (unknownCost && !window.confirm("El coste no puede estimarse con los datos guardados. ¿Aceptas continuar con coste desconocido?")) return;
 
-  const button = byId("retry-render-button");
+  const button = byId(finalAttempt ? "retry-final-render-button" : "retry-render-button");
+  const originalText = button.textContent;
   button.disabled = true;
-  button.textContent = "Solicitando reintento…";
+  button.textContent = finalAttempt ? "Preparando tercera prueba…" : "Solicitando reintento…";
   try {
-    const response = await requestJson(`/api/jobs/${encodeURIComponent(item.latest_job_id)}/retry`, {
+    const retryPath = finalAttempt ? "retry-third" : "retry";
+    const response = await requestJson(`/api/jobs/${encodeURIComponent(item.latest_job_id)}/${retryPath}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         authorize_paid_apis: true,
         confirm_single_retry: true,
+        confirm_final_third_attempt: finalAttempt,
         confirm_no_render_id: !remoteStatusAvailable,
         confirm_drive_output_write: item.retry_will_upload_to_drive === true,
         unknown_cost_acknowledged: unknownCost,
@@ -1063,14 +1083,18 @@ byId("retry-render-button").addEventListener("click", async () => {
     }
     displayToast(response?.resumes_existing_render
       ? "Reanudada la descarga del render existente; no se creó otro render."
-      : "Reintento único solicitado en Shotstack Stage.");
+      : finalAttempt
+        ? "Tercera y última prueba solicitada en Shotstack Stage."
+        : "Reintento único solicitado en Shotstack Stage.");
   } catch (error) {
     displayToast(`No se pudo autorizar el reintento: ${error.message}`, true);
   } finally {
-    button.textContent = "Autorizar un reintento único en Stage";
+    button.textContent = originalText;
     button.disabled = false;
   }
-});
+}
+byId("retry-render-button").addEventListener("click", () => authorizeRenderRetry(false));
+byId("retry-final-render-button").addEventListener("click", () => authorizeRenderRetry(true));
 document.querySelector(".list-toolbar [data-action='upload']")?.addEventListener("click", () => byId("video-input").click());
 document.querySelectorAll("[data-scroll]").forEach((button) => button.addEventListener("click", () => {
   document.getElementById(button.dataset.scroll)?.scrollIntoView({ behavior: "smooth" });

@@ -17,6 +17,7 @@ from unittest.mock import patch
 
 from video_pipeline.auth import OwnerAuth
 from video_pipeline.google_drive import DriveOAuthConfig, GoogleDriveError, GoogleDriveOAuth
+from video_pipeline.media import probe_video
 from video_pipeline.webapp import PanelError, VideoPanel, VideoPanelHandler, VideoPanelServer
 
 
@@ -794,9 +795,12 @@ class VideoPanelApiTests(unittest.TestCase):
         html = body.decode("utf-8")
         self.assertIn('id="retry-render-button"', html)
         self.assertIn("Autorizar un reintento único en Stage", html)
+        self.assertIn('id="retry-final-render-button"', html)
+        self.assertIn("Autorizar tercera y última prueba en Stage", html)
         status, _, script = self.request("GET", "/app.js")
         self.assertEqual(status, 200)
         self.assertIn("/retry", script.decode("utf-8"))
+        self.assertIn("retry-third", script.decode("utf-8"))
 
     def test_retry_requires_no_id_ack_and_reserves_one_independent_attempt(self):
         source_id, job_id, upload, saved = self.create_failed_0415_attempt()
@@ -904,6 +908,169 @@ class VideoPanelApiTests(unittest.TestCase):
                 "confirm_drive_output_write": True,
             })
         self.assertEqual(third_attempt.exception.status_code, 409)
+
+    def test_controlled_third_attempt_is_target_bound_one_shot_and_owner_authorized(self):
+        source_id, first_job_id, upload, saved = self.create_failed_0415_attempt()
+        retry_options = {
+            "subtitle_mode": "none",
+            "output_profile": "1080p",
+            "output_quality": "high",
+            "output_fps": 50,
+            "creative_plan": saved["creative_plan"],
+        }
+        second_job_id = "b" * 32
+        self.panel.store.create_retry_job(first_job_id, second_job_id, None, retry_options)
+        second_error = "Shotstack render submission failed (HTTP 400): Validation failed for timeline"
+        self.panel.store.update_job(
+            second_job_id,
+            status="failed",
+            phase="failed",
+            error=second_error,
+        )
+        source_path = self.panel._source_path(upload)
+        self.panel.store.ledger.claim(
+            upload["source_sha256"],
+            str(source_path),
+            retry_failed=True,
+            edit_options=saved,
+        )
+        self.panel.store.ledger.mark_failed(upload["source_sha256"], second_error)
+
+        target = {
+            "job_id": second_job_id,
+            "previous_job_id": first_job_id,
+            "source_id": source_id,
+            "source_sha256": upload["source_sha256"],
+            "filename": "0415.mov",
+        }
+        self.assertFalse(next(
+            entry for entry in self.panel.library() if entry["id"] == source_id
+        )["can_run_controlled_third_render"])
+        base_payload = {
+            "authorize_paid_apis": True,
+            "confirm_single_retry": True,
+            "confirm_final_third_attempt": True,
+            "confirm_no_render_id": True,
+            "confirm_drive_output_write": True,
+            "unknown_cost_acknowledged": True,
+        }
+        with (
+            patch("video_pipeline.webapp.RENDER001_THIRD_RETRY_TARGET", target),
+            patch.object(self.panel, "health", return_value={
+                "shotstack_key_configured": True,
+                "openai_key_configured": False,
+                "shotstack_environment": "stage",
+            }),
+            patch.object(self.panel.executor, "submit") as submit,
+            patch("video_pipeline.webapp.ShotstackClient", side_effect=AssertionError("no provider calls in preparation")),
+        ):
+            item = next(entry for entry in self.panel.library() if entry["id"] == source_id)
+            self.assertTrue(item["can_run_controlled_third_render"])
+            status, _, _ = self.request(
+                "POST",
+                f"/api/jobs/{second_job_id}/retry-third",
+                body=json.dumps(base_payload).encode(),
+                headers={"Content-Type": "application/json"},
+                authenticated=False,
+            )
+            self.assertEqual(status, 401)
+            self.assertEqual(len(self.panel.store.job_history_for_source(source_id)), 2)
+            submit.assert_not_called()
+
+            status, _, body = self.request(
+                "POST",
+                f"/api/jobs/{first_job_id}/retry-third",
+                body=json.dumps(base_payload).encode(),
+                headers={"Content-Type": "application/json"},
+            )
+            self.assertEqual(status, 403)
+            submit.assert_not_called()
+
+            status, _, body = self.request(
+                "POST",
+                f"/api/jobs/{second_job_id}/retry-third",
+                body=json.dumps({**base_payload, "confirm_final_third_attempt": False}).encode(),
+                headers={"Content-Type": "application/json"},
+            )
+            self.assertEqual(status, 403)
+            self.assertIn("autorización explícita", json.loads(body.decode())["detail"])
+            submit.assert_not_called()
+
+            status, _, body = self.request(
+                "POST",
+                f"/api/jobs/{second_job_id}/retry-third",
+                body=json.dumps(base_payload).encode(),
+                headers={"Content-Type": "application/json"},
+            )
+            self.assertEqual(status, 202)
+            third = json.loads(body.decode())
+            self.assertEqual(third["attempt_number"], 3)
+            self.assertEqual(third["retry_of_job_id"], second_job_id)
+            self.assertTrue(third["controlled_third_attempt"])
+            self.assertEqual(third["edit_options"], retry_options)
+            self.assertTrue(submit.called)
+            self.assertTrue(submit.call_args.kwargs["allow_third_attempt"])
+            self.assertTrue(submit.call_args.kwargs["retry_failed"])
+
+            history = self.panel.store.job_history_for_source(source_id)
+            self.assertEqual([row["attempt_number"] for row in history], [1, 2, 3])
+            self.assertEqual(history[0]["id"], first_job_id)
+            self.assertEqual(history[0]["error"], "Shotstack render submission failed (HTTP 400).")
+            self.assertEqual(history[1]["id"], second_job_id)
+            self.assertEqual(history[1]["error"], second_error)
+            self.assertEqual(history[2]["retry_of_job_id"], second_job_id)
+            self.assertFalse(next(
+                entry for entry in self.panel.library() if entry["id"] == source_id
+            )["can_run_controlled_third_render"])
+
+            status, _, _ = self.request(
+                "POST",
+                f"/api/jobs/{second_job_id}/retry-third",
+                body=json.dumps(base_payload).encode(),
+                headers={"Content-Type": "application/json"},
+            )
+            self.assertEqual(status, 409)
+            self.assertEqual(len(self.panel.store.job_history_for_source(source_id)), 3)
+            self.assertEqual(submit.call_count, 1)
+
+    def test_completed_render_keeps_mp4_and_audio_metadata_available_for_review(self):
+        source_id, job_id, _, _ = self.create_failed_0415_attempt()
+        generated = self.create_movie(".mp4")
+        output_path = self.panel.output_dir / "0415_vertical_edited.mp4"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(generated, output_path)
+        measured_output = probe_video(output_path)
+        result_metadata = {
+            "output_dimensions": {"width": measured_output.width, "height": measured_output.height},
+            "output_fps": measured_output.fps,
+            "output_video_codec": measured_output.video_codec,
+            "output_audio_codec": measured_output.audio_codec,
+            "output_quality_preset": "high",
+            "output_video_bit_rate_bps": measured_output.video_bit_rate_bps,
+            "output_format_bit_rate_bps": measured_output.format_bit_rate_bps,
+            "output_duration_seconds": measured_output.duration,
+        }
+        self.panel.store.update_job(
+            job_id,
+            status="completed",
+            phase="completed",
+            progress=100,
+            output_id=output_path.name,
+            result_json=json.dumps(result_metadata),
+        )
+
+        job = self.panel.get_job(job_id)
+        self.assertEqual(job["output_id"], output_path.name)
+        self.assertEqual(job["output_metadata"]["audio_codec"], measured_output.audio_codec)
+        self.assertEqual(
+            job["output_metadata"]["dimensions"],
+            {"width": measured_output.width, "height": measured_output.height},
+        )
+        self.assertTrue(output_path.is_file())
+        status, headers, body = self.request("GET", f"/media/outputs/{output_path.name}")
+        self.assertEqual(status, 200)
+        self.assertEqual(dict(headers)["Content-Type"], "video/mp4")
+        self.assertEqual(body, output_path.read_bytes())
 
     def test_retry_is_locked_to_stage(self):
         _, job_id, _, _ = self.create_failed_0415_attempt()

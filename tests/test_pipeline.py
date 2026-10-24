@@ -22,7 +22,12 @@ from video_pipeline.pipeline import (
     find_local_mp4s,
     process_local_video,
 )
-from video_pipeline.shotstack import ShotstackClient, ShotstackError, build_edit_payload
+from video_pipeline.shotstack import (
+    ShotstackClient,
+    ShotstackError,
+    build_edit_payload,
+    validate_shotstack_payload,
+)
 from video_pipeline.state import (
     DuplicateProcessingError,
     ProcessingLedger,
@@ -279,6 +284,21 @@ class ShotstackPayloadTests(unittest.TestCase):
         self.assertEqual(len(video_clips), 3)
         self.assertEqual([clip["asset"]["trim"] for clip in video_clips], [0, 10, 13])
         self.assertTrue(all("trim" not in clip for clip in video_clips))
+        validate_shotstack_payload(payload)
+
+    def test_local_payload_validation_rejects_clip_level_trim(self):
+        payload = build_edit_payload(
+            "https://media.example/video.mov",
+            18.82,
+            [],
+            None,
+            style=VideoStyle(output_width=1080, output_height=1920, output_fps=50, output_quality="high"),
+            subtitle_mode="none",
+            zooms=[{"start_seconds": 10, "end_seconds": 13, "effect": "zoomIn"}],
+        )
+        payload["timeline"]["tracks"][-1]["clips"][0]["trim"] = 0
+        with self.assertRaisesRegex(ValueError, "use asset.trim"):
+            validate_shotstack_payload(payload)
 
     def test_edit_plan_rejects_overlapping_cuts_and_unknown_stickers(self):
         with self.assertRaises(ValueError):
@@ -323,6 +343,42 @@ class ShotstackPayloadTests(unittest.TestCase):
         self.assertIn("[URL redacted]", diagnostic)
         self.assertNotIn("secret", diagnostic)
         self.assertNotIn("private-token-value", diagnostic)
+
+    def test_shotstack_http_error_keeps_all_three_safe_validation_errors(self):
+        response = Mock()
+        response.status_code = 400
+        response.raise_for_status.side_effect = requests.HTTPError("HTTP 400")
+        response.json.return_value = {
+            "message": "Validation failed for timeline: Found 3 validation errors",
+            "response": {
+                "errors": [
+                    {
+                        "code": "INVALID_CLIP_TRIM",
+                        "detail": "Trim is not allowed on Clip.",
+                        "source": {"pointer": "/timeline/tracks/1/clips/0/trim"},
+                    },
+                    {
+                        "code": "INVALID_CLIP_TRIM",
+                        "detail": "Trim is not allowed on Clip.",
+                        "source": {"pointer": "/timeline/tracks/1/clips/1/trim"},
+                    },
+                    {
+                        "code": "INVALID_CLIP_TRIM",
+                        "detail": "Bad URL https://private.example/a?token=private-value",
+                        "source": {"pointer": "/timeline/tracks/1/clips/2/trim"},
+                    },
+                ],
+            },
+        }
+        with self.assertLogs("video_pipeline.shotstack", level="ERROR") as captured:
+            with self.assertRaises(ShotstackError) as raised:
+                ShotstackClient._json_response(response, "render submission")
+        diagnostic = str(raised.exception) + "\n" + "\n".join(captured.output)
+        for clip_index in range(3):
+            self.assertIn(f"/timeline/tracks/1/clips/{clip_index}/trim", diagnostic)
+        self.assertIn("Found 3 validation errors", diagnostic)
+        self.assertIn("[URL redacted]", diagnostic)
+        self.assertNotIn("private-value", diagnostic)
 
     def test_subtitles_shift_with_cuts_and_do_not_extend_into_removed_ranges(self):
         cuts = [{"start_seconds": 4, "end_seconds": 5}]
@@ -770,7 +826,7 @@ class LocalMediaTests(unittest.TestCase):
 
 
 class StateAndStyleTests(unittest.TestCase):
-    def test_ledger_prevents_duplicates_and_allows_only_one_explicit_retry(self):
+    def test_ledger_caps_normal_retry_and_requires_explicit_third_attempt_gate(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             ledger = ProcessingLedger(Path(temp_dir) / "state.sqlite3")
             job = ledger.claim("hash-1", "input.mp4")
@@ -782,6 +838,22 @@ class StateAndStyleTests(unittest.TestCase):
             retried = ledger.claim("hash-1", "input.mp4", retry_failed=True)
             self.assertEqual(retried["attempts"], 2)
             self.assertIsNotNone(retried["captions_json"])
+            ledger.mark_failed("hash-1", "second controlled failure")
+            with self.assertRaisesRegex(RetryNotAllowedError, "controlled RENDER-001"):
+                ledger.claim(
+                    "hash-1",
+                    "input.mp4",
+                    retry_failed=True,
+                    max_attempts=3,
+                )
+            third = ledger.claim(
+                "hash-1",
+                "input.mp4",
+                retry_failed=True,
+                max_attempts=3,
+                allow_third_attempt=True,
+            )
+            self.assertEqual(third["attempts"], 3)
             ledger.mark_completed("hash-1", "outputs/video.mp4")
             with self.assertRaises(DuplicateProcessingError):
                 ledger.claim("hash-1", "input.mp4", retry_failed=True)
