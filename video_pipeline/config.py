@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 INPUT_FOLDER_ID = "13xrMgSYEOkGANxrUYbmYw1t6TdvXWRYg"
 PROCESSED_FOLDER_ID = "1J6Z0bsWb2dQNKY4hyq4xl7tigtm_pQKN"
 LOGOS_FOLDER_ID = "1t46UE2Mog9JRDSe9TzoPxfs96nE9qDTW"
+RENDER_IDENTITY_VERSION = "v1"
 
 
 @dataclass(frozen=True)

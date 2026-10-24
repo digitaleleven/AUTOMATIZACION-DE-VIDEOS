@@ -4,8 +4,11 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import json
+import hashlib
 import sqlite3
 from typing import Any, Iterator
+
+from .config import RENDER_IDENTITY_VERSION
 
 
 class DuplicateProcessingError(RuntimeError):
@@ -34,6 +37,7 @@ class ProcessingLedger:
                     subtitle_url TEXT,
                     logo_url TEXT,
                     render_id TEXT,
+                    execution_key TEXT,
                     edit_options_json TEXT NOT NULL DEFAULT '{}',
                     error TEXT,
                     updated_at TEXT NOT NULL
@@ -51,6 +55,8 @@ class ProcessingLedger:
                 connection.execute(
                     "ALTER TABLE processing_jobs ADD COLUMN edit_options_json TEXT NOT NULL DEFAULT '{}'"
                 )
+            if "execution_key" not in existing_columns:
+                connection.execute("ALTER TABLE processing_jobs ADD COLUMN execution_key TEXT")
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -90,6 +96,7 @@ class ProcessingLedger:
         requested_options_json = json.dumps(
             requested_options, sort_keys=True, separators=(",", ":"), ensure_ascii=False
         )
+        execution_key = stable_execution_key(source_sha256, requested_options)
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
@@ -103,9 +110,10 @@ class ProcessingLedger:
                     raise RetryNotAllowedError("A third attempt cannot start without the two recorded failures.")
                 connection.execute(
                     """INSERT INTO processing_jobs
-                    (source_sha256, source_path, status, attempts, edit_options_json, updated_at)
-                    VALUES (?, ?, 'processing', 1, ?, ?)""",
-                    (source_sha256, source_path, requested_options_json, now),
+                    (source_sha256, source_path, status, attempts, execution_key,
+                     edit_options_json, updated_at)
+                    VALUES (?, ?, 'processing', 1, ?, ?, ?)""",
+                    (source_sha256, source_path, execution_key, requested_options_json, now),
                 )
                 return self.get(source_sha256, connection=connection)
 
@@ -130,6 +138,16 @@ class ProcessingLedger:
                     "The requested edit settings differ from the previous attempt. "
                     "Use an unprocessed source copy rather than reusing cached provider assets."
                 )
+            saved_execution_key = job.get("execution_key")
+            if saved_execution_key and saved_execution_key != execution_key:
+                raise RetryNotAllowedError(
+                    "The requested execution identity differs from the previous attempt."
+                )
+            if not saved_execution_key:
+                connection.execute(
+                    "UPDATE processing_jobs SET execution_key = ? WHERE source_sha256 = ?",
+                    (execution_key, source_sha256),
+                )
             if allow_third_attempt and int(job["attempts"]) != 2:
                 raise RetryNotAllowedError("The controlled third attempt requires exactly two prior attempts.")
             if job["status"] == "processing":
@@ -150,9 +168,10 @@ class ProcessingLedger:
             connection.execute(
                 """UPDATE processing_jobs SET
                     source_path = ?, status = 'processing', attempts = attempts + 1,
+                    execution_key = ?,
                     error = NULL, updated_at = ?
                    WHERE source_sha256 = ?""",
-                (source_path, now, source_sha256),
+                (source_path, execution_key, now, source_sha256),
             )
             return self.get(source_sha256, connection=connection)
 
@@ -171,7 +190,7 @@ class ProcessingLedger:
     def update(self, source_sha256: str, **fields: Any) -> None:
         allowed = {
             "output_path", "captions_json", "shotstack_source_url", "subtitle_url",
-            "logo_url", "render_id", "error", "status"
+            "logo_url", "render_id", "execution_key", "error", "status"
         }
         if not fields or set(fields) - allowed:
             raise ValueError("Unsupported or empty processing-ledger update.")
@@ -190,3 +209,17 @@ class ProcessingLedger:
 
     def mark_completed(self, source_sha256: str, output_path: str) -> None:
         self.update(source_sha256, status="completed", output_path=output_path, error=None)
+
+
+def stable_execution_key(source_sha256: str, edit_options: dict[str, Any]) -> str:
+    """Identify one source/configuration pair across process restarts and retries."""
+    if not isinstance(source_sha256, str) or not source_sha256:
+        raise ValueError("A source identity is required.")
+    canonical_options = json.dumps(
+        edit_options, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    identity = (
+        f"matrix-motion-render/{RENDER_IDENTITY_VERSION}\0"
+        f"{source_sha256}\0{canonical_options}"
+    )
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()

@@ -34,6 +34,7 @@ from video_pipeline.state import (
     DuplicateProcessingError,
     ProcessingLedger,
     RetryNotAllowedError,
+    stable_execution_key,
 )
 from video_pipeline.style import StyleConfigError, VideoStyle, load_video_style
 from video_pipeline.subtitles import (
@@ -857,6 +858,10 @@ class LocalMediaTests(unittest.TestCase):
             self.assertTrue(Path(result["output"]).is_file())
             self.assertEqual(result["drive_output"]["id"], "processed-drive-file-id")
             drive_uploader.assert_called_once()
+            self.assertEqual(
+                drive_uploader.call_args.kwargs["app_properties"]["matrixMotionExecution"],
+                result["execution_key"],
+            )
             self.assertFalse(result["drive_upload_skipped"])
             self.assertEqual(result["output_dimensions"], {"width": 1080, "height": 1920})
             self.assertEqual(result["shotstack_environment"], "stage")
@@ -961,6 +966,104 @@ class LocalMediaTests(unittest.TestCase):
 
 
 class PipelineSubmissionStateTests(unittest.TestCase):
+    def test_stable_execution_key_binds_source_to_canonical_render_configuration(self):
+        options = {"subtitle_mode": "none", "output": {"fps": 30, "quality": "high"}}
+        same_options_different_order = {
+            "output": {"quality": "high", "fps": 30},
+            "subtitle_mode": "none",
+        }
+        original = "a" * 64
+        self.assertEqual(
+            stable_execution_key(original, options),
+            stable_execution_key(original, same_options_different_order),
+        )
+        self.assertNotEqual(
+            stable_execution_key(original, options),
+            stable_execution_key("b" * 64, options),
+        )
+        self.assertNotEqual(
+            stable_execution_key(original, options),
+            stable_execution_key(original, {**options, "subtitle_mode": "dynamic"}),
+        )
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg tools are required")
+    def test_retry_reuses_validated_local_output_and_does_not_submit_or_download_again(self):
+        from types import SimpleNamespace
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.mp4"
+            output_dir = root / "outputs"
+            output_dir.mkdir()
+            source.write_bytes(b"source media")
+            output = output_dir / "source_vertical_edited.mp4"
+            output.write_bytes(b"previously validated render")
+            source_info = VideoInfo(
+                str(source), 1.0, 360, 640, True,
+                video_codec="h264", audio_codec="aac", fps=30,
+            )
+            output_info = VideoInfo(
+                str(output), 1.0, 1080, 1920, True,
+                video_codec="h264", audio_codec="aac", fps=30,
+            )
+            style = VideoStyle()
+            plan = {"cuts": [], "zooms": [], "stickers": []}
+            source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+            ledger = ProcessingLedger(root / "state.sqlite3")
+            first = ledger.claim(
+                source_hash,
+                str(source),
+                edit_options={
+                    "subtitle_mode": "none",
+                    "style": __import__("dataclasses").asdict(style),
+                    "creative_plan": plan,
+                },
+            )
+            ledger.update(
+                source_hash,
+                output_path=str(output),
+                shotstack_source_url="https://media.example/ingested.mp4",
+                render_id="existing-stage-render",
+            )
+            ledger.mark_failed(source_hash, "interrupted after render completion")
+
+            renderer = Mock()
+            renderer.upload_local_video.side_effect = AssertionError("reuse ingested asset")
+            renderer.submit_render.side_effect = AssertionError("do not charge for another render")
+            renderer.render_status.side_effect = AssertionError("reuse validated local result")
+            renderer.wait_for_render.side_effect = AssertionError("reuse validated local result")
+            renderer.download_render.side_effect = AssertionError("do not download another copy")
+
+            with (
+                patch("video_pipeline.pipeline.probe_video", return_value=source_info),
+                patch(
+                    "video_pipeline.pipeline.prepare_video_for_shotstack",
+                    return_value=(SimpleNamespace(path=source, width=360, height=640), None),
+                ),
+                patch("video_pipeline.pipeline.validate_rendered_output", return_value=output_info) as validate,
+            ):
+                result = process_local_video(
+                    source,
+                    output_dir,
+                    paid_api_authorized=True,
+                    shotstack_client=renderer,
+                    upload_to_drive=False,
+                    config=PipelineConfig(shotstack_environment="stage"),
+                    style=style,
+                    subtitle_mode="none",
+                    creative_plan=plan,
+                    state_db_path=root / "state.sqlite3",
+                    retry_failed=True,
+                )
+
+            self.assertEqual(result["output"], str(output))
+            self.assertEqual(result["execution_key"], first["execution_key"])
+            renderer.submit_render.assert_not_called()
+            renderer.download_render.assert_not_called()
+            renderer.render_status.assert_not_called()
+            validate.assert_called_once()
+            self.assertEqual(source.read_bytes(), b"source media")
+
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg tools are required")
     def test_ambiguous_shotstack_submission_is_persisted_and_not_retried(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1015,8 +1118,116 @@ class PipelineSubmissionStateTests(unittest.TestCase):
                 process_local_video(source, root / "outputs", retry_failed=True, **kwargs)
             self.assertEqual(renderer.submit_calls, 1)
 
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg tools are required")
+    def test_transport_interruption_during_render_post_fails_closed_on_retry(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.mp4"
+            subprocess.run(
+                [
+                    "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+                    "-f", "lavfi", "-i", "color=c=blue:s=360x640:d=1:r=30",
+                    "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                    "-shortest", str(source),
+                ],
+                check=True,
+                capture_output=True,
+                timeout=30,
+            )
+
+            class InterruptedShotstackStub:
+                def __init__(self):
+                    self.submit_calls = 0
+
+                def upload_local_video(self, _path):
+                    return "https://media.example/ingested.mp4"
+
+                def submit_render(self, _payload):
+                    self.submit_calls += 1
+                    raise TimeoutError("connection closed after request transmission")
+
+            renderer = InterruptedShotstackStub()
+            state_path = root / "state.sqlite3"
+            kwargs = {
+                "paid_api_authorized": True,
+                "upload_to_drive": False,
+                "shotstack_client": renderer,
+                "config": PipelineConfig(shotstack_environment="stage"),
+                "style": VideoStyle(),
+                "subtitle_mode": "none",
+                "state_db_path": state_path,
+            }
+            with self.assertRaisesRegex(TimeoutError, "connection closed"):
+                process_local_video(source, root / "outputs", **kwargs)
+
+            source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+            state = ProcessingLedger(state_path).get(source_hash)
+            self.assertEqual(state["status"], "submission_unknown")
+            self.assertIsNone(state["render_id"])
+            with self.assertRaisesRegex(RetryNotAllowedError, "Reconcile its remote status"):
+                process_local_video(
+                    source,
+                    root / "outputs",
+                    retry_failed=True,
+                    **kwargs,
+                )
+            self.assertEqual(renderer.submit_calls, 1)
+
 
 class StateAndStyleTests(unittest.TestCase):
+    def test_execution_key_is_backfilled_when_opening_an_existing_processing_ledger(self):
+        import sqlite3
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = Path(temp_dir) / "legacy.sqlite3"
+            options = {"subtitle_mode": "none", "fps": 30}
+            source_hash = "c" * 64
+            connection = sqlite3.connect(database)
+            connection.execute(
+                """CREATE TABLE processing_jobs (
+                    source_sha256 TEXT PRIMARY KEY,
+                    source_path TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    output_path TEXT,
+                    captions_json TEXT,
+                    shotstack_source_url TEXT,
+                    subtitle_url TEXT,
+                    logo_url TEXT,
+                    render_id TEXT,
+                    edit_options_json TEXT NOT NULL DEFAULT '{}',
+                    error TEXT,
+                    updated_at TEXT NOT NULL
+                )"""
+            )
+            connection.execute(
+                """INSERT INTO processing_jobs
+                   (source_sha256, source_path, status, attempts, edit_options_json, updated_at)
+                   VALUES (?, ?, 'failed', 1, ?, '2026-10-24T00:00:00+00:00')""",
+                (
+                    source_hash,
+                    "source.mp4",
+                    json.dumps(options, sort_keys=True, separators=(",", ":")),
+                ),
+            )
+            connection.commit()
+            connection.close()
+
+            ledger = ProcessingLedger(database)
+            retried = ledger.claim(
+                source_hash,
+                "source.mp4",
+                retry_failed=True,
+                edit_options=options,
+            )
+
+            self.assertEqual(retried["attempts"], 2)
+            self.assertEqual(
+                retried["execution_key"],
+                stable_execution_key(source_hash, options),
+            )
+
     def test_ledger_caps_normal_retry_and_requires_explicit_third_attempt_gate(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             ledger = ProcessingLedger(Path(temp_dir) / "state.sqlite3")
@@ -1138,6 +1349,35 @@ class SafetyTests(unittest.TestCase):
             lock.unlink()
 
 class DriveUploadTests(unittest.TestCase):
+    def test_existing_drive_output_for_execution_key_is_reused_before_upload(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "render.mp4"
+            source.write_bytes(b"new render")
+            session = Mock()
+            response = Mock(status_code=200, ok=True)
+            response.json.return_value = {
+                "files": [{
+                    "id": "existing-output-id",
+                    "name": "render.mp4",
+                    "mimeType": "video/mp4",
+                    "parents": ["processed-folder"],
+                }]
+            }
+            session.request.return_value = response
+
+            result = upload_new_file(
+                source,
+                folder_id="processed-folder",
+                access_token="test-google-token",
+                session=session,
+                app_properties={"matrixMotionExecution": "a" * 64},
+            )
+
+        self.assertEqual(result["id"], "existing-output-id")
+        session.request.assert_called_once()
+        session.post.assert_not_called()
+        session.put.assert_not_called()
+
     def test_creates_new_drive_file_with_resumable_chunks(self):
         chunk_size = 256 * 1024
         first_chunk = Mock(status_code=308, headers={"Range": f"bytes=0-{chunk_size - 1}"})

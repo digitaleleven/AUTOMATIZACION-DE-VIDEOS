@@ -11,18 +11,54 @@ import unittest
 from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
-from types import SimpleNamespace
 from urllib.parse import parse_qs, quote, urlencode, urlsplit
 from unittest.mock import patch
 
 from video_pipeline.auth import OwnerAuth
 from video_pipeline.google_drive import DriveOAuthConfig, GoogleDriveError, GoogleDriveOAuth
 from video_pipeline.media import probe_video
-from video_pipeline.webapp import PanelError, VideoPanel, VideoPanelHandler, VideoPanelServer
+from video_pipeline.webapp import (
+    DashboardStore,
+    PanelError,
+    VideoPanel,
+    VideoPanelHandler,
+    VideoPanelServer,
+)
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg tools are required")
 class VideoPanelApiTests(unittest.TestCase):
+    def test_restart_marks_local_processing_as_interrupted_for_safe_reconciliation(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = Path(temp_dir) / "panel.sqlite3"
+            store = DashboardStore(database)
+            source_hash = "a" * 64
+            source_id = "b" * 32
+            store.add_upload(
+                source_id,
+                "source.mp4",
+                "source.mp4",
+                source_hash,
+                10,
+                {"duration": 1},
+            )
+            store.create_job("c" * 32, source_id, 0.25, {"subtitle_mode": "none"})
+            store.ledger.claim(
+                source_hash,
+                "source.mp4",
+                edit_options={"subtitle_mode": "none"},
+            )
+            store.ledger.update(source_hash, render_id="persisted-stage-render")
+
+            recovered = DashboardStore(database)
+
+            self.assertEqual(recovered.ledger.get(source_hash)["status"], "failed")
+            self.assertEqual(recovered.ledger.get(source_hash)["render_id"], "persisted-stage-render")
+            job = recovered.get_job("c" * 32)
+            self.assertEqual(job["status"], "failed")
+            self.assertEqual(job["phase"], "interrupted")
+            self.assertIn("El servicio se reinició", job["error"])
+
     def setUp(self):
         self.env_patcher = patch.dict(
             os.environ,

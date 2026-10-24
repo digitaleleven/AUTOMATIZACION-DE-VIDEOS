@@ -194,6 +194,20 @@ class DashboardStore:
                    WHERE status IN ('queued', 'processing')""",
                 (time.time(),),
             )
+            db.execute(
+                """UPDATE processing_jobs
+                   SET status = 'failed',
+                       error = 'El servicio se reinició; el estado remoto debe comprobarse antes de reintentar.',
+                       updated_at = ?
+                   WHERE status = 'processing'
+                     AND source_sha256 IN (
+                       SELECT uploads.source_sha256
+                       FROM dashboard_uploads AS uploads
+                       JOIN dashboard_jobs AS jobs ON jobs.source_id = uploads.id
+                       WHERE jobs.phase = 'interrupted' AND jobs.status = 'failed'
+                     )""",
+                (ProcessingLedger._now(),),
+            )
 
     @contextmanager
     def _connect(self):
@@ -1930,14 +1944,11 @@ class VideoPanel:
                 if not self.drive_client:
                     raise GoogleDriveError("La conexión de Google Drive no está disponible.")
 
-                def upload_drive_output(path, folder_id, access_token):
-                    source_key = hashlib.sha256(
-                        drive_import["drive_file_id"].encode("utf-8")
-                    ).hexdigest()
+                def upload_drive_output(path, folder_id, access_token, app_properties=None):
                     return self.drive_client.upload_new_file(
                         path,
                         folder_id=folder_id,
-                        app_properties={"matrixMotionSource": source_key},
+                        app_properties=app_properties,
                     )
 
                 drive_uploader = upload_drive_output
@@ -1948,6 +1959,11 @@ class VideoPanel:
                 paid_api_authorized=True,
                 upload_to_drive=bool(drive_import),
                 drive_uploader=drive_uploader,
+                drive_source_key=(
+                    hashlib.sha256(drive_import["drive_file_id"].encode("utf-8")).hexdigest()
+                    if drive_import
+                    else None
+                ),
                 config=PipelineConfig.from_environment(),
                 style=style,
                 subtitle_mode=edit_options["subtitle_mode"],

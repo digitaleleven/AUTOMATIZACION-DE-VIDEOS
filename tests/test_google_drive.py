@@ -457,7 +457,13 @@ class GoogleDriveApiTests(unittest.TestCase):
     def test_retry_search_uses_source_key_before_creating_another_output(self):
         source_key = hashlib.sha256(b"drive-original-id").hexdigest()
         http = FakeDriveHttp(
-            [FakeResponse({"files": [{"id": "existing-output-id", "name": "edited.mp4"}]})]
+            [FakeResponse({
+                "files": [{
+                    "id": "existing-output-id",
+                    "name": "edited.mp4",
+                    "parents": [PROCESSED_FOLDER_ID],
+                }]
+            })]
         )
         client = GoogleDriveClient(self.oauth, http=http)
         result = client.upload_new_file(
@@ -466,6 +472,31 @@ class GoogleDriveApiTests(unittest.TestCase):
         )
         self.assertEqual(result["id"], "existing-output-id")
         self.assertEqual(len(http.calls), 1)
+
+    def test_retry_search_uses_execution_key_before_source_compatibility_lookup(self):
+        execution_key = "a" * 64
+        http = FakeDriveHttp([
+            FakeResponse({
+                "files": [{
+                    "id": "same-execution-output",
+                    "name": "edited.mp4",
+                    "parents": [PROCESSED_FOLDER_ID],
+                }]
+            })
+        ])
+        client = GoogleDriveClient(self.oauth, http=http)
+
+        result = client.upload_new_file(
+            self.root / "not-read-because-existing.mp4",
+            app_properties={
+                "matrixMotionSource": hashlib.sha256(b"source").hexdigest(),
+                "matrixMotionExecution": execution_key,
+            },
+        )
+
+        self.assertEqual(result["id"], "same-execution-output")
+        self.assertEqual(len(http.calls), 1)
+        self.assertIn("matrixMotionExecution", http.calls[0][2]["params"]["q"])
 
     def test_delete_created_file_uses_a_validated_drive_id_and_targeted_endpoint(self):
         http = FakeDriveHttp([FakeResponse(status_code=204)])

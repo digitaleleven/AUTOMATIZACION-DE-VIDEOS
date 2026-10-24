@@ -16,7 +16,9 @@
 - Salida MP4 1080 × 1920 a 30 fps. Las fuentes con otra relación de aspecto usan `contain` para no cortar caras; solo se usa crop si el formato ya es prácticamente 9:16.
 - Ingest de MP4, SRT y, opcionalmente, logo a Shotstack. Resultado descargado como archivo nuevo; el original no se modifica ni sobrescribe.
 - Carga del render validado a Drive en fragmentos de 8 MB como archivo nuevo, con consulta del avance y reanudación tras cortes. El estado local de la sesión se conserva con permisos restrictivos y no incluye el token OAuth.
-- SQLite local (`data/processing.sqlite3`) para detectar vídeos ya completados, reanudar un render existente y permitir como máximo un reintento manual.
+- SQLite local (`data/processing.sqlite3`) para detectar vídeos ya completados, reanudar un render existente y permitir como máximo un reintento manual. Cada ejecución conserva una clave estable que combina el hash del original y la configuración exacta.
+- Antes de solicitar un render, el estado persistente pasa a “envío incierto”; si el proceso se interrumpe antes de guardar el ID remoto, el sistema bloquea el reenvío ciego. Los reintentos consultan el ID guardado, y reutilizan el MP4 local ya validado si existe.
+- Las salidas de Drive llevan una clave privada de ejecución en `appProperties`; antes de crear otro archivo, se busca el resultado anterior en `02_PROCESADOS`. Las cargas interrumpidas conservan su sesión reanudable y los originales no se modifican.
 - Límites por defecto: un vídeo por ejecución, sin límite fijo de tamaño de archivo, 30 minutos de vídeo, dos bloques de transcripción y un nuevo render por intento. La duración y el máximo de llamadas se pueden ajustar en `video_style.json`.
 - `requirements.txt` fija las versiones usadas. El panel y su API usan la biblioteca estándar de Python y no añaden dependencias web.
 

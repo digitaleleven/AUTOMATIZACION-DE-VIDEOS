@@ -384,6 +384,44 @@ def upload_new_file(
     if chunk_size < MINIMUM_CHUNK_SIZE or chunk_size % MINIMUM_CHUNK_SIZE:
         raise ValueError("Drive chunk size must be a positive multiple of 256 KiB.")
 
+    client = session or requests.Session()
+    if app_properties and app_properties.get("matrixMotionExecution"):
+        execution_key = app_properties["matrixMotionExecution"]
+        if not re.fullmatch(r"[a-f0-9]{64}", execution_key):
+            raise ValueError("Drive execution idempotency key must be a SHA-256 digest.")
+        existing_response = _drive_request(
+            "GET",
+            DRIVE_API_URL,
+            access_token=access_token,
+            session=client,
+            params={
+                "q": (
+                    "appProperties has { key='matrixMotionExecution' "
+                    f"and value='{execution_key}' }} and '{folder_id}' in parents and trashed = false"
+                ),
+                "pageSize": 2,
+                "fields": "files(id,name,mimeType,parents,appProperties)",
+                "supportsAllDrives": "true",
+                "includeItemsFromAllDrives": "true",
+            },
+        )
+        try:
+            existing_files = existing_response.json().get("files", [])
+        except (ValueError, json.JSONDecodeError, AttributeError):
+            raise DriveUploadError("Google Drive returned invalid idempotency lookup metadata.") from None
+        if isinstance(existing_files, list) and existing_files:
+            existing = existing_files[0]
+            if (
+                not isinstance(existing, dict)
+                or not isinstance(existing.get("id"), str)
+                or not existing["id"]
+                or folder_id not in (existing.get("parents") or [])
+            ):
+                raise DriveUploadError(
+                    "Google Drive found an execution result but could not confirm its identity."
+                )
+            return existing
+
     total_size = path.stat().st_size
     source_fingerprint = _file_sha256(path)
     state_path = Path(upload_state_path) if upload_state_path is not None else None
@@ -429,7 +467,6 @@ def upload_new_file(
         ):
             raise ValueError("Drive appProperties must contain short, valid string keys and values.")
         metadata["appProperties"] = app_properties
-    client = session or requests.Session()
     def start_session() -> str:
         try:
             response = client.post(

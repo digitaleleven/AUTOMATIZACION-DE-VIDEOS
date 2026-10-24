@@ -798,6 +798,13 @@ class GoogleDriveClient:
         if folder_id != configured_drive_folders()["processed"]:
             raise GoogleDriveError("Solo se pueden crear resultados en 02_PROCESADOS.")
         source_key = (app_properties or {}).get("matrixMotionSource")
+        execution_key = (app_properties or {}).get("matrixMotionExecution")
+        if execution_key:
+            existing = self.find_output_by_execution(
+                execution_key, folder_id, access_token=access_token
+            )
+            if existing:
+                return existing
         if source_key:
             existing = self.find_output_by_source(
                 source_key, folder_id, access_token=access_token
@@ -853,6 +860,50 @@ class GoogleDriveClient:
         query = (
             "appProperties has { key='matrixMotionSource' and "
             f"value='{source_key}' }} and '{folder_id}' in parents and trashed = false"
+        )
+        params = {
+            "q": query,
+            "pageSize": 2,
+            "fields": "files(id,name,mimeType,parents,appProperties)",
+            "supportsAllDrives": "true",
+            "includeItemsFromAllDrives": "true",
+        }
+        if access_token:
+            response = self._request_with_token(
+                "GET", f"{DRIVE_API}/files", access_token, params=params
+            )
+        else:
+            response = self._request("GET", f"{DRIVE_API}/files", params=params)
+        try:
+            items = response.json().get("files", [])
+        except Exception as exc:
+            raise GoogleDriveError("Google Drive devolvió una respuesta de búsqueda no válida.") from exc
+        if not isinstance(items, list) or not items:
+            return None
+        item = items[0]
+        if (
+            not isinstance(item, dict)
+            or not isinstance(item.get("id"), str)
+            or not item["id"]
+            or folder_id not in (item.get("parents") or [])
+        ):
+            raise GoogleDriveError("Google Drive encontró un resultado cuya identidad no se pudo confirmar.")
+        return item
+
+    def find_output_by_execution(
+        self,
+        execution_key: str,
+        folder_id: str = PROCESSED_FOLDER_ID,
+        *,
+        access_token: str | None = None,
+    ) -> dict[str, Any] | None:
+        if not re.fullmatch(r"[a-f0-9]{64}", execution_key):
+            raise GoogleDriveError("La clave de idempotencia de ejecución no es válida.")
+        if folder_id != configured_drive_folders()["processed"]:
+            raise GoogleDriveError("Solo se pueden buscar resultados en 02_PROCESADOS.")
+        query = (
+            "appProperties has { key='matrixMotionExecution' and "
+            f"value='{execution_key}' }} and '{folder_id}' in parents and trashed = false"
         )
         params = {
             "q": query,

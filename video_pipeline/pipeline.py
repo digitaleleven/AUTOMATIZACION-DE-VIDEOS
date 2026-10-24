@@ -323,6 +323,7 @@ def process_local_video(
     drive_uploader: Any | None = None,
     upload_to_drive: bool = True,
     drive_access_token: str | None = None,
+    drive_source_key: str | None = None,
     config: PipelineConfig | None = None,
     style: VideoStyle | None = None,
     subtitle_mode: str = "none",
@@ -440,14 +441,38 @@ def process_local_video(
             "creative_plan": plan,
         },
     )
+    execution_key = job.get("execution_key")
+    if not isinstance(execution_key, str) or not re.fullmatch(r"[a-f0-9]{64}", execution_key):
+        raise RuntimeError("The persistent render execution identity is invalid.")
     output_path: Path | None = None
     lock_path: Path | None = None
     try:
-        output_path, lock_path = _new_output_path(
-            destination_dir,
-            source,
-            subtitle_mode=subtitle_mode,
-        )
+        reusable_output = None
+        previous_output_path = job.get("output_path")
+        if previous_output_path:
+            candidate = Path(previous_output_path).expanduser().resolve()
+            if (
+                candidate.parent == destination_dir
+                and candidate.is_file()
+                and candidate.stat().st_size > 0
+            ):
+                try:
+                    reusable_output = validate_rendered_output(
+                        video,
+                        candidate,
+                        appearance,
+                        expected_duration_seconds=edited_duration(video.duration, plan["cuts"]),
+                    )
+                    output_path = candidate
+                except Exception:
+                    # Keep every prior artifact intact; use a fresh output path.
+                    reusable_output = None
+        if output_path is None:
+            output_path, lock_path = _new_output_path(
+                destination_dir,
+                source,
+                subtitle_mode=subtitle_mode,
+            )
         ledger.update(source_hash, output_path=str(output_path))
         with temporary_work_directory() as work_dir:
             logger.info("Inspecting %s (%dx%d, %.2f seconds)", source.name, video.width, video.height, video.duration)
@@ -527,39 +552,71 @@ def process_local_video(
                 subtitles_already_mapped=True,
             )
             render_id = job.get("render_id")
-            render_url = None
-            if render_id:
-                previous_status, previous_url = renderer.render_status(render_id)
-                if previous_status == "done":
-                    render_url = previous_url
-                elif previous_status in {"failed", "cancelled"}:
-                    if not retry_failed:
-                        raise RuntimeError(
-                            f"Previous Shotstack render {render_id} ended as {previous_status}; "
-                            "use --retry-failed to authorize one new Stage render."
-                        )
-                    render_id = None
-            if not render_url:
-                if not render_id:
-                    if progress_callback:
-                        progress_callback("rendering")
-                    render_id = renderer.submit_render(edit_payload)
-                    ledger.update(source_hash, render_id=render_id)
-                elif progress_callback:
-                    progress_callback("rendering")
-                render_url = renderer.wait_for_render(render_id)
-            if progress_callback:
-                progress_callback("downloading")
-            output = renderer.download_render(render_url, output_path)
-            if progress_callback:
-                progress_callback("validating_output")
             expected_duration = edited_duration(video.duration, plan["cuts"])
-            validated_output = validate_rendered_output(
-                video,
-                output,
-                appearance,
-                expected_duration_seconds=expected_duration,
-            )
+            if reusable_output is not None:
+                output = output_path
+                validated_output = reusable_output
+            else:
+                render_url = None
+                if render_id:
+                    previous_status, previous_url = renderer.render_status(render_id)
+                    if previous_status == "done":
+                        render_url = previous_url
+                    elif previous_status in {"failed", "cancelled"}:
+                        if not retry_failed:
+                            raise RuntimeError(
+                                f"Previous Shotstack render {render_id} ended as {previous_status}; "
+                                "use --retry-failed to authorize one new Stage render."
+                            )
+                        render_id = None
+                if not render_url:
+                    if not render_id:
+                        if progress_callback:
+                            progress_callback("rendering")
+                        # Persist the conservative state before the paid request. If the
+                        # process dies during/after POST, a retry cannot submit blindly.
+                        ledger.update(
+                            source_hash,
+                            status="submission_unknown",
+                            error="Shotstack submission started; reconcile its result before retrying.",
+                        )
+                        try:
+                            render_id = renderer.submit_render(edit_payload)
+                        except ShotstackSubmissionUnknownError:
+                            raise
+                        except Exception as exc:
+                            if "HTTP 400" in str(exc):
+                                ledger.update(
+                                    source_hash,
+                                    status="failed",
+                                    error=f"{type(exc).__name__}: {exc}"[:1600],
+                                )
+                            raise
+                        if (
+                            not isinstance(render_id, (str, int))
+                            or isinstance(render_id, bool)
+                            or not str(render_id).strip()
+                        ):
+                            raise ShotstackSubmissionUnknownError(
+                                "Shotstack render submission returned no usable ID; "
+                                "do not retry until its remote status is reconciled."
+                            )
+                        render_id = str(render_id)
+                        ledger.update(source_hash, render_id=render_id, status="processing", error=None)
+                    elif progress_callback:
+                        progress_callback("rendering")
+                    render_url = renderer.wait_for_render(render_id)
+                if progress_callback:
+                    progress_callback("downloading")
+                output = renderer.download_render(render_url, output_path)
+                if progress_callback:
+                    progress_callback("validating_output")
+                validated_output = validate_rendered_output(
+                    video,
+                    output,
+                    appearance,
+                    expected_duration_seconds=expected_duration,
+                )
             if _sha256_file(source) != source_hash:
                 raise RuntimeError("The source MP4 changed during processing; it remains unmodified by this pipeline.")
 
@@ -574,8 +631,12 @@ def process_local_video(
                 render_hash = _sha256_file(output)
                 upload_options["upload_state_path"] = (
                     Path("data/drive_upload_sessions")
-                    / f"{source_hash}_{render_hash}.json"
+                    / f"{execution_key}_{render_hash}.json"
                 )
+            upload_options["app_properties"] = {
+                **({"matrixMotionSource": drive_source_key} if drive_source_key else {}),
+                "matrixMotionExecution": execution_key,
+            }
             drive_file = uploader(output, **upload_options)
         ledger.mark_completed(source_hash, str(output))
         if progress_callback:
@@ -583,6 +644,7 @@ def process_local_video(
         return {
             "source": str(source),
             "output": str(output),
+            "execution_key": execution_key,
             "drive_output": drive_file,
             "drive_upload_skipped": not upload_to_drive,
             "duration_seconds": video.duration,
@@ -629,7 +691,7 @@ def process_local_video(
                 status="submission_unknown",
                 error=f"{type(exc).__name__}: {exc}"[:1600],
             )
-        else:
+        elif ledger.get(source_hash).get("status") != "submission_unknown":
             ledger.mark_failed(source_hash, f"{type(exc).__name__}: {exc}")
         raise
     finally:
