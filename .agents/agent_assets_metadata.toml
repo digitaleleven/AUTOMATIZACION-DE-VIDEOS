@@ -1,0 +1,16 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "ePpgOINvPnpoLt7qM70H3"
+uri = "file://generated-artifacts/remotion/viability-smoke-2026-10-24/remotion-minimal-3s.mp4"
+type = "video"
+title = "MATRIX MOTION — prueba mínima Remotion"
+description = "MP4 vertical reproducible, H.264 1080×1920 a 25 FPS durante 3,000 s de vídeo, con audio AAC estéreo. Validado con FFprobe y decodificación completa."
+logical_id = "3880a99f-4a68-4523-b927-204dce934c5b"
+content_hash = "sha256:c7bc359f55540ace45e38df97902b16acc5198676c9e802655aba8d23045c99c"
+size = 1288674
+mtime_ms = 1792864486132
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/3880a99f-4a68-4523-b927-204dce934c5b/b8199ca8-475f-40c3-b482-958a456fe8c3"
+storage_version_token = "1792864547611420"
+content_type = "video/mp4"
