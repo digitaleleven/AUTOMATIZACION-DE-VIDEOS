@@ -14,8 +14,8 @@ from urllib.parse import parse_qs, quote, urlencode, urlsplit
 from unittest.mock import patch
 
 from video_pipeline.auth import OwnerAuth
-from video_pipeline.google_drive import DriveOAuthConfig, GoogleDriveOAuth
-from video_pipeline.webapp import VideoPanel, VideoPanelHandler, VideoPanelServer
+from video_pipeline.google_drive import DriveOAuthConfig, GoogleDriveError, GoogleDriveOAuth
+from video_pipeline.webapp import PanelError, VideoPanel, VideoPanelHandler, VideoPanelServer
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg tools are required")
@@ -840,12 +840,14 @@ class VideoPanelApiTests(unittest.TestCase):
             status, _, body = self.request(
                 "POST",
                 "/api/drive/test-write",
-                body=b'{"confirm":true}',
+                body=b'{"confirm":true,"access_token":"temporary-picker-token"}',
                 headers={"Content-Type": "application/json"},
             )
             self.assertEqual(status, 200)
             self.assertTrue(json.loads(body.decode("utf-8"))["created_and_deleted"])
-            write_probe.assert_called_once_with()
+            write_probe.assert_called_once_with(
+                {"confirm": True, "access_token": "temporary-picker-token"}
+            )
 
     def test_write_probe_uploads_and_deletes_only_its_synthetic_mp4_with_fake_drive(self):
         class FakeDriveClient:
@@ -853,12 +855,13 @@ class VideoPanelApiTests(unittest.TestCase):
                 self.uploaded_name = None
                 self.deleted_id = None
 
-            def upload_new_file(self, path, *, folder_id, app_properties):
+            def upload_new_file(self, path, *, folder_id, app_properties, access_token):
                 path = Path(path)
                 self.uploaded_name = path.name
                 self.assert_valid = path.is_file() and path.stat().st_size > 0
                 self.assert_folder = folder_id
                 self.assert_source = app_properties["matrixMotionSource"]
+                self.assert_token = access_token
                 return {
                     "id": "f" * 20,
                     "name": path.name,
@@ -866,16 +869,13 @@ class VideoPanelApiTests(unittest.TestCase):
                     "parents": [folder_id],
                 }
 
-            def delete_created_file(self, file_id):
+            def delete_created_file(self, file_id, *, access_token):
                 self.deleted_id = file_id
+                self.deleted_token = access_token
 
         fake = FakeDriveClient()
         self.panel.drive_oauth = SimpleNamespace(
-            status=lambda: {
-                "ready": True,
-                "authorized": True,
-                "identity_verified": True,
-            }
+            verify_access_token_identity=lambda token: "automation@gmail.com"
         )
         self.panel.drive_client = fake
         with patch(
@@ -887,7 +887,9 @@ class VideoPanelApiTests(unittest.TestCase):
                 }
             },
         ):
-            result = self.panel.test_drive_output_write()
+            result = self.panel.test_drive_output_write(
+                {"confirm": True, "access_token": "temporary-picker-token"}
+            )
         self.assertTrue(result["created_and_deleted"])
         self.assertEqual(result["mime_type"], "video/mp4")
         self.assertEqual(result["destination"], "02_PROCESADOS")
@@ -897,6 +899,48 @@ class VideoPanelApiTests(unittest.TestCase):
         self.assertEqual(fake.assert_folder, "1J6Z0bsWb2dQNKY4hyq4xl7tigtm_pQKN")
         self.assertRegex(fake.assert_source, r"^[a-f0-9]{64}$")
         self.assertEqual(fake.deleted_id, "f" * 20)
+        self.assertEqual(fake.assert_token, "temporary-picker-token")
+        self.assertEqual(fake.deleted_token, "temporary-picker-token")
+
+    def test_picker_drive_actions_fail_closed_before_using_unverified_tokens(self):
+        token_payload = {"access_token": "temporary-token"}
+        with (
+            patch.object(
+                self.panel.drive_oauth,
+                "verify_access_token_identity",
+                side_effect=GoogleDriveError("secondary account check failed"),
+            ) as verify,
+            patch("video_pipeline.webapp.get_folder") as get_folder,
+            patch("video_pipeline.webapp.get_drive_file") as get_drive_file,
+            patch("video_pipeline.webapp.sync_drive_media") as sync_media,
+            patch("video_pipeline.webapp.create_test_file") as create_test_file,
+            patch(
+                "video_pipeline.webapp.load_folder_selections",
+                return_value={"procesados": {"id": "a" * 20, "name": "Procesados"}},
+            ),
+        ):
+            operations = [
+                lambda: self.panel.select_drive_folder(
+                    {"role": "procesados", "folder_id": "a" * 20, **token_payload}
+                ),
+                lambda: self.panel.select_drive_files(
+                    {"role": "entrada", "files": [{"id": "b" * 20}], **token_payload}
+                ),
+                lambda: self.panel.list_drive_files(
+                    {"role": "entrada", **token_payload}
+                ),
+                lambda: self.panel.sync_drive(token_payload),
+                lambda: self.panel.create_drive_test_file(token_payload),
+            ]
+            for operation in operations:
+                with self.subTest(operation=operation):
+                    with self.assertRaises(PanelError):
+                        operation()
+            self.assertEqual(verify.call_count, 5)
+            get_folder.assert_not_called()
+            get_drive_file.assert_not_called()
+            sync_media.assert_not_called()
+            create_test_file.assert_not_called()
 
     def test_drive_upload_retry_reuses_render_without_starting_pipeline(self):
         source_id = "a" * 32

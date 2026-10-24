@@ -60,7 +60,13 @@ async function requestJson(url, options = {}) {
   }
   if (!response.ok) {
     const message = body?.detail || body?.error || body?.message || `No se pudo completar la solicitud (código ${response.status}).`;
-    throw new Error(String(message));
+    if (response.status === 403 && String(url).startsWith("/api/drive/")) {
+      state.driveToken = null;
+      state.driveTokenExpiresAt = 0;
+    }
+    const error = new Error(String(message));
+    error.status = response.status;
+    throw error;
   }
   return body;
 }
@@ -133,11 +139,7 @@ async function scanDrive() {
 }
 
 async function testDriveWrite() {
-  return requestJson(API.driveWriteTest, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ confirm: true }),
-  });
+  return postDrive(API.driveWriteTest, { confirm: true });
 }
 
 async function retryDriveUpload(sourceId) {
@@ -400,7 +402,7 @@ function renderDriveStatus(drive) {
   }
   connect.disabled = drive.ready !== true;
   scan.disabled = drive.authorized !== true || drive.ready !== true;
-  writeTest.disabled = drive.authorized !== true || drive.ready !== true || drive.identity_verified !== true;
+   writeTest.disabled = !canWriteDriveProbe();
   const healthDrive = byId("health-drive");
   if (drive.verified) {
     healthDrive.textContent = "Acceso verificado";
@@ -412,6 +414,16 @@ function renderDriveStatus(drive) {
     healthDrive.textContent = "No conectado";
     healthDrive.className = "health-muted";
   }
+}
+
+function canWriteDriveProbe() {
+  const picker = state.drive?.picker || {};
+  return Boolean(
+    picker.client_id
+    && picker.api_key
+    && picker.app_id
+    && state.drive?.folders?.procesados
+  );
 }
 
 function renderJob(job, sourceName = "") {
@@ -664,7 +676,7 @@ byId("drive-write-test-button").addEventListener("click", async () => {
     message.textContent = `No se pudo completar la prueba de escritura: ${error.message}`;
     displayToast(`Prueba de escritura fallida: ${error.message}`, true);
   } finally {
-    button.disabled = state.driveStatus?.authorized !== true || state.driveStatus?.ready !== true || state.driveStatus?.identity_verified !== true;
+    button.disabled = !canWriteDriveProbe();
   }
 });
 byId("retry-drive-upload-button").addEventListener("click", async () => {
@@ -851,7 +863,7 @@ async function getDriveAccessToken() {
   return new Promise((resolve, reject) => {
     state.googleTokenClient = google.accounts.oauth2.initTokenClient({
       client_id: clientId,
-      scope: "https://www.googleapis.com/auth/drive.file",
+      scope: "https://www.googleapis.com/auth/drive.file openid email",
       callback: (response) => {
         if (response.error || !response.access_token) {
           state.driveToken = null;
@@ -863,7 +875,7 @@ async function getDriveAccessToken() {
         resolve(state.driveToken);
       },
     });
-    state.googleTokenClient.requestAccessToken({ prompt: "" });
+    state.googleTokenClient.requestAccessToken({ prompt: "select_account" });
   });
 }
 
@@ -1017,6 +1029,7 @@ async function loadDriveConfig() {
       button.disabled = !configured || !state.drive.folders?.[folderRole] || !(state.drive.files?.[role]?.length);
     });
     byId("drive-test-file-button").disabled = !configured || !state.drive.folders?.procesados;
+    byId("drive-write-test-button").disabled = !canWriteDriveProbe();
     byId("drive-sync-button").disabled = !configured || !state.drive.folders?.entrada || !state.drive.folders?.logos;
     byId("drive-message").classList.remove("error");
     byId("drive-message").textContent = configured

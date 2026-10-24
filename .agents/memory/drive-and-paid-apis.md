@@ -19,4 +19,4 @@ La usuaria decidió conectar una segunda cuenta Gmail existente y no la cuenta p
 
 **Why:** separar la identidad de automatización evita que una selección accidental de la cuenta principal autorice el panel.
 
-**How to apply:** exigir verificación server-side del correo de Google y fallar cerrado si falta la cuenta permitida; no registrar ni mostrar el correo o tokens, y no ampliar scopes sin nueva autorización.
+**How to apply:** verificar server-side callbacks OAuth y tokens temporales de Picker; fallar cerrado, no registrar ni mostrar correo o tokens, y no ampliar ni revocar permisos por el flujo Picker sin autorización.

@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from video_pipeline.config import INPUT_FOLDER_ID
+from video_pipeline.config import INPUT_FOLDER_ID, PROCESSED_FOLDER_ID
 from video_pipeline.google_drive import (
     DRIVE_ACCESS_SCOPES,
     DRIVE_SCOPES,
@@ -211,6 +211,30 @@ class GoogleDriveOAuthTests(unittest.TestCase):
         self.assertFalse(self.store.has_token())
         self.assertEqual(len(http.revoke_calls), 1)
 
+    def test_picker_access_token_must_match_secondary_account_on_server(self):
+        accepted_http = FakeOAuthHttp(
+            [],
+            userinfo={"email": "automation@gmail.com", "email_verified": True},
+        )
+        oauth = GoogleDriveOAuth(self.config, self.store, http=accepted_http)
+        self.assertEqual(
+            oauth.verify_access_token_identity("temporary-picker-token"),
+            "automation@gmail.com",
+        )
+        self.assertEqual(
+            accepted_http.get_calls[0][1]["headers"]["Authorization"],
+            "Bearer temporary-picker-token",
+        )
+
+        rejected_http = FakeOAuthHttp(
+            [],
+            userinfo={"email": "main-account@gmail.com", "email_verified": True},
+        )
+        rejected = GoogleDriveOAuth(self.config, self.store, http=rejected_http)
+        with self.assertRaisesRegex(GoogleDriveError, "cuenta secundaria"):
+            rejected.verify_access_token_identity("wrong-account-picker-token")
+        self.assertEqual(len(rejected_http.revoke_calls), 0)
+
     def test_refresh_token_from_a_different_account_is_never_reused(self):
         old_bundle = {
             "access_token": "main-account-access",
@@ -347,6 +371,35 @@ class GoogleDriveApiTests(unittest.TestCase):
         self.assertEqual(kwargs["params"], {"supportsAllDrives": "true"})
         with self.assertRaises(GoogleDriveError):
             client.delete_created_file("../not-a-drive-id")
+
+    def test_picker_token_is_used_for_output_lookup_and_cleanup_without_server_token(self):
+        source_key = hashlib.sha256(b"picker-write-probe").hexdigest()
+        http = FakeDriveHttp(
+            [
+                FakeResponse({"files": []}),
+                FakeResponse(status_code=204),
+            ]
+        )
+        client = GoogleDriveClient(self.oauth, http=http)
+        self.assertIsNone(
+            client.find_output_by_source(
+                source_key,
+                PROCESSED_FOLDER_ID,
+                access_token="temporary-picker-token",
+            )
+        )
+        client.delete_created_file(
+            "a" * 20,
+            access_token="temporary-picker-token",
+        )
+        self.assertEqual(
+            http.calls[0][2]["headers"]["Authorization"],
+            "Bearer temporary-picker-token",
+        )
+        self.assertEqual(
+            http.calls[1][2]["headers"]["Authorization"],
+            "Bearer temporary-picker-token",
+        )
 
     def test_import_record_prevents_duplicate_download_registration(self):
         record = {

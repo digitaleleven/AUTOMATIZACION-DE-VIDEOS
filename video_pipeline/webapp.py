@@ -482,13 +482,11 @@ class VideoPanel:
             raise PanelError("La selección de Drive debe ser un objeto JSON.")
         role = str(payload.get("role") or "")
         folder_id = str(payload.get("folder_id") or "")
-        access_token = payload.get("access_token")
-        if not isinstance(access_token, str) or not access_token:
-            raise PanelError("Autoriza Google Drive en esta sesión con drive.file.", 403)
+        if role not in {"entrada", "logos", "procesados"}:
+            raise PanelError("Selecciona Entrada, Procesados o Logos.")
+        access_token = self._verified_picker_access_token(payload)
         try:
             folder = get_folder(folder_id, access_token=access_token)
-            if role not in {"entrada", "logos", "procesados"}:
-                raise PanelError("Selecciona Entrada, Procesados o Logos.")
             previous_id = load_folder_selections().get(role, {}).get("id")
             selections = save_folder_selection(
                 role,
@@ -507,16 +505,28 @@ class VideoPanel:
             "folder": {"id": folder["id"], "name": folder["name"]},
         }
 
+    def _verified_picker_access_token(self, payload: Any) -> str:
+        if not isinstance(payload, dict):
+            raise PanelError("La solicitud de Google Drive no es válida.")
+        access_token = payload.get("access_token")
+        if not isinstance(access_token, str) or not access_token:
+            raise PanelError("Autoriza Google Drive en esta sesión con drive.file.", 403)
+        if not self.drive_oauth:
+            raise PanelError("La validación de identidad de Google no está disponible.", 503)
+        try:
+            self.drive_oauth.verify_access_token_identity(access_token)
+        except GoogleDriveError as exc:
+            raise PanelError(str(exc), 403) from exc
+        return access_token
+
     def select_drive_files(self, payload: Any) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise PanelError("La selección de archivos de Drive no es válida.")
         role = str(payload.get("role") or "")
-        access_token = payload.get("access_token")
         files = payload.get("files")
         if role not in {"entrada", "logos", "instrucciones"}:
             raise PanelError("Solo se pueden autorizar MP4, instrucciones o logos.")
-        if not isinstance(access_token, str) or not access_token:
-            raise PanelError("Autoriza Google Drive en esta sesión con drive.file.", 403)
+        access_token = self._verified_picker_access_token(payload)
         if not isinstance(files, list) or not files or len(files) > 500:
             raise PanelError("Selecciona entre 1 y 500 archivos en Google Picker.")
         folder_role = "entrada" if role == "instrucciones" else role
@@ -556,11 +566,9 @@ class VideoPanel:
         if not isinstance(payload, dict):
             raise PanelError("La solicitud de lista de Drive no es válida.")
         role = str(payload.get("role") or "")
-        access_token = payload.get("access_token")
         if role not in {"entrada", "logos", "instrucciones"}:
             raise PanelError("Solo se pueden enumerar MP4, instrucciones y logos.")
-        if not isinstance(access_token, str) or not access_token:
-            raise PanelError("Autoriza Google Drive en esta sesión con drive.file.", 403)
+        self._verified_picker_access_token(payload)
         folder_role = "entrada" if role == "instrucciones" else role
         folder = load_folder_selections().get(folder_role)
         if not folder:
@@ -575,9 +583,7 @@ class VideoPanel:
     def sync_drive(self, payload: Any) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise PanelError("La solicitud de descarga de Drive no es válida.")
-        access_token = payload.get("access_token")
-        if not isinstance(access_token, str) or not access_token:
-            raise PanelError("Autoriza Google Drive en esta sesión con drive.file.", 403)
+        access_token = self._verified_picker_access_token(payload)
         try:
             config = PipelineConfig.from_environment()
             result = sync_drive_media(
@@ -638,26 +644,27 @@ class VideoPanel:
     def create_drive_test_file(self, payload: Any) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise PanelError("La solicitud de prueba de Drive no es válida.")
-        access_token = payload.get("access_token")
         folder = load_folder_selections().get("procesados")
         if not folder:
             raise PanelError("Selecciona primero la carpeta Procesados con Google Picker.")
-        if not isinstance(access_token, str) or not access_token:
-            raise PanelError("Autoriza Google Drive en esta sesión con drive.file.", 403)
+        access_token = self._verified_picker_access_token(payload)
         try:
             return create_test_file(folder["id"], access_token=access_token)
         except DriveAccessError as exc:
             raise PanelError(str(exc), 403) from exc
 
-    def test_drive_output_write(self) -> dict[str, Any]:
+    def test_drive_output_write(self, payload: Any) -> dict[str, Any]:
+        if not isinstance(payload, dict) or payload.get("confirm") is not True:
+            raise PanelError(
+                "Confirma la creación y eliminación de un MP4 temporal para probar 02_PROCESADOS.",
+                400,
+            )
         if not self.drive_oauth or not self.drive_client:
             raise PanelError("El almacenamiento seguro de Drive no está disponible.", 503)
         processed_folder_id = load_folder_selections().get("procesados", {}).get("id")
         if not processed_folder_id:
             raise PanelError("Selecciona la carpeta Procesados con Google Picker antes de probar la escritura.", 409)
-        status = self.drive_status()
-        if not status.get("ready") or not status.get("authorized") or not status.get("identity_verified"):
-            raise PanelError("La cuenta secundaria de Drive no está conectada y verificada.", 409)
+        access_token = self._verified_picker_access_token(payload)
         if not self.drive_scan_lock.acquire(blocking=False):
             raise PanelError("Espera a que termine el escaneo de Drive antes de probar la escritura.", 409)
 
@@ -691,6 +698,7 @@ class VideoPanel:
                         video_path,
                         folder_id=processed_folder_id,
                         app_properties={"matrixMotionSource": source_key},
+                        access_token=access_token,
                     )
                     remote_id = str(created.get("id") or "")
                     if not re.fullmatch(r"[A-Za-z0-9_-]{10,200}", remote_id):
@@ -700,13 +708,17 @@ class VideoPanel:
                         or processed_folder_id not in (created.get("parents") or [])
                     ):
                         raise GoogleDriveError("Drive no confirmó la carpeta o el tipo del archivo temporal.")
-                    self.drive_client.delete_created_file(remote_id)
+                    self.drive_client.delete_created_file(
+                        remote_id, access_token=access_token
+                    )
                     remote_id = None
                 except Exception as exc:
                     if not remote_id:
                         try:
                             possible_orphan = self.drive_client.find_output_by_source(
-                                source_key, processed_folder_id
+                                source_key,
+                                processed_folder_id,
+                                access_token=access_token,
                             )
                             remote_id = str(possible_orphan.get("id") or "") if possible_orphan else None
                         except Exception as cleanup_lookup_error:
@@ -716,7 +728,9 @@ class VideoPanel:
                             )
                     if remote_id:
                         try:
-                            self.drive_client.delete_created_file(remote_id)
+                            self.drive_client.delete_created_file(
+                                remote_id, access_token=access_token
+                            )
                             remote_id = None
                         except Exception:
                             logger.error(
@@ -1825,7 +1839,7 @@ required minlength="16" {disabled}>
                         "Confirma la creación y eliminación de un MP4 temporal para probar 02_PROCESADOS.",
                         400,
                     )
-                self._json(self.server.panel.test_drive_output_write(), 200)
+                self._json(self.server.panel.test_drive_output_write(payload), 200)
             elif self.command == "POST" and path == "/api/drive/retry-upload":
                 payload = self._read_json()
                 source_id = str(payload.get("source_id") or "") if isinstance(payload, dict) else ""

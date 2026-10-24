@@ -372,6 +372,48 @@ class GoogleDriveOAuth:
                 type(exc).__name__,
             )
 
+    def verify_access_token_identity(
+        self,
+        access_token: str,
+        *,
+        revoke_on_failure: bool = False,
+    ) -> str:
+        """Verify browser-issued Picker tokens against the secondary-account allowlist."""
+        self._require_ready()
+        token = str(access_token or "")
+        if not token or len(token) > 8192 or any(char.isspace() for char in token):
+            raise GoogleDriveError("El token temporal de Google no es válido.")
+        try:
+            response = self.http.get(
+                USERINFO_URL,
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=20,
+                allow_redirects=False,
+            )
+            response.raise_for_status()
+            identity = response.json()
+        except Exception as exc:
+            if revoke_on_failure:
+                self._revoke_unaccepted_grant({"access_token": token})
+            logger.warning("Google access-token identity verification failed (%s)", type(exc).__name__)
+            raise GoogleDriveError(
+                "No se pudo verificar la cuenta de Google. No se usó el token."
+            ) from exc
+        if not isinstance(identity, dict):
+            identity = {}
+        account_email = str(identity.get("email") or "").strip().casefold()
+        if (
+            not account_email
+            or identity.get("email_verified") is not True
+            or not hmac.compare_digest(account_email, self.config.allowed_email.strip().casefold())
+        ):
+            if revoke_on_failure:
+                self._revoke_unaccepted_grant({"access_token": token})
+            raise GoogleDriveError(
+                "La cuenta seleccionada no coincide con la cuenta secundaria autorizada."
+            )
+        return account_email
+
     def authorization_url(self) -> tuple[str, str]:
         self._require_ready()
         state = secrets.token_urlsafe(32)
@@ -431,31 +473,14 @@ class GoogleDriveOAuth:
                     "Google no concedió los permisos de Drive configurados; no se guardó la conexión."
                 )
         try:
-            identity_response = self.http.get(
-                USERINFO_URL,
-                headers={"Authorization": f"Bearer {payload['access_token']}"},
-                timeout=20,
+            account_email = self.verify_access_token_identity(
+                payload["access_token"],
+                revoke_on_failure=True,
             )
-            identity_response.raise_for_status()
-            identity = identity_response.json()
-        except Exception as exc:
-            logger.warning("Google OAuth identity verification failed (%s)", type(exc).__name__)
-            self._revoke_unaccepted_grant(payload)
+        except GoogleDriveError as exc:
             raise GoogleDriveError(
-                "Google no pudo verificar la identidad autorizada. No se guardó la conexión."
+                f"{exc} No se guardó la conexión."
             ) from exc
-        if not isinstance(identity, dict):
-            identity = {}
-        account_email = str(identity.get("email") or "").strip().casefold()
-        if (
-            not account_email
-            or identity.get("email_verified") is not True
-            or not hmac.compare_digest(account_email, self.config.allowed_email.strip().casefold())
-        ):
-            self._revoke_unaccepted_grant(payload)
-            raise GoogleDriveError(
-                "La cuenta seleccionada no coincide con la cuenta secundaria autorizada. No se guardó la conexión."
-            )
         old_bundle = self.store.token_bundle() or {}
         old_email = str(old_bundle.get("account_email") or "").strip().casefold()
         same_account = bool(
@@ -570,6 +595,40 @@ class GoogleDriveClient:
             self.oauth.store.mark_verified()
             return response
         raise GoogleDriveError("Google Drive rechazó la conexión.")
+
+    def _request_with_token(
+        self,
+        method: str,
+        url: str,
+        access_token: str,
+        **kwargs: Any,
+    ):
+        if not isinstance(access_token, str) or not access_token:
+            raise GoogleDriveError("Falta autorización temporal de Google Drive.")
+        headers = dict(kwargs.pop("headers", {}))
+        headers["Authorization"] = f"Bearer {access_token}"
+        try:
+            response = self.http.request(
+                method,
+                url,
+                headers=headers,
+                timeout=self.timeout,
+                allow_redirects=False,
+                **kwargs,
+            )
+        except Exception as exc:
+            logger.warning("Google Drive request with temporary authorization failed (%s)", type(exc).__name__)
+            raise GoogleDriveError("No se pudo contactar con Google Drive.") from exc
+        if response.status_code < 200 or response.status_code >= 300:
+            logger.warning("Google Drive API returned HTTP %s", response.status_code)
+            if response.status_code == 401:
+                raise GoogleDriveError("La autorización temporal de Google caducó; vuelve a autorizar.")
+            if response.status_code == 403:
+                raise GoogleDriveError(
+                    "Google Drive denegó el acceso a la carpeta o al archivo seleccionado."
+                )
+            raise GoogleDriveError(f"Google Drive devolvió un error HTTP {response.status_code}.")
+        return response
 
     def list_children(self, folder_id: str) -> list[dict[str, Any]]:
         if not _DRIVE_ID.fullmatch(folder_id):
@@ -702,12 +761,15 @@ class GoogleDriveClient:
         folder_id: str = PROCESSED_FOLDER_ID,
         *,
         app_properties: dict[str, str] | None = None,
+        access_token: str | None = None,
     ) -> dict[str, Any]:
         if not _DRIVE_ID.fullmatch(folder_id):
             raise GoogleDriveError("El identificador de destino de Drive no es válido.")
         source_key = (app_properties or {}).get("matrixMotionSource")
         if source_key:
-            existing = self.find_output_by_source(source_key, folder_id)
+            existing = self.find_output_by_source(
+                source_key, folder_id, access_token=access_token
+            )
             if existing:
                 return existing
         # Import lazily to avoid an import cycle and preserve the existing resumable uploader.
@@ -716,24 +778,32 @@ class GoogleDriveClient:
         result = upload_new_file(
             path,
             folder_id=folder_id,
-            access_token=self.oauth.access_token(),
+            access_token=access_token or self.oauth.access_token(),
             app_properties=app_properties,
             session=self.http,
         )
-        self.oauth.store.mark_verified()
+        if not access_token:
+            self.oauth.store.mark_verified()
         return result
 
-    def delete_created_file(self, file_id: str) -> None:
+    def delete_created_file(self, file_id: str, *, access_token: str | None = None) -> None:
         """Delete a file created by this process, after validating its Drive ID."""
         if not _DRIVE_ID.fullmatch(file_id):
             raise GoogleDriveError("El identificador del archivo temporal no es válido.")
-        self._request(
-            "DELETE",
-            f"{DRIVE_API}/files/{quote(file_id, safe='')}",
-            params={"supportsAllDrives": "true"},
-        )
+        url = f"{DRIVE_API}/files/{quote(file_id, safe='')}"
+        params = {"supportsAllDrives": "true"}
+        if access_token:
+            self._request_with_token("DELETE", url, access_token, params=params)
+        else:
+            self._request("DELETE", url, params=params)
 
-    def find_output_by_source(self, source_key: str, folder_id: str = PROCESSED_FOLDER_ID) -> dict[str, Any] | None:
+    def find_output_by_source(
+        self,
+        source_key: str,
+        folder_id: str = PROCESSED_FOLDER_ID,
+        *,
+        access_token: str | None = None,
+    ) -> dict[str, Any] | None:
         if not re.fullmatch(r"[a-f0-9]{64}", source_key):
             raise GoogleDriveError("La clave de idempotencia del vídeo no es válida.")
         if not _DRIVE_ID.fullmatch(folder_id):
@@ -742,17 +812,19 @@ class GoogleDriveClient:
             "appProperties has { key='matrixMotionSource' and "
             f"value='{source_key}' }} and '{folder_id}' in parents and trashed = false"
         )
-        response = self._request(
-            "GET",
-            f"{DRIVE_API}/files",
-            params={
-                "q": query,
-                "pageSize": 2,
-                "fields": "files(id,name,mimeType,parents,appProperties)",
-                "supportsAllDrives": "true",
-                "includeItemsFromAllDrives": "true",
-            },
-        )
+        params = {
+            "q": query,
+            "pageSize": 2,
+            "fields": "files(id,name,mimeType,parents,appProperties)",
+            "supportsAllDrives": "true",
+            "includeItemsFromAllDrives": "true",
+        }
+        if access_token:
+            response = self._request_with_token(
+                "GET", f"{DRIVE_API}/files", access_token, params=params
+            )
+        else:
+            response = self._request("GET", f"{DRIVE_API}/files", params=params)
         try:
             items = response.json().get("files", [])
         except Exception as exc:
