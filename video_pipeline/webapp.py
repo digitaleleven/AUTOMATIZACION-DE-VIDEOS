@@ -20,6 +20,7 @@ from pathlib import Path
 import re
 import sqlite3
 import subprocess
+import tempfile
 import threading
 import time
 from typing import Any
@@ -32,7 +33,18 @@ from .auth import (
     AuthError,
     OwnerAuth,
 )
-from .config import PipelineConfig
+from .config import INPUT_FOLDER_ID, LOGOS_FOLDER_ID, PROCESSED_FOLDER_ID, PipelineConfig
+from .drive import DriveUploadError
+from .google_drive import (
+    GOOGLE_DOC_MIME,
+    VIDEO_EXTENSIONS,
+    DriveOAuthConfig,
+    GoogleDriveClient,
+    GoogleDriveError,
+    GoogleDriveOAuth,
+    GoogleDriveStore,
+    parse_style_instructions,
+)
 from .media import MediaError, probe_video
 from .models import VideoInfo
 from .pipeline import _estimate_cost, process_local_video
@@ -44,6 +56,7 @@ MAX_JSON_BYTES = 64 * 1024
 COPY_CHUNK_BYTES = 1024 * 1024
 ALLOWED_CODECS = {"h264", "hevc"}
 TERMINAL_STATUSES = {"completed", "failed"}
+GOOGLE_OAUTH_STATE_COOKIE = "matrix_motion_google_oauth_state"
 
 
 class PanelError(RuntimeError):
@@ -220,7 +233,21 @@ class VideoPanel:
         self.store = DashboardStore(database_path)
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="video-job")
         self.job_lock = threading.Lock()
+        self.drive_scan_lock = threading.Lock()
         self.active_job_id: str | None = None
+        self.drive_store = None
+        self.drive_oauth = None
+        self.drive_client = None
+        drive_config = DriveOAuthConfig.from_environment()
+        try:
+            self.drive_store = GoogleDriveStore(
+                self.store.database_path.with_name("google_drive.sqlite3"),
+                drive_config.session_secret,
+            )
+            self.drive_oauth = GoogleDriveOAuth(drive_config, self.drive_store)
+            self.drive_client = GoogleDriveClient(self.drive_oauth)
+        except ValueError:
+            logger.warning("Google Drive OAuth storage is unavailable because SESSION_SECRET is not configured.")
 
     def health(self) -> dict[str, Any]:
         try:
@@ -232,7 +259,232 @@ class VideoPanel:
             "openai_key_configured": bool(os.getenv("OPENAI_API_KEY")),
             "shotstack_key_configured": bool(os.getenv("SHOTSTACK_API_KEY")),
             "shotstack_environment": environment,
-            "drive_connected": False,
+            "drive_connected": bool(self.drive_oauth and self.drive_oauth.status()["connected"]),
+        }
+
+    def drive_status(self) -> dict[str, Any]:
+        if not self.drive_oauth:
+            return {
+                "enabled": False,
+                "configured": False,
+                "ready": False,
+                "connected": False,
+                "authorization_pending": True,
+                "missing_configuration": ["SESSION_SECRET"],
+                "scopes": [],
+            }
+        return self.drive_oauth.status()
+
+    def scan_drive(self) -> dict[str, Any]:
+        if not self.drive_oauth or not self.drive_client or not self.drive_store:
+            raise PanelError("El almacenamiento seguro de Drive no está disponible.", 503)
+        if not self.drive_oauth.status()["connected"]:
+            raise PanelError("Google Drive no está conectado. No se consultó ninguna carpeta.", 409)
+        if not self.drive_scan_lock.acquire(blocking=False):
+            raise PanelError("Ya hay un escaneo de Drive en curso.", 409)
+        imported: list[dict[str, Any]] = []
+        skipped = 0
+        failures: list[dict[str, str]] = []
+        try:
+            input_items = self.drive_client.list_children(INPUT_FOLDER_ID)
+            logo_items = self.drive_client.list_children(LOGOS_FOLDER_ID)
+            videos = [
+                item
+                for item in input_items
+                if Path(str(item.get("name") or "")).suffix.lower() in VIDEO_EXTENSIONS
+            ]
+            docs = [item for item in input_items if item.get("mimeType") == GOOGLE_DOC_MIME]
+            for remote in videos:
+                drive_file_id = str(remote.get("id") or "")
+                filename = str(remote.get("name") or "")
+                if not drive_file_id or self.drive_store.get_import(drive_file_id):
+                    skipped += 1
+                    continue
+                suffix = Path(filename).suffix.lower()
+                if suffix not in VIDEO_EXTENSIONS:
+                    skipped += 1
+                    continue
+                try:
+                    doc_matches = [
+                        doc for doc in docs
+                        if Path(str(doc.get("name") or "")).stem.casefold()
+                        == Path(filename).stem.casefold()
+                    ]
+                    doc_id = str(doc_matches[0].get("id")) if len(doc_matches) == 1 else None
+                    overrides: dict[str, Any] = {}
+                    if doc_id:
+                        text = self.drive_client.export_document_text(doc_id)
+                        overrides = parse_style_instructions(text)
+
+                    logo_matches = [
+                        logo
+                        for logo in logo_items
+                        if Path(str(logo.get("name") or "")).stem.casefold()
+                        == Path(filename).stem.casefold()
+                        and Path(str(logo.get("name") or "")).suffix.lower()
+                        in {".png", ".jpg", ".jpeg", ".webp"}
+                    ]
+                    logo_path: str | None = None
+                    if len(logo_matches) == 1:
+                        logo = logo_matches[0]
+                        try:
+                            size = int(logo.get("size") or 0)
+                        except (TypeError, ValueError):
+                            size = 0
+                        if size <= 20 * 1024 * 1024:
+                            asset_dir = self.input_dir.parent / "drive_assets"
+                            logo_suffix = Path(str(logo.get("name"))).suffix.lower()
+                            asset_name = hashlib.sha256(
+                                str(logo.get("id")).encode("utf-8")
+                            ).hexdigest() + logo_suffix
+                            asset_path = asset_dir / asset_name
+                            if not asset_path.exists():
+                                self.drive_client.download_file(
+                                    str(logo.get("id")), asset_path
+                                )
+                            logo_path = str(asset_path)
+
+                    with tempfile.TemporaryDirectory(
+                        prefix="matrix-drive-", dir=self.input_dir.parent
+                    ) as staging:
+                        staged_path = Path(staging) / f"{drive_file_id}{suffix}"
+                        self.drive_client.download_file(drive_file_id, staged_path)
+                        with staged_path.open("rb") as source:
+                            item = self.upload(filename, staged_path.stat().st_size, source)
+
+                    added = self.drive_store.add_import(
+                        drive_file_id=drive_file_id,
+                        local_upload_id=item["id"],
+                        filename=filename,
+                        md5_checksum=remote.get("md5Checksum"),
+                        doc_file_id=doc_id,
+                        style_overrides=overrides,
+                        logo_path=logo_path,
+                    )
+                    if not added:
+                        raise PanelError("El vídeo ya se había importado en otro escaneo.", 409)
+                    imported.append({"id": item["id"], "filename": filename})
+                except Exception as exc:
+                    logger.warning(
+                        "Drive import failed for file %s (%s)",
+                        hashlib.sha256(drive_file_id.encode("utf-8")).hexdigest()[:12],
+                        type(exc).__name__,
+                    )
+                    failures.append({"filename": filename, "error": str(exc)[:300]})
+            return {
+                "imported": imported,
+                "skipped": skipped,
+                "failed": failures,
+                "items": self.library(),
+            }
+        except GoogleDriveError as exc:
+            raise PanelError(str(exc), 502) from exc
+        finally:
+            self.drive_scan_lock.release()
+
+    def _style_for_upload(self, upload_id: str) -> VideoStyle:
+        style = load_video_style(self.style_path)
+        if not self.drive_store:
+            return style
+        drive_import = self.drive_store.get_import_for_local_upload(upload_id)
+        if not drive_import:
+            return style
+        try:
+            overrides = json.loads(drive_import["style_overrides_json"] or "{}")
+            if not isinstance(overrides, dict):
+                overrides = {}
+        except (json.JSONDecodeError, TypeError):
+            overrides = {}
+        merged = asdict(style)
+        merged.update(overrides)
+        logo_path = drive_import.get("logo_path")
+        if logo_path:
+            candidate = Path(logo_path).resolve()
+            allowed_dir = (self.input_dir.parent / "drive_assets").resolve()
+            if candidate.parent == allowed_dir and candidate.is_file():
+                merged["logo_path"] = str(candidate)
+        with tempfile.TemporaryDirectory(prefix="matrix-style-") as temporary:
+            return save_video_style(merged, Path(temporary) / "style.json")
+
+    def retry_drive_upload(self, source_id: str) -> dict[str, Any]:
+        """Retry only the Drive write for an already-rendered Drive source."""
+        if not re.fullmatch(r"[0-9a-f]{32}", source_id):
+            raise PanelError("Identificador de vídeo no válido.")
+        if not self.drive_store or not self.drive_oauth or not self.drive_client:
+            raise PanelError("La conexión de Google Drive no está disponible.", 503)
+        if not self.drive_status()["connected"]:
+            raise PanelError("Google Drive no está conectado.", 409)
+        upload = self.store.get_upload(source_id)
+        drive_import = self.drive_store.get_import_for_local_upload(source_id)
+        if not upload or not drive_import:
+            raise PanelError("El vídeo no procede de Google Drive.", 404)
+        if drive_import.get("status") == "uploaded":
+            return {
+                "status": "uploaded",
+                "output_drive_file_id": drive_import.get("output_drive_file_id"),
+                "render_reused": True,
+            }
+        latest_job = self.store.latest_job_for_source(source_id)
+        if not latest_job or latest_job.get("status") not in {"failed", "completed"}:
+            raise PanelError("No hay un resultado listo para volver a subir.", 409)
+        ledger = self.store.ledger.get(upload["source_sha256"])
+        output_value = ledger.get("output_path") if isinstance(ledger, dict) else None
+        if not output_value:
+            raise PanelError("No se encontró un render local que pueda volver a subirse.", 409)
+        output_path = Path(output_value).resolve()
+        if output_path.parent != self.output_dir or not output_path.is_file() or output_path.stat().st_size == 0:
+            raise PanelError("El render local ya no está disponible. No se inició otro render.", 409)
+        try:
+            rendered = probe_video(output_path)
+            if rendered.width != 1080 or rendered.height != 1920:
+                raise PanelError("El archivo local no coincide con el formato vertical esperado.", 409)
+            source_key = hashlib.sha256(
+                drive_import["drive_file_id"].encode("utf-8")
+            ).hexdigest()
+            remote_output = self.drive_client.upload_new_file(
+                output_path,
+                folder_id=PROCESSED_FOLDER_ID,
+                app_properties={"matrixMotionSource": source_key},
+            )
+        except (GoogleDriveError, DriveUploadError, MediaError, OSError) as exc:
+            raise PanelError(
+                f"No se pudo volver a subir el render. El archivo local se conserva: {exc}",
+                502,
+            ) from exc
+        output_drive_file_id = remote_output.get("id") if isinstance(remote_output, dict) else None
+        self.drive_store.update_import(
+            drive_import["drive_file_id"],
+            status="uploaded",
+            error=None,
+            output_drive_file_id=output_drive_file_id,
+        )
+        self.store.ledger.mark_completed(upload["source_sha256"], str(output_path))
+        result: dict[str, Any] = {}
+        try:
+            parsed_result = json.loads(latest_job.get("result_json") or "{}")
+            if isinstance(parsed_result, dict):
+                result = parsed_result
+        except json.JSONDecodeError:
+            pass
+        result.update(
+            source=str(self._source_path(upload)),
+            output=str(output_path),
+            drive_output=remote_output,
+            drive_upload_skipped=False,
+        )
+        self.store.update_job(
+            latest_job["id"],
+            status="completed",
+            phase="completed",
+            progress=100,
+            error=None,
+            output_id=output_path.name,
+            result_json=json.dumps(result, ensure_ascii=False),
+        )
+        return {
+            "status": "uploaded",
+            "output_drive_file_id": output_drive_file_id,
+            "render_reused": True,
         }
 
     def style(self) -> dict[str, Any]:
@@ -381,7 +633,7 @@ class VideoPanel:
             if rendered_path.parent != self.output_dir or not rendered_path.is_file():
                 output_id = None
                 error = "El resultado registrado ya no está disponible en la carpeta de salida."
-        return {
+        result = {
             "id": upload["id"],
             "filename": upload["filename"],
             "original_filename": upload["original_filename"],
@@ -405,6 +657,21 @@ class VideoPanel:
             "error": error,
             "cost_estimate_usd": estimate,
         }
+        drive_import = (
+            self.drive_store.get_import_for_local_upload(upload["id"])
+            if self.drive_store
+            else None
+        )
+        result["source"] = "google_drive" if drive_import else "local"
+        result["source_label"] = "Google Drive" if drive_import else "Equipo"
+        result["drive_status"] = drive_import.get("status") if drive_import else None
+        result["drive_error"] = drive_import.get("error") if drive_import else None
+        result["can_retry_drive_upload"] = bool(
+            drive_import
+            and drive_import.get("status") == "upload_failed"
+            and self.store.latest_job_for_source(upload["id"])
+        )
+        return result
 
     def start_job(self, payload: Any) -> dict[str, Any]:
         if not isinstance(payload, dict):
@@ -415,7 +682,7 @@ class VideoPanel:
         upload = self.store.get_upload(source_id)
         if not upload:
             raise PanelError("No se encontró el vídeo seleccionado.", 404)
-        style = load_video_style(self.style_path)
+        style = self._style_for_upload(source_id)
         item = self._public_library_item(upload)
         if item["status"] in {"completed", "processing", "queued"}:
             raise PanelError(
@@ -446,6 +713,16 @@ class VideoPanel:
             raise PanelError("Falta una clave de API en Secrets; no se inició ningún trabajo.", 409)
         if health["shotstack_environment"] != "stage":
             raise PanelError("La configuración no permite iniciar trabajos fuera de Shotstack Stage.", 409)
+        drive_import = (
+            self.drive_store.get_import_for_local_upload(source_id)
+            if self.drive_store
+            else None
+        )
+        if drive_import and not self.drive_status()["connected"]:
+            raise PanelError(
+                "El vídeo procede de Drive, pero la conexión no está activa. No se inició el procesamiento.",
+                409,
+            )
 
         with self.job_lock:
             if self.active_job_id:
@@ -465,21 +742,53 @@ class VideoPanel:
         estimate: float | None,
         style: VideoStyle,
     ) -> None:
+        drive_import = (
+            self.drive_store.get_import_for_local_upload(upload["id"])
+            if self.drive_store
+            else None
+        )
         try:
             source_path = self._source_path(upload)
             def update_phase(phase: str) -> None:
                 self.store.update_job(job_id, status="processing", phase=phase, progress=None)
 
+            drive_uploader = None
+            if drive_import:
+                if not self.drive_client:
+                    raise GoogleDriveError("La conexión de Google Drive no está disponible.")
+
+                def upload_drive_output(path, folder_id, access_token):
+                    source_key = hashlib.sha256(
+                        drive_import["drive_file_id"].encode("utf-8")
+                    ).hexdigest()
+                    return self.drive_client.upload_new_file(
+                        path,
+                        folder_id=folder_id,
+                        app_properties={"matrixMotionSource": source_key},
+                    )
+
+                drive_uploader = upload_drive_output
+
             result = process_local_video(
                 source_path,
                 self.output_dir,
                 paid_api_authorized=True,
-                upload_to_drive=False,
+                upload_to_drive=bool(drive_import),
+                drive_uploader=drive_uploader,
                 config=PipelineConfig.from_environment(),
                 style=style,
                 state_db_path=self.store.database_path,
                 progress_callback=update_phase,
             )
+            if drive_import and self.drive_store:
+                output = result.get("drive_output") or {}
+                output_file_id = output.get("id") if isinstance(output, dict) else None
+                self.drive_store.update_import(
+                    drive_import["drive_file_id"],
+                    status="uploaded",
+                    error=None,
+                    output_drive_file_id=output_file_id,
+                )
             self.store.update_job(
                 job_id,
                 status="completed",
@@ -491,6 +800,16 @@ class VideoPanel:
             )
         except Exception as exc:
             logger.exception("Video job %s failed", job_id)
+            if (
+                drive_import
+                and self.drive_store
+                and isinstance(exc, (GoogleDriveError, DriveUploadError))
+            ):
+                self.drive_store.update_import(
+                    drive_import["drive_file_id"],
+                    status="upload_failed",
+                    error=str(exc)[:300],
+                )
             self.store.update_job(
                 job_id,
                 status="failed",
@@ -571,10 +890,18 @@ class VideoPanelHandler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
 
-    def _json(self, payload: Any, status: int = 200, head: bool = False) -> None:
+    def _json(
+        self,
+        payload: Any,
+        status: int = 200,
+        head: bool = False,
+        extra_headers: dict[str, str] | None = None,
+    ) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self._headers("application/json; charset=utf-8", len(body))
+        for name, value in (extra_headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         if not head:
             self.wfile.write(body)
@@ -665,6 +992,58 @@ required minlength="16" {disabled}>
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", "0")
         self.end_headers()
+
+    def _redirect_with_cookie(self, location: str, cookie_value: str) -> None:
+        self.send_response(303)
+        self.send_header("Location", location)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Set-Cookie", cookie_value)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _handle_google_oauth_callback(self) -> None:
+        if self.command not in {"GET", "HEAD"}:
+            raise PanelError("Método no permitido.", 405)
+        oauth = self.server.panel.drive_oauth
+        if not oauth:
+            raise PanelError("El almacenamiento seguro de Drive no está disponible.", 503)
+        params = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
+        state = (params.get("state") or [""])[0]
+        state_cookie = self._cookie_value(GOOGLE_OAUTH_STATE_COOKIE) or ""
+        oauth_error = (params.get("error") or [""])[0]
+        try:
+            if oauth_error:
+                oauth.store.consume_oauth_state(state, state_cookie)
+            else:
+                code = (params.get("code") or [""])[0]
+                oauth.complete_authorization(code, state, state_cookie)
+        except GoogleDriveError as exc:
+            logger.warning("Google OAuth callback rejected (%s)", type(exc).__name__)
+            raise PanelError(str(exc), 400) from exc
+        secure = "; Secure" if self.server.auth.cookie_secure else ""
+        clear_cookie = (
+            f"{GOOGLE_OAUTH_STATE_COOKIE}=; Path=/oauth/google/callback; "
+            f"Max-Age=0; HttpOnly; SameSite=Lax{secure}"
+        )
+        self._redirect_with_cookie("/", clear_cookie)
+
+    def _handle_google_oauth_start(self) -> None:
+        oauth = self.server.panel.drive_oauth
+        if not oauth:
+            raise PanelError("El almacenamiento seguro de Drive no está disponible.", 503)
+        try:
+            authorization_url, state = oauth.authorization_url()
+        except GoogleDriveError as exc:
+            raise PanelError(str(exc), 409) from exc
+        secure = "; Secure" if self.server.auth.cookie_secure else ""
+        state_cookie = (
+            f"{GOOGLE_OAUTH_STATE_COOKIE}={state}; Path=/oauth/google/callback; "
+            f"Max-Age=600; HttpOnly; SameSite=Lax{secure}"
+        )
+        self._json(
+            {"authorization_url": authorization_url},
+            extra_headers={"Set-Cookie": state_cookie},
+        )
 
     def _handle_login(self) -> None:
         if not self.server.auth.configured:
@@ -980,6 +1359,9 @@ required minlength="16" {disabled}>
                     self.end_headers()
                     return
                 raise PanelError("Método no permitido.", 405)
+            if path == "/oauth/google/callback":
+                self._handle_google_oauth_callback()
+                return
             if path == "/login":
                 if self.command in {"GET", "HEAD"}:
                     session = self.server.auth.get_session(
@@ -1019,6 +1401,8 @@ required minlength="16" {disabled}>
                     self._json({"csrf_token": session.csrf_token}, head=head)
                 elif path == "/api/health":
                     self._json(self.server.panel.health(), head=head)
+                elif path == "/api/drive/status":
+                    self._json(self.server.panel.drive_status(), head=head)
                 elif path == "/api/library":
                     self._json({"items": self.server.panel.library()}, head=head)
                 elif path == "/api/style":
@@ -1053,6 +1437,14 @@ required minlength="16" {disabled}>
                 self._json({"item": item}, 201)
             elif self.command == "POST" and path == "/api/jobs":
                 self._json(self.server.panel.start_job(self._read_json()), 202)
+            elif self.command == "POST" and path == "/api/drive/oauth/start":
+                self._handle_google_oauth_start()
+            elif self.command == "POST" and path == "/api/drive/scan":
+                self._json(self.server.panel.scan_drive(), 200)
+            elif self.command == "POST" and path == "/api/drive/retry-upload":
+                payload = self._read_json()
+                source_id = str(payload.get("source_id") or "") if isinstance(payload, dict) else ""
+                self._json(self.server.panel.retry_drive_upload(source_id), 200)
             elif self.command == "PUT" and path == "/api/style":
                 self._json(self.server.panel.save_style(self._read_json()))
             else:

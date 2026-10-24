@@ -25,6 +25,7 @@ def upload_new_file(
     access_token: str | None,
     session: requests.Session | None = None,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
+    app_properties: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Upload a render as a new Drive file; never updates or deletes a source."""
     path = Path(video_path)
@@ -48,6 +49,20 @@ def upload_new_file(
         "mimeType": "video/mp4",
         "parents": [folder_id],
     }
+    if app_properties is not None:
+        if (
+            not isinstance(app_properties, dict)
+            or len(app_properties) > 10
+            or any(
+                not isinstance(key, str)
+                or not re.fullmatch(r"[A-Za-z0-9_-]{1,124}", key)
+                or not isinstance(value, str)
+                or len(value) > 124
+                for key, value in app_properties.items()
+            )
+        ):
+            raise ValueError("Drive appProperties must contain short, valid string keys and values.")
+        metadata["appProperties"] = app_properties
     client = session or requests.Session()
     try:
         response = client.post(

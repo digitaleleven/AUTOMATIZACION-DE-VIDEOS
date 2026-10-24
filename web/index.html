@@ -90,6 +90,19 @@
                 <span>VÍDEOS DISPONIBLES</span>
                 <button class="small-action" type="button" data-action="upload">＋ Añadir vídeo</button>
               </div>
+              <div class="drive-panel" aria-labelledby="drive-panel-title">
+                <div class="drive-panel-copy">
+                  <span class="drive-panel-kicker">GOOGLE DRIVE</span>
+                  <strong id="drive-panel-title">Estado pendiente</strong>
+                  <p id="drive-status-detail" role="status" aria-live="polite">Se está consultando la configuración local.</p>
+                </div>
+                <div class="drive-panel-actions">
+                  <button class="outline-button" id="drive-connect-button" type="button" disabled>Conectar Google Drive</button>
+                  <button class="small-action" id="drive-scan-button" type="button" disabled>Escanear 01_ENTRADA</button>
+                </div>
+                <p class="drive-scope-note">Acceso previsto: lectura de Drive para detectar y descargar archivos; escritura de archivos nuevos en Procesados. La autorización permanece desactivada hasta configurar y habilitar OAuth.</p>
+                <div class="drive-message" id="drive-message" role="status" aria-live="polite" hidden></div>
+              </div>
               <div id="library-list" class="library-list" aria-live="polite">
                 <div class="empty-state">
                   <div class="empty-glyph">▧</div><h3>Tu biblioteca está vacía</h3>
@@ -155,6 +168,7 @@
                 <label class="consent-check"><input id="paid-consent" type="checkbox"><span>Autorizo el envío del vídeo a servicios externos de pago (OpenAI y Shotstack Stage).</span></label>
                 <label class="consent-check unknown-check" id="unknown-cost-wrap" hidden><input id="unknown-cost-consent" type="checkbox"><span>Entiendo que el coste es desconocido y podría haber cargos.</span></label>
                 <button class="primary-button" id="process-button" type="button" disabled><span>Iniciar procesamiento</span><b>→</b></button>
+                <button class="outline-button retry-drive-upload" id="retry-drive-upload-button" type="button" hidden>Reintentar solo la subida a Drive</button>
                 <p class="button-hint" id="process-hint">Selecciona un vídeo y revisa las autorizaciones.</p>
               </aside>
             </div>

@@ -30,9 +30,9 @@ La transcripción y la carga/render de Shotstack siguen detrás de una autorizac
 
 Antes de contactar con proveedores, el proceso comprueba que existan `OPENAI_API_KEY`, `SHOTSTACK_API_KEY` y `GOOGLE_OAUTH_TOKEN`. El token de Drive debe poder crear archivos en Procesados. Si falta o Drive rechaza el destino, el proceso se detiene sin ampliar scopes.
 
-## Google Drive: estado y requisitos pendientes
+## Google Drive: automatización preparada, todavía desconectada
 
-No se ha hecho ninguna llamada real a Drive. Los IDs configurados son:
+No se ha iniciado el consentimiento OAuth ni se ha hecho ninguna llamada real a Google Drive. El escaneo y la autorización están desactivados por defecto. Los IDs configurados son:
 
 | Uso | ID |
 | --- | --- |
@@ -40,18 +40,31 @@ No se ha hecho ninguna llamada real a Drive. Los IDs configurados son:
 | `02_PROCESADOS` | `1J6Z0bsWb2dQNKY4hyq4xl7tigtm_pQKN` |
 | `RECURSOS/LOGOS` | `1t46UE2Mog9JRDSe9TzoPxfs96nE9qDTW` |
 
-El estado del código es más limitado que una automatización de carpetas:
+El código del panel ahora incluye el flujo web OAuth con `state`, PKCE S256, cookie de estado `HttpOnly; SameSite=Lax` y refresh token cifrado en SQLite con una clave derivada de `SESSION_SECRET`. Las rutas de inicio, estado, escaneo y reintento requieren la sesión propietaria; el callback requiere el estado aleatorio de un solo uso y su cookie. No se persisten ni se devuelven tokens en la interfaz.
 
-- `video_pipeline/drive.py` implementa solo la creación reanudable de un archivo nuevo. El CLI la llama después de validar un render y usa `02_PROCESADOS`; no actualiza ni elimina el original.
-- No hay flujo OAuth en el proyecto ni código que declare scopes, renueve tokens, enumere carpetas o descargue vídeos/logos. El CLI espera un token ya disponible como `GOOGLE_OAUTH_TOKEN`. El panel web sigue siendo local y no tiene conexión con Drive.
-- La última comprobación `--dry-run` informó `google_drive: false`: `GOOGLE_OAUTH_TOKEN` no está disponible para el proceso en este entorno. Solo se comprobó la presencia de la variable, no se leyó ningún valor ni se intentó una conexión.
-- La configuración de Google Cloud indicada para este proyecto usa `drive.file`; eso no concede al programa acceso general a todos los archivos ya existentes. La presencia o validez de `GOOGLE_OAUTH_TOKEN` por sí sola no demuestra que Drive esté conectado ni que el token tenga los permisos esperados.
+Para habilitarlo posteriormente, habrá que configurar en el sistema de Secrets/entorno, sin pegarlos en el chat:
 
-La opción mínima que conserva `drive.file` es integrar Google Picker: obtener un token de usuario con ese mismo scope, permitir que la persona seleccione explícitamente los MP4/MOV de Entrada y los logos, y seleccionar/autorizar la carpeta de destino antes de crear allí el archivo final. El backend tendría que descargar los archivos seleccionados por ID y conectar esa selección con el pipeline. Seleccionar un clip en Picker es una concesión por archivo; no equivale a enumerar automáticamente todos los hijos de una carpeta. La lectura automatizada de archivos no seleccionados requeriría un scope más amplio y una nueva autorización, que no se ha solicitado ni realizado.
+- `GOOGLE_OAUTH_CLIENT_ID`
+- `GOOGLE_OAUTH_CLIENT_SECRET`
+- `GOOGLE_OAUTH_REDIRECT_URI` (HTTPS exacto registrado en el cliente web de Google, con ruta `/oauth/google/callback`)
+- `GOOGLE_DRIVE_OAUTH_ENABLED=true` solo cuando se autorice explícitamente iniciar el consentimiento
 
-Antes de implementar esa selección faltan la configuración web de Picker (OAuth client ID, clave de API, número del proyecto y orígenes permitidos), la adquisición/entrega segura del token al servidor, las rutas de descarga y el enlace de la selección con los IDs de las carpetas. Después hará falta una prueba con una cuenta real autorizada. No se han inventado credenciales ni se han cambiado permisos.
+Los scopes declarados son:
 
-Referencias oficiales: [scopes de Google Drive](https://developers.google.com/drive/api/guides/about-auth) y [Google Picker para aplicaciones web](https://developers.google.com/workspace/drive/picker/guides/web-picker).
+- `https://www.googleapis.com/auth/drive.readonly`: necesario para enumerar carpetas y descargar vídeos, documentos e imágenes existentes sin selección previa. Google lo clasifica como **restringido** y permite leer todo el Drive de la cuenta; no se limita a los tres IDs de carpeta.
+- `https://www.googleapis.com/auth/drive.file`: permite crear archivos de salida que la aplicación crea o a los que se concede acceso. Para escribir en la carpeta existente `02_PROCESADOS` puede ser necesario seleccionar esa carpeta en Google Picker; Picker todavía no está implementado. Si Drive no concede acceso a la carpeta, la subida fallará de forma visible, el render local se conservará y el botón de reintento no vuelve a llamar a OpenAI ni a Shotstack.
+
+El panel ofrece un escaneo manual de `01_ENTRADA`: importa MP4/MOV una sola vez por ID de Drive, mantiene el original intacto, busca un Google Doc y un logo con el mismo nombre base y no inicia renders automáticamente. Los Docs aceptan por ahora solo JSON o líneas `clave: valor`/`clave=valor` para parámetros visuales permitidos; el texto libre no se envía a un modelo ni se interpreta como órdenes. Si no hay instrucciones compatibles, se usa el estilo guardado del panel. Los vídeos Drive solo se procesan con la casilla de autorización de OpenAI/Shotstack Stage y la subida de resultados es una operación aparte; el archivo lleva una clave de idempotencia para no crear resultados repetidos al reintentar.
+
+`video_pipeline/drive.py` conserva la subida reanudable existente de archivos nuevos. El CLI todavía puede usar `GOOGLE_OAUTH_TOKEN` en su ruta anterior; el panel usa el nuevo almacenamiento OAuth cifrado y no necesita ese token manual.
+
+## Estado de verificación
+
+- Probado localmente con respuestas HTTP simuladas: OAuth state/PKCE, cifrado y renovación de tokens, paginación/listado, descarga/exportación, importación idempotente y rutas protegidas.
+- No probado con una cuenta Google real: OAuth, scopes concedidos, permisos efectivos sobre las carpetas, descarga real, exportación real de Docs ni subida a `02_PROCESADOS`.
+- No se han realizado llamadas reales a Google, OpenAI o Shotstack, ni se han consumido créditos o cambiado permisos.
+
+Referencias oficiales: [flujo OAuth web](https://developers.google.com/identity/protocols/oauth2/web-server), [scopes de Drive](https://developers.google.com/workspace/drive/api/guides/api-specific-auth), [listar archivos](https://developers.google.com/workspace/drive/api/reference/rest/v3/files/list) y [descargas/exportación](https://developers.google.com/workspace/drive/api/guides/manage-downloads).
 
 ## Pruebas sin llamadas externas
 

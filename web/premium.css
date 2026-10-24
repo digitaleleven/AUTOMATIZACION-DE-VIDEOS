@@ -843,3 +843,27 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
 }
+
+.drive-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 16px;
+  align-items: center;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(105deg, #f2f7f4, #fbfcfa);
+}
+.drive-panel-copy { display: grid; gap: 4px; }
+.drive-panel-kicker { color: #64827b; font-size: 10px; font-weight: 800; letter-spacing: .12em; }
+.drive-panel-copy strong { color: var(--ink); font-size: 15px; }
+.drive-panel-copy p, .drive-scope-note { margin: 0; color: #5f716c; font-size: 12px; line-height: 1.45; }
+.drive-panel-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.drive-panel-actions button:disabled { cursor: not-allowed; opacity: .55; }
+.drive-scope-note { grid-column: 1 / -1; font-size: 11px; }
+.drive-message { grid-column: 1 / -1; padding: 10px 12px; border-radius: 8px; background: #e8f1ef; color: #244f4b; font-size: 12px; }
+.drive-message[data-error="true"] { background: #fff0ec; color: #8a3021; }
+.retry-drive-upload { width: 100%; margin-top: 8px; }
+@media (max-width: 650px) {
+  .drive-panel { grid-template-columns: 1fr; }
+  .drive-panel-actions { justify-content: flex-start; }
+}

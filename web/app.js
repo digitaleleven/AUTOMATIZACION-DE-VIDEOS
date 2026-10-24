@@ -4,6 +4,10 @@ const API = {
   upload: "/api/upload",
   jobs: "/api/jobs",
   style: "/api/style",
+  driveStatus: "/api/drive/status",
+  driveOauthStart: "/api/drive/oauth/start",
+  driveScan: "/api/drive/scan",
+  driveRetryUpload: "/api/drive/retry-upload",
 };
 
 const state = {
@@ -15,6 +19,7 @@ const state = {
   activeJob: null,
   pollTimer: null,
   styleLoaded: false,
+  drive: null,
 };
 
 let csrfToken = "";
@@ -88,6 +93,34 @@ async function loadJob(jobId) {
 
 async function loadStyle() {
   return requestJson(API.style);
+}
+
+async function loadDriveStatus() {
+  return requestJson(API.driveStatus);
+}
+
+async function startDriveOAuth() {
+  return requestJson(API.driveOauthStart, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+}
+
+async function scanDrive() {
+  return requestJson(API.driveScan, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+}
+
+async function retryDriveUpload(sourceId) {
+  return requestJson(API.driveRetryUpload, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ source_id: sourceId }),
+  });
 }
 
 async function saveStyle(style) {
@@ -173,7 +206,7 @@ function renderLibrary() {
   byId("library-count").textContent = state.library.length ? `${state.library.length} ARCHIVO${state.library.length === 1 ? "" : "S"}` : "0 ARCHIVOS";
   renderSummary();
   if (!state.library.length) {
-    list.innerHTML = `<div class="empty-state"><div class="empty-glyph">▧</div><h3>Tu biblioteca está vacía</h3><p>${state.libraryLoaded ? "Todavía no hay vídeos. Añade un archivo MP4 o MOV para empezar." : "Añade tu primer vídeo para empezar a crear contenido."}</p><button class="outline-button" type="button" data-action="${state.libraryLoaded ? "upload" : "connect"}">${state.libraryLoaded ? "Añadir un vídeo" : "Consultar biblioteca"}</button></div>`;
+    list.innerHTML = `<div class="empty-state"><div class="empty-glyph">▧</div><h3>Tu biblioteca está vacía</h3><p>${state.libraryLoaded ? "Todavía no hay vídeos. Añade un archivo MP4 o MOV para empezar." : "Añade tu primer vídeo para empezar a crear contenido."}</p><button class="outline-button" type="button" data-action="upload">Añadir un vídeo</button></div>`;
     return;
   }
   list.innerHTML = state.library.map((item) => {
@@ -186,7 +219,7 @@ function renderLibrary() {
     return `<button type="button" class="library-item ${String(item.id) === String(state.selectedId) ? "selected" : ""}" data-id="${escapeHtml(item.id)}">
       <span class="library-thumb" aria-hidden="true">${thumbnail}</span>
       <span class="library-item-body">
-        <span class="library-item-top"><strong title="${escapeHtml(name)}">${escapeHtml(name)}</strong><span class="file-type">${escapeHtml(item.format || "VIDEO")}</span></span>
+        <span class="library-item-top"><strong title="${escapeHtml(name)}">${escapeHtml(name)}</strong><span class="file-type">${escapeHtml(item.source_label || item.format || "VIDEO")}</span></span>
         <span class="library-item-meta"><span>${formatDuration(item.duration_seconds)}</span><span>${formatBytes(item.size_bytes)}</span><span>${escapeHtml(formatDate(item.created_at))}</span></span>
       </span>
       <span class="library-item-status ${statusClass}">${escapeHtml(statusLabel(item.status))}</span>
@@ -221,6 +254,7 @@ function renderSelectedItem() {
     byId("cost-value").textContent = "Desconocido";
     byId("cost-note").textContent = "Selecciona un vídeo para consultar la estimación disponible.";
     byId("unknown-cost-wrap").hidden = true;
+    byId("retry-drive-upload-button").hidden = true;
     updateProcessButton();
     return;
   }
@@ -230,6 +264,7 @@ function renderSelectedItem() {
   placeholder.hidden = true;
   byId("selected-status").textContent = statusLabel(item.status).toLocaleUpperCase("es");
   const fields = [
+    ["ORIGEN", item.source_label || "Equipo"],
     ["DURACIÓN", formatDuration(item.duration_seconds)],
     ["TAMAÑO", formatBytes(item.size_bytes)],
     ["RESOLUCIÓN", Number.isFinite(Number(item.width)) && Number.isFinite(Number(item.height)) ? `${item.width} × ${item.height}` : "No disponible"],
@@ -251,6 +286,10 @@ function renderSelectedItem() {
   if (item.error) {
     byId("file-summary").insertAdjacentHTML("beforeend", `<div class="job-error">${escapeHtml(item.error)}</div>`);
   }
+  if (item.drive_error) {
+    byId("file-summary").insertAdjacentHTML("beforeend", `<div class="job-error">El render local se conserva. Error al guardar en Drive: ${escapeHtml(item.drive_error)}</div>`);
+  }
+  byId("retry-drive-upload-button").hidden = item.can_retry_drive_upload !== true;
   updateProcessButton();
 }
 
@@ -271,6 +310,39 @@ function renderHealth(health) {
   const connected = Boolean(health);
   byId("connection-label").textContent = connected ? "Servicio disponible" : "Sin conexión";
   $(".local-indicator").classList.toggle("connected", connected);
+}
+
+function renderDriveStatus(drive) {
+  state.drive = drive || null;
+  const title = byId("drive-panel-title");
+  const detail = byId("drive-status-detail");
+  const connect = byId("drive-connect-button");
+  const scan = byId("drive-scan-button");
+  if (!drive) {
+    title.textContent = "Estado no disponible";
+    detail.textContent = "No se pudo consultar la configuración local de OAuth.";
+    connect.disabled = true;
+    scan.disabled = true;
+    return;
+  }
+  if (drive.connected) {
+    title.textContent = "Google Drive conectado";
+    detail.textContent = "No se escanean carpetas automáticamente. Usa el botón para detectar e importar vídeos nuevos.";
+    connect.textContent = "Reautorizar";
+  } else if (drive.ready) {
+    title.textContent = "Autorización pendiente";
+    detail.textContent = "La configuración está lista, pero todavía no se ha conectado ninguna cuenta.";
+    connect.textContent = "Conectar Google Drive";
+  } else {
+    title.textContent = drive.enabled ? "Configuración incompleta" : "Conexión desactivada";
+    const missing = Array.isArray(drive.missing_configuration) ? drive.missing_configuration : [];
+    detail.textContent = missing.length
+      ? `Pendiente de configuración: ${missing.join(", ")}. No se ha iniciado OAuth.`
+      : "OAuth está desactivado por seguridad. No se ha contactado con Google.";
+    connect.textContent = "Conectar Google Drive";
+  }
+  connect.disabled = drive.ready !== true;
+  scan.disabled = drive.connected !== true;
 }
 
 function renderJob(job, sourceName = "") {
@@ -395,9 +467,10 @@ async function refreshWorkspace() {
   byId("refresh-button").disabled = true;
   byId("refresh-button").textContent = "Actualizando…";
   try {
-    const results = await Promise.allSettled([loadHealth(), loadLibrary()]);
+    const results = await Promise.allSettled([loadHealth(), loadLibrary(), loadDriveStatus()]);
     const healthResult = results[0];
     const libraryResult = results[1];
+    const driveResult = results[2];
     const errors = [];
     if (healthResult.status === "fulfilled") renderHealth(healthResult.value);
     else {
@@ -409,6 +482,11 @@ async function refreshWorkspace() {
         status.className = "health-unknown";
       }
       errors.push(`No se pudo consultar el estado del servicio: ${healthResult.reason.message}`);
+    }
+    if (driveResult.status === "fulfilled") renderDriveStatus(driveResult.value);
+    else {
+      renderDriveStatus(null);
+      errors.push(`No se pudo consultar el estado de Google Drive: ${driveResult.reason.message}`);
     }
     if (libraryResult.status === "fulfilled") {
       state.library = libraryResult.value;
@@ -447,6 +525,70 @@ async function pollJob(jobId, sourceName) {
 byId("today-label").textContent = new Intl.DateTimeFormat("es", { day: "2-digit", month: "short", year: "numeric" }).format(new Date()).toLocaleUpperCase("es");
 byId("connect-button").addEventListener("click", refreshWorkspace);
 byId("refresh-button").addEventListener("click", refreshWorkspace);
+byId("drive-connect-button").addEventListener("click", async () => {
+  const button = byId("drive-connect-button");
+  const message = byId("drive-message");
+  button.disabled = true;
+  message.hidden = false;
+  message.dataset.error = "false";
+  message.textContent = "Preparando la autorización segura de Google…";
+  try {
+    const result = await startDriveOAuth();
+    if (!result?.authorization_url) throw new Error("El servidor no devolvió la URL de autorización.");
+    window.location.assign(result.authorization_url);
+  } catch (error) {
+    message.dataset.error = "true";
+    message.textContent = `No se inició la conexión: ${error.message}`;
+    button.disabled = state.drive?.ready !== true;
+  }
+});
+byId("drive-scan-button").addEventListener("click", async () => {
+  const button = byId("drive-scan-button");
+  const message = byId("drive-message");
+  button.disabled = true;
+  message.hidden = false;
+  message.dataset.error = "false";
+  message.textContent = "Consultando 01_ENTRADA y descargando los vídeos nuevos. No se iniciará ningún render.";
+  try {
+    const result = await scanDrive();
+    state.library = Array.isArray(result?.items) ? result.items : await loadLibrary();
+    state.libraryLoaded = true;
+    if (!state.library.some((item) => String(item.id) === String(state.selectedId))) {
+      state.selectedId = state.library[0]?.id ?? null;
+    }
+    renderLibrary();
+    renderSelectedItem();
+    const failures = Array.isArray(result?.failed) ? result.failed.length : 0;
+    message.textContent = `Escaneo completado: ${result?.imported?.length || 0} vídeo(s) nuevo(s), ${result?.skipped || 0} ya importado(s), ${failures} error(es). No se llamó a OpenAI ni a Shotstack.`;
+    if (failures) {
+      message.dataset.error = "true";
+      displayToast("El escaneo terminó con errores. Revisa el detalle del panel.", true);
+    } else {
+      displayToast("Escaneo de Drive completado. No se inició ningún render.");
+    }
+  } catch (error) {
+    message.dataset.error = "true";
+    message.textContent = `No se pudo escanear Drive: ${error.message}`;
+    displayToast(`No se pudo escanear Drive: ${error.message}`, true);
+  } finally {
+    button.disabled = state.drive?.connected !== true;
+  }
+});
+byId("retry-drive-upload-button").addEventListener("click", async () => {
+  const item = getSelectedItem();
+  if (!item) return;
+  const button = byId("retry-drive-upload-button");
+  button.disabled = true;
+  try {
+    const result = await retryDriveUpload(item.id);
+    await refreshWorkspace();
+    displayToast(result?.render_reused ? "Resultado subido a Drive reutilizando el render existente." : "Subida completada.");
+  } catch (error) {
+    displayToast(`No se pudo reintentar solo la subida a Drive: ${error.message}`, true);
+  } finally {
+    button.disabled = false;
+  }
+});
 document.querySelector(".list-toolbar [data-action='upload']")?.addEventListener("click", () => byId("video-input").click());
 document.querySelectorAll("[data-scroll]").forEach((button) => button.addEventListener("click", () => {
   document.getElementById(button.dataset.scroll)?.scrollIntoView({ behavior: "smooth" });
@@ -457,10 +599,6 @@ byId("library-list").addEventListener("click", (event) => {
   const actionButton = event.target.closest("[data-action]");
   if (actionButton?.dataset.action === "upload") {
     byId("video-input").click();
-    return;
-  }
-  if (actionButton?.dataset.action === "connect") {
-    refreshWorkspace();
     return;
   }
   const itemButton = event.target.closest(".library-item");
