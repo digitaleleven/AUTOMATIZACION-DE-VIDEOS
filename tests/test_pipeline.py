@@ -7,6 +7,7 @@ from unittest.mock import Mock
 from unittest.mock import patch
 
 from video_pipeline.config import PipelineConfig
+from video_pipeline.edit_plan import edited_duration, map_subtitles_to_output
 from video_pipeline.media import (
     extract_audio_chunks,
     prepare_video_for_shotstack,
@@ -145,6 +146,7 @@ class ShotstackPayloadTests(unittest.TestCase):
             source_height=640,
         )
         self.assertEqual(payload["output"]["size"], {"width": 1080, "height": 1920})
+        self.assertEqual(payload["output"]["quality"], "high")
         tracks = payload["timeline"]["tracks"]
         self.assertEqual(len(tracks), 2)
         self.assertEqual(tracks[0]["clips"][0]["asset"]["type"], "rich-caption")
@@ -204,6 +206,76 @@ class ShotstackPayloadTests(unittest.TestCase):
         tracks = payload["timeline"]["tracks"]
         self.assertEqual(len(tracks), 1)
         self.assertEqual(tracks[0]["clips"][0]["asset"]["type"], "video")
+
+    def test_manual_cuts_zoom_and_stickers_build_independent_timeline_tracks(self):
+        payload = build_edit_payload(
+            "https://media.example/video.mp4",
+            10,
+            [],
+            None,
+            style=VideoStyle(output_width=720, output_height=1280, output_fps=50),
+            source_width=2160,
+            source_height=3840,
+            subtitle_mode="none",
+            cuts=[{"start_seconds": 4, "end_seconds": 5}],
+            zooms=[{"start_seconds": 2, "end_seconds": 4, "effect": "zoomIn"}],
+            stickers=[{
+                "sticker": "sparkle",
+                "start_seconds": 3.6,
+                "duration_seconds": 2,
+                "position": "topRight",
+                "effect": "zoomIn",
+                "color": "#FFD84D",
+            }],
+        )
+        self.assertEqual(payload["output"]["size"], {"width": 720, "height": 1280})
+        self.assertEqual(payload["output"]["fps"], 50)
+        tracks = payload["timeline"]["tracks"]
+        self.assertEqual([clip["asset"]["type"] for clip in tracks[0]["clips"]], ["svg", "svg"])
+        self.assertTrue(all(clip["effect"] == "zoomIn" for clip in tracks[0]["clips"]))
+        video_clips = tracks[-1]["clips"]
+        self.assertEqual([clip["trim"] for clip in video_clips], [0, 2, 5])
+        self.assertEqual([clip["start"] for clip in video_clips], [0, 2, 4])
+        self.assertEqual([clip.get("effect") for clip in video_clips], [None, "zoomIn", None])
+        self.assertNotIn("rich-caption", [
+            clip["asset"]["type"] for track in tracks for clip in track["clips"]
+        ])
+        self.assertIn("<svg", tracks[0]["clips"][0]["asset"]["src"])
+
+    def test_edit_plan_rejects_overlapping_cuts_and_unknown_stickers(self):
+        with self.assertRaises(ValueError):
+            build_edit_payload(
+                "https://media.example/video.mp4", 10, [], None, subtitle_mode="none",
+                cuts=[
+                    {"start_seconds": 1, "end_seconds": 3},
+                    {"start_seconds": 2, "end_seconds": 4},
+                ],
+            )
+        with self.assertRaises(ValueError):
+            build_edit_payload(
+                "https://media.example/video.mp4", 10, [], None, subtitle_mode="none",
+                stickers=[{
+                    "sticker": "<svg/>",
+                    "start_seconds": 1,
+                    "duration_seconds": 1,
+                }],
+            )
+
+    def test_subtitles_shift_with_cuts_and_do_not_extend_into_removed_ranges(self):
+        cuts = [{"start_seconds": 4, "end_seconds": 5}]
+        mapped = map_subtitles_to_output([
+            SubtitleSegment("antes y después", 3.5, 5.5),
+            SubtitleSegment("texto eliminado", 4.2, 4.8),
+            SubtitleSegment("continúa aquí", 5.5, 6),
+        ], cuts)
+        self.assertEqual(
+            [(item.text, item.start, item.end) for item in mapped],
+            [
+                ("antes y después", 3.5, 4.5),
+                ("continúa aquí", 4.5, 5.0),
+            ],
+        )
+        self.assertEqual(edited_duration(10, cuts), 9)
 
     def test_rejects_non_https_video_source(self):
         with self.assertRaises(ValueError):

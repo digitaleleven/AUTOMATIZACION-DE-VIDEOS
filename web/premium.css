@@ -946,3 +946,93 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .proposal-summary small { color: var(--muted); }
 #render-approval { display: grid; gap: 10px; margin-top: 12px; }
 #render-approval[hidden], .proposal-summary[hidden] { display: none !important; }
+.creative-editor {
+  display: grid;
+  gap: 14px;
+  margin: 18px 0 4px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+}
+.creative-editor legend {
+  padding: 0 8px;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+.creative-editor > .field-help { margin: 0; }
+.timeline-control {
+  display: grid;
+  gap: 9px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.timeline-control h4 { margin: 0; color: var(--ink); font-size: 12px; }
+.timeline-list { display: grid; gap: 8px; }
+.timeline-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  align-items: end;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.timeline-field {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.timeline-field input,
+.timeline-field select {
+  width: 100%;
+  min-height: 38px;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+}
+.timeline-field input[type="color"] { padding: 3px; }
+.small-outline-button,
+.remove-timeline-row {
+  min-height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.small-outline-button { justify-self: start; padding: 7px 11px; }
+.remove-timeline-row { padding: 6px 9px; }
+.small-outline-button:hover,
+.remove-timeline-row:hover { border-color: var(--accent, #08c7c1); }
+.small-outline-button:focus-visible,
+.remove-timeline-row:focus-visible,
+.timeline-field input:focus-visible,
+.timeline-field select:focus-visible {
+  outline: 2px solid var(--accent, #08c7c1);
+  outline-offset: 2px;
+}
+.job-output-metadata {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.job-output-metadata strong { color: var(--ink); }
+@media (max-width: 560px) {
+  .creative-editor { padding: 12px; }
+  .timeline-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

@@ -725,6 +725,9 @@ class VideoPanelApiTests(unittest.TestCase):
         self.assertEqual(proposal["edit"]["subtitle_mode"], "none")
         self.assertEqual(proposal["edit"]["output_fps"], 50)
         self.assertEqual((proposal["edit"]["output_width"], proposal["edit"]["output_height"]), (1080, 1920))
+        self.assertEqual(proposal["edit"]["output_quality"], "high")
+        self.assertEqual(proposal["edit"]["expected_output_duration_seconds"], proposal["source"]["duration_seconds"])
+        self.assertEqual(proposal["edit"]["cut_count"], 0)
         self.assertEqual(proposal["source"]["origin"], "Subida local")
         self.assertFalse(proposal["api_plan"]["openai_transcription"])
         self.assertEqual(proposal["api_plan"]["openai_transcription_chunks"], 0)
@@ -732,6 +735,33 @@ class VideoPanelApiTests(unittest.TestCase):
         self.assertEqual(proposal["costs"]["openai_usd"], 0.0)
         self.assertIsNone(proposal["costs"]["total_estimate_usd"])
         self.assertIn(proposal["proposal_id"], self.panel.pending_proposals)
+
+    def test_local_proposal_accepts_720p_and_medium_quality_without_external_calls(self):
+        status, response = self.upload(self.create_movie(".mp4"))
+        self.assertEqual(status, 201)
+        proposal = self.panel.prepare_proposal({
+            "source_id": response["item"]["id"],
+            "subtitle_mode": "none",
+            "output_fps": 50,
+            "output_profile": "720p",
+            "output_quality": "medium",
+            "creative_plan": {"cuts": [], "zooms": [], "stickers": []},
+        })
+        self.assertEqual((proposal["edit"]["output_width"], proposal["edit"]["output_height"]), (720, 1280))
+        self.assertEqual(proposal["edit"]["output_quality"], "medium")
+        self.assertEqual(proposal["api_plan"]["external_services_called_during_proposal"], [])
+
+    def test_4k_profile_is_rejected_until_account_plan_is_verified(self):
+        status, response = self.upload(self.create_movie(".mp4"))
+        self.assertEqual(status, 201)
+        with self.assertRaises(PanelError) as blocked:
+            self.panel.prepare_proposal({
+                "source_id": response["item"]["id"],
+                "subtitle_mode": "none",
+                "output_fps": 50,
+                "output_profile": "2160p",
+            })
+        self.assertIn("no se ha verificado el plan 4K", str(blocked.exception))
 
     def test_render_requires_approved_single_use_local_proposal(self):
         status, response = self.upload(self.create_movie(".mp4"))

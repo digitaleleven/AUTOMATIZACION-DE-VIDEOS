@@ -48,6 +48,7 @@ from .google_drive import (
     parse_style_instructions,
 )
 from .media import MediaError, probe_video
+from .edit_plan import EditPlanError, edited_duration, normalize_edit_plan
 from .models import VideoInfo
 from .drive import (
     DriveAccessError,
@@ -68,6 +69,10 @@ logger = logging.getLogger(__name__)
 MAX_JSON_BYTES = 64 * 1024
 COPY_CHUNK_BYTES = 1024 * 1024
 ALLOWED_CODECS = {"h264", "hevc"}
+OUTPUT_PROFILES = {
+    "720p": (720, 1280),
+    "1080p": (1080, 1920),
+}
 TERMINAL_STATUSES = {"completed", "failed"}
 GOOGLE_OAUTH_STATE_COOKIE = "matrix_motion_google_oauth_state"
 
@@ -259,6 +264,20 @@ def _public_job(job: dict[str, Any]) -> dict[str, Any]:
         edit_options = json.loads(job.get("edit_options_json") or "{}")
     except (TypeError, json.JSONDecodeError):
         edit_options = {}
+    try:
+        result = json.loads(job.get("result_json") or "{}")
+    except (TypeError, json.JSONDecodeError):
+        result = {}
+    output_metadata = {
+        "dimensions": result.get("output_dimensions"),
+        "fps": result.get("output_fps"),
+        "video_codec": result.get("output_video_codec"),
+        "audio_codec": result.get("output_audio_codec"),
+        "quality_preset": result.get("output_quality_preset"),
+        "video_bit_rate_bps": result.get("output_video_bit_rate_bps"),
+        "format_bit_rate_bps": result.get("output_format_bit_rate_bps"),
+        "duration_seconds": result.get("output_duration_seconds"),
+    } if isinstance(result, dict) else {}
     return {
         "id": job["id"],
         "source_id": job["source_id"],
@@ -268,6 +287,7 @@ def _public_job(job: dict[str, Any]) -> dict[str, Any]:
         "error": job["error"],
         "estimated_cost_usd": job["estimated_cost_usd"],
         "edit_options": edit_options if isinstance(edit_options, dict) else {},
+        "output_metadata": output_metadata,
         "output_id": job["output_id"],
         "created_at": job["created_at"],
         "updated_at": job["updated_at"],
@@ -1110,12 +1130,22 @@ class VideoPanel:
         subtitle_mode = str(payload.get("subtitle_mode") or "none")
         if subtitle_mode not in {"dynamic", "simple", "none"}:
             raise PanelError("Elige subtítulos dinámicos, sencillos o sin subtítulos.")
+        output_profile = str(payload.get("output_profile") or "1080p")
+        if output_profile not in OUTPUT_PROFILES:
+            raise PanelError(
+                "El perfil 1440p/4K no está habilitado porque no se ha verificado el plan 4K de Shotstack."
+            )
+        output_width, output_height = OUTPUT_PROFILES[output_profile]
+        output_quality = str(payload.get("output_quality") or "high")
+        if output_quality not in {"medium", "high"}:
+            raise PanelError("La calidad de salida debe ser medium o high.")
         try:
-            output_fps = int(payload.get("output_fps", 30))
+            raw_output_fps = float(payload.get("output_fps", 30))
         except (TypeError, ValueError):
             raise PanelError("Los FPS de salida deben ser 25, 30, 50 o 60.") from None
-        if output_fps not in {25, 30, 50, 60}:
+        if not raw_output_fps.is_integer() or raw_output_fps not in {25, 30, 50, 60}:
             raise PanelError("Los FPS de salida deben ser 25, 30, 50 o 60.")
+        output_fps = int(raw_output_fps)
 
         item = self._public_library_item(upload)
         if item["status"] in {"completed", "processing", "queued"}:
@@ -1123,8 +1153,18 @@ class VideoPanel:
         if item["status"] == "failed":
             raise PanelError("El último intento falló. Revisa el error antes de preparar otra propuesta.", 409)
 
-        style = replace(self._style_for_upload(source_id), output_fps=output_fps)
+        style = replace(
+            self._style_for_upload(source_id),
+            output_width=output_width,
+            output_height=output_height,
+            output_fps=output_fps,
+            output_quality=output_quality,
+        )
         video = probe_video(self._source_path(upload))
+        try:
+            creative_plan = normalize_edit_plan(payload.get("creative_plan"), video.duration)
+        except EditPlanError as exc:
+            raise PanelError(str(exc)) from None
         if video.video_codec not in ALLOWED_CODECS:
             raise PanelError("El vídeo debe usar H.264 o HEVC/H.265.")
         if video.size_bytes > style.max_input_size_mb * 1024 * 1024:
@@ -1200,7 +1240,13 @@ class VideoPanel:
         target_ratio = style.output_width / style.output_height
         proposal_id = uuid.uuid4().hex
         now = time.time()
-        options = {"subtitle_mode": subtitle_mode, "output_fps": output_fps}
+        options = {
+            "subtitle_mode": subtitle_mode,
+            "output_profile": output_profile,
+            "output_quality": output_quality,
+            "output_fps": output_fps,
+            "creative_plan": creative_plan,
+        }
         proposal = {
             "proposal_id": proposal_id,
             "source_id": source_id,
@@ -1238,6 +1284,8 @@ class VideoPanel:
                 "video_codec": video.video_codec,
                 "audio_codec": video.audio_codec,
                 "fps": video.fps,
+                "video_bit_rate_bps": video.video_bit_rate_bps,
+                "format_bit_rate_bps": video.format_bit_rate_bps,
                 "origin": "Google Drive · 01_ENTRADA" if drive_import else "Subida local",
             },
             "edit": {
@@ -1245,6 +1293,9 @@ class VideoPanel:
                 "output_width": style.output_width,
                 "output_height": style.output_height,
                 "output_fps": output_fps,
+                "output_profile": output_profile,
+                "output_quality": output_quality,
+                "expected_output_duration_seconds": edited_duration(video.duration, creative_plan["cuts"]),
                 "framing": (
                     "rellenar; la relación 9:16 coincide, sin recorte previsto"
                     if abs(source_ratio - target_ratio) <= 0.015
@@ -1253,8 +1304,14 @@ class VideoPanel:
                 "keep_original_audio": video.has_audio,
                 "logo_enabled": bool(style.logo_path),
                 "background_music": False,
-                "cuts_or_zoom": False,
-                "transitions_or_stickers": False,
+                "cut_count": len(creative_plan["cuts"]),
+                "zoom_count": len(creative_plan["zooms"]),
+                "sticker_count": len(creative_plan["stickers"]),
+                "creative_plan": creative_plan,
+                "transitions": False,
+                "higher_resolution_note": (
+                    "1440p y 2160p vertical no están habilitados hasta verificar un plan Shotstack con 4K."
+                ),
             },
             "api_plan": {
                 "openai_transcription": transcription_required,
@@ -1286,18 +1343,22 @@ class VideoPanel:
             "warnings": [
                 warning
                 for warning in [
-                    "La salida 1080 × 1920 reduce la resolución respecto a la entrada."
+                    f"La salida {style.output_width} × {style.output_height} reduce la resolución respecto a la entrada."
                     if video.width > style.output_width or video.height > style.output_height
                     else "",
-                    "La salida 1080 × 1920 amplía la entrada y no recupera detalle."
+                    f"La salida {style.output_width} × {style.output_height} amplía la entrada y no recupera detalle."
                     if video.width < style.output_width or video.height < style.output_height
                     else "",
-                    "El perfil 2160 × 3840 no está configurado ni verificado en Shotstack Stage."
-                    if (video.width, video.height) == (2160, 3840)
+                    "1440p y 4K están deshabilitados hasta verificar que el plan de Shotstack incluye 4K.",
+                    "No se ha consultado el saldo/plan de Shotstack; la estimación configurada no confirma créditos ni recargos del proveedor.",
+                    "El preset de calidad no fija un bitrate; el valor real solo se podrá medir después de un render autorizado.",
+                    "Stage añade una marca de agua y requiere créditos; no se inició ningún render al preparar esta propuesta.",
+                    "La estimación usa la duración original, no descuenta los cortes y no representa una tarifa de plan 4K."
+                    if creative_plan["cuts"]
                     else "",
-                    "No incluye cortes, zooms, transiciones, stickers, música ni normalización de audio."
+                    "No incluye transiciones, música ni efectos de sonido."
                     if video.has_audio
-                    else "No incluye cortes, zooms, transiciones, stickers ni música.",
+                    else "No incluye transiciones, música ni efectos de sonido.",
                     "Sin subtítulos: no se enviará audio a OpenAI."
                     if not transcription_required
                     else "",
@@ -1444,6 +1505,7 @@ class VideoPanel:
                 config=PipelineConfig.from_environment(),
                 style=style,
                 subtitle_mode=edit_options["subtitle_mode"],
+                creative_plan=edit_options.get("creative_plan"),
                 state_db_path=self.store.database_path,
                 progress_callback=update_phase,
             )

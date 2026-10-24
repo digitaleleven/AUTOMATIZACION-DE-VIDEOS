@@ -26,3 +26,9 @@ Según el brief de la propietaria del 24 de octubre de 2026, la cuenta secundari
 **Why:** la prueba temporal valida una escritura básica, pero no equivale a verificar el tamaño, formato, subida y reproducción del resultado final.
 
 **How to apply:** no repetir operaciones reales de Drive ni renders sin autorización separada; antes de declarar la integración completa, comprobar con permiso de la propietaria que un MP4 nuevo llega a `02_PROCESADOS` y se puede reproducir.
+
+La documentación oficial de Shotstack permite tamaños personalizados hasta 3840 píxeles por lado, pero las salidas superiores a 1080p requieren un plan que incluya 4K. El plan de la cuenta de MATRIX MOTION no está verificado. El preset `high` no fija un bitrate; este solo se puede medir en el MP4 final con FFprobe. Stage añade marca de agua y requiere créditos.
+
+**Why:** la capacidad técnica del API no demuestra que la cuenta tenga el plan necesario ni que un preset produzca una calidad/bitrate determinado.
+
+**How to apply:** mantener 720p y 1080p disponibles; no habilitar 1440p/4K ni afirmar calidad o coste final hasta verificar el plan con autorización y analizar un resultado renderizado.

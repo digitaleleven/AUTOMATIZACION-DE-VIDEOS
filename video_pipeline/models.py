@@ -21,6 +21,8 @@ class VideoInfo:
     color_transfer: str | None = None
     color_space: str | None = None
     container: str = "unknown"
+    video_bit_rate_bps: int | None = None
+    format_bit_rate_bps: int | None = None
 
 
 @dataclass(frozen=True)

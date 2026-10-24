@@ -31,9 +31,9 @@ def probe_video(path: str | Path) -> VideoInfo:
     command = [
         "ffprobe", "-v", "error",
         "-show_entries",
-        "format=duration,size,format_name:"
+        "format=duration,size,format_name,bit_rate:"
         "stream=codec_type,codec_name,width,height,r_frame_rate,pix_fmt,profile,"
-        "color_primaries,color_transfer,color_space:"
+        "color_primaries,color_transfer,color_space,bit_rate:"
         "stream_tags=rotate:stream_side_data=rotation",
         "-of", "json", str(video),
     ]
@@ -82,6 +82,14 @@ def probe_video(path: str | Path) -> VideoInfo:
         fps = float(rate[0]) / float(rate[1]) if len(rate) == 2 and float(rate[1]) else 0.0
     except (TypeError, ValueError, ZeroDivisionError):
         fps = 0.0
+    try:
+        video_bit_rate = int(video_stream.get("bit_rate") or 0) or None
+    except (TypeError, ValueError):
+        video_bit_rate = None
+    try:
+        format_bit_rate = int(probe.get("format", {}).get("bit_rate") or 0) or None
+    except (TypeError, ValueError):
+        format_bit_rate = None
     return VideoInfo(
         path=str(video),
         duration=duration,
@@ -98,6 +106,8 @@ def probe_video(path: str | Path) -> VideoInfo:
         color_transfer=video_stream.get("color_transfer"),
         color_space=video_stream.get("color_space"),
         container=str(probe.get("format", {}).get("format_name") or "unknown"),
+        video_bit_rate_bps=video_bit_rate,
+        format_bit_rate_bps=format_bit_rate,
     )
 
 
@@ -150,6 +160,7 @@ def validate_rendered_output(
     source: VideoInfo,
     output_path: str | Path,
     style: VideoStyle,
+    expected_duration_seconds: float | None = None,
 ) -> VideoInfo:
     output = Path(output_path)
     if not output.is_file() or output.stat().st_size <= 0:
@@ -166,12 +177,13 @@ def validate_rendered_output(
         raise OutputValidationError(f"Expected H.264 output, received {result.video_codec}.")
     if not result.has_audio:
         raise OutputValidationError("Rendered video has no audio stream.")
-    tolerance = max(2.0, source.duration * 0.02)
-    if abs(result.duration - source.duration) > tolerance:
+    expected_duration = expected_duration_seconds if expected_duration_seconds is not None else source.duration
+    tolerance = max(2.0, expected_duration * 0.02)
+    if abs(result.duration - expected_duration) > tolerance:
         raise OutputValidationError(
-            f"Output duration differs from source by more than {tolerance:.1f} seconds."
+            f"Output duration differs from the edited timeline by more than {tolerance:.1f} seconds."
         )
-    if result.fps and abs(result.fps - style.output_fps) > 1.5:
+    if not result.fps or abs(result.fps - style.output_fps) > 1.5:
         raise OutputValidationError(
             f"Output frame rate {result.fps:.2f} does not match requested {style.output_fps} fps."
         )

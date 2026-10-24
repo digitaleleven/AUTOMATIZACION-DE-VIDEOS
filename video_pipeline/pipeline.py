@@ -20,6 +20,7 @@ from .media import (
     temporary_work_directory,
     validate_rendered_output,
 )
+from .edit_plan import edited_duration, map_subtitles_to_output, normalize_edit_plan
 from .models import SubtitleSegment, WordTiming
 from .shotstack import ShotstackClient, build_edit_payload
 from .state import ProcessingLedger
@@ -321,6 +322,7 @@ def process_local_video(
     config: PipelineConfig | None = None,
     style: VideoStyle | None = None,
     subtitle_mode: str = "none",
+    creative_plan: dict[str, Any] | None = None,
     state_db_path: str | Path = "data/processing.sqlite3",
     retry_failed: bool = False,
     progress_callback: Callable[[str], None] | None = None,
@@ -363,6 +365,7 @@ def process_local_video(
             f"Input is {video.duration:.1f} seconds; the configured maximum is "
             f"{appearance.max_video_duration_seconds} seconds."
         )
+    plan = normalize_edit_plan(creative_plan, video.duration)
     if transcription_required and not video.has_audio:
         raise ValueError("Input MP4 has no audio stream to transcribe.")
     transcription_chunks = math.ceil(video.duration / 900) if transcription_required else 0
@@ -429,6 +432,7 @@ def process_local_video(
         edit_options={
             "subtitle_mode": subtitle_mode,
             "style": asdict(appearance),
+            "creative_plan": plan,
         },
     )
     output_path: Path | None = None
@@ -469,14 +473,15 @@ def process_local_video(
 
             subtitle_url = None
             if transcription_required:
+                rendered_captions = map_subtitles_to_output(captions, plan["cuts"])
                 srt_path = Path(work_dir) / "captions.srt"
                 if progress_callback:
                     progress_callback("preparing_captions")
                 srt_path.write_text(
-                    captions_to_srt(captions, appearance.emoji_by_keyword),
+                    captions_to_srt(rendered_captions, appearance.emoji_by_keyword),
                     encoding="utf-8",
                 )
-                logger.info("Prepared %d timed subtitle segments", len(captions))
+                logger.info("Prepared %d timed subtitle segments", len(rendered_captions))
 
                 if job.get("subtitle_url"):
                     subtitle_url = job["subtitle_url"]
@@ -504,13 +509,17 @@ def process_local_video(
             edit_payload = build_edit_payload(
                 shotstack_source_url,
                 video.duration,
-                captions,
+                map_subtitles_to_output(captions, plan["cuts"]),
                 subtitle_url,
                 style=appearance,
                 logo_url=logo_url,
                 source_width=editing_video.width,
                 source_height=editing_video.height,
                 subtitle_mode=subtitle_mode,
+                cuts=plan["cuts"],
+                zooms=plan["zooms"],
+                stickers=plan["stickers"],
+                subtitles_already_mapped=True,
             )
             render_id = job.get("render_id")
             render_url = None
@@ -539,7 +548,13 @@ def process_local_video(
             output = renderer.download_render(render_url, output_path)
             if progress_callback:
                 progress_callback("validating_output")
-            validated_output = validate_rendered_output(video, output, appearance)
+            expected_duration = edited_duration(video.duration, plan["cuts"])
+            validated_output = validate_rendered_output(
+                video,
+                output,
+                appearance,
+                expected_duration_seconds=expected_duration,
+            )
             if _sha256_file(source) != source_hash:
                 raise RuntimeError("The source MP4 changed during processing; it remains unmodified by this pipeline.")
 
@@ -564,13 +579,21 @@ def process_local_video(
             "source_video_codec": video.video_codec,
             "source_audio_codec": video.audio_codec,
             "source_fps": video.fps,
+            "source_video_bit_rate_bps": video.video_bit_rate_bps,
+            "source_format_bit_rate_bps": video.format_bit_rate_bps,
             "output_dimensions": {"width": validated_output.width, "height": validated_output.height},
             "output_video_codec": validated_output.video_codec,
             "output_audio_codec": validated_output.audio_codec,
             "output_fps": validated_output.fps,
+            "output_quality_preset": appearance.output_quality,
+            "output_video_bit_rate_bps": validated_output.video_bit_rate_bps,
+            "output_format_bit_rate_bps": validated_output.format_bit_rate_bps,
+            "output_duration_seconds": validated_output.duration,
+            "expected_output_duration_seconds": expected_duration,
             "transcribed_word_count": words_count,
             "subtitle_mode": subtitle_mode,
             "subtitle_segment_count": len(captions),
+            "creative_plan": plan,
             "render_id": render_id,
             "render_status_verified": True,
             "shotstack_environment": "stage",

@@ -34,6 +34,7 @@ class VideoStyle:
     output_width: int = 1080
     output_height: int = 1920
     output_fps: int = 30
+    output_quality: str = "high"
     max_input_size_mb: int = 500
     max_video_duration_seconds: int = 1800
     max_transcription_chunks: int = 2
@@ -89,10 +90,14 @@ def load_video_style(path: str | Path = "video_style.json") -> VideoStyle:
         raise StyleConfigError("logo_scale must be between 0.02 and 0.4.")
     if any(not -1 <= float(values[key]) <= 1 for key in ("logo_offset_x", "logo_offset_y")):
         raise StyleConfigError("Logo offsets must be between -1 and 1.")
-    if int(values["output_width"]) != 1080 or int(values["output_height"]) != 1920:
-        raise StyleConfigError("This project currently supports only 1080 × 1920 output.")
+    if (int(values["output_width"]), int(values["output_height"])) not in {
+        (720, 1280), (1080, 1920),
+    }:
+        raise StyleConfigError("Output must use the 720 × 1280 or 1080 × 1920 portrait profile.")
     if int(values["output_fps"]) not in {25, 30, 50, 60}:
         raise StyleConfigError("output_fps must be one of 25, 30, 50, or 60.")
+    if not isinstance(values["output_quality"], str) or values["output_quality"] not in {"medium", "high"}:
+        raise StyleConfigError("output_quality must be 'medium' or 'high'.")
     if int(values["max_input_size_mb"]) <= 0 or int(values["max_video_duration_seconds"]) <= 0:
         raise StyleConfigError("Input size and duration limits must be positive.")
     if int(values["max_transcription_chunks"]) <= 0:

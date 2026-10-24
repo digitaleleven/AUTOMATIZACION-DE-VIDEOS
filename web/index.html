@@ -209,7 +209,39 @@
                     <option value="50">50 FPS</option>
                     <option value="60">60 FPS</option>
                   </select>
-                  <p class="field-help" id="edit-options-note">La propuesta se prepara localmente, sin llamar a OpenAI, Shotstack ni Google. La salida es MP4 1080 × 1920.</p>
+                  <label for="edit-output-profile">Resolución vertical</label>
+                  <select id="edit-output-profile" aria-describedby="edit-options-note">
+                    <option value="720p">720 × 1280 (720p)</option>
+                    <option value="1080p" selected>1080 × 1920 (1080p)</option>
+                    <option value="1440p" disabled>1440 × 2560 (requiere plan 4K; no verificado)</option>
+                    <option value="2160p" disabled>2160 × 3840 (4K; requiere plan 4K no verificado)</option>
+                  </select>
+                  <label for="edit-output-quality">Calidad de salida Shotstack</label>
+                  <select id="edit-output-quality" aria-describedby="edit-quality-note">
+                    <option value="medium">Media</option>
+                    <option value="high" selected>Alta</option>
+                  </select>
+                  <p class="field-help" id="edit-quality-note">“Alta” selecciona el preset de Shotstack; no fija un bitrate. El bitrate real solo se podrá medir después de un render autorizado.</p>
+                  <p class="field-help" id="edit-options-note">La propuesta se prepara localmente. No llama a OpenAI, Shotstack ni Google. 1440p y 4K están deshabilitados hasta verificar el plan de la cuenta. Stage aplica marca de agua y requiere créditos.</p>
+                  <fieldset class="creative-editor" aria-describedby="creative-editor-note">
+                    <legend>Plan creativo manual</legend>
+                    <p class="field-help" id="creative-editor-note">Los tiempos se refieren al vídeo original. Estos cambios se aplican sin depender de los subtítulos. No se generan recomendaciones con IA en esta fase.</p>
+                    <section class="timeline-control" aria-labelledby="cuts-title">
+                      <h4 id="cuts-title">Cortes</h4>
+                      <div class="timeline-list" id="edit-cuts-list" aria-live="polite"></div>
+                      <button class="small-outline-button" id="add-cut-button" type="button">Añadir intervalo que se quitará</button>
+                    </section>
+                    <section class="timeline-control" aria-labelledby="zooms-title">
+                      <h4 id="zooms-title">Zooms</h4>
+                      <div class="timeline-list" id="edit-zooms-list" aria-live="polite"></div>
+                      <button class="small-outline-button" id="add-zoom-button" type="button">Añadir zoom</button>
+                    </section>
+                    <section class="timeline-control" aria-labelledby="stickers-title">
+                      <h4 id="stickers-title">Stickers animados</h4>
+                      <div class="timeline-list" id="edit-stickers-list" aria-live="polite"></div>
+                      <button class="small-outline-button" id="add-sticker-button" type="button">Añadir sticker</button>
+                    </section>
+                  </fieldset>
                 </div>
                 <button class="outline-button" id="process-button" type="button" disabled>Preparar propuesta local</button>
                 <div class="proposal-summary" id="proposal-summary" aria-live="polite" hidden></div>

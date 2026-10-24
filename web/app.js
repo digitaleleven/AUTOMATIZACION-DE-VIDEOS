@@ -94,7 +94,7 @@ async function uploadVideo(file) {
   });
 }
 
-async function prepareEditProposal(sourceId, subtitleMode, outputFps) {
+async function prepareEditProposal(sourceId, subtitleMode, outputFps, outputProfile, outputQuality, creativePlan) {
   return requestJson(API.proposals, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -102,8 +102,134 @@ async function prepareEditProposal(sourceId, subtitleMode, outputFps) {
       source_id: sourceId,
       subtitle_mode: subtitleMode,
       output_fps: Number(outputFps),
+      output_profile: outputProfile,
+      output_quality: outputQuality,
+      creative_plan: creativePlan,
     }),
   });
+}
+
+function invalidateEditOptions() {
+  clearEditProposal();
+  byId("cost-value").textContent = "Pendiente de propuesta";
+  byId("cost-note").textContent = "Prepara una propuesta nueva para estos ajustes.";
+  updateProcessButton();
+}
+
+function addPlanField(row, labelText, fieldName, type, value, options = []) {
+  const label = document.createElement("label");
+  label.className = "timeline-field";
+  label.append(document.createTextNode(labelText));
+  let field;
+  if (type === "select") {
+    field = document.createElement("select");
+    for (const [optionValue, optionLabel] of options) {
+      const option = document.createElement("option");
+      option.value = optionValue;
+      option.textContent = optionLabel;
+      field.append(option);
+    }
+  } else {
+    field = document.createElement("input");
+    field.type = type;
+    if (type === "number") {
+      field.min = "0";
+      field.step = "0.1";
+      field.placeholder = "s";
+      field.required = true;
+    }
+    if (type === "color") field.value = value || "#FFD84D";
+  }
+  field.dataset.field = fieldName;
+  if (type !== "color" && value !== undefined && value !== "") field.value = value;
+  label.append(field);
+  row.append(label);
+  return field;
+}
+
+function addCreativePlanRow(kind, initial = {}) {
+  const config = {
+    cut: { id: "edit-cuts-list", className: "cut-row" },
+    zoom: { id: "edit-zooms-list", className: "zoom-row" },
+    sticker: { id: "edit-stickers-list", className: "sticker-row" },
+  }[kind];
+  if (!config) return;
+  const list = byId(config.id);
+  if (list.querySelectorAll(".timeline-row").length >= 12) {
+    displayToast("Se permiten hasta 12 elementos de cada tipo.", true);
+    return;
+  }
+  const row = document.createElement("div");
+  row.className = `timeline-row ${config.className}`;
+  if (kind === "cut") {
+    addPlanField(row, "Desde (s)", "start_seconds", "number", initial.start_seconds);
+    addPlanField(row, "Hasta (s)", "end_seconds", "number", initial.end_seconds);
+  } else if (kind === "zoom") {
+    addPlanField(row, "Desde (s)", "start_seconds", "number", initial.start_seconds);
+    addPlanField(row, "Hasta (s)", "end_seconds", "number", initial.end_seconds);
+    addPlanField(row, "Efecto", "effect", "select", initial.effect || "zoomIn", [
+      ["zoomIn", "Acercar"],
+      ["zoomOut", "Alejar"],
+    ]);
+  } else {
+    addPlanField(row, "Sticker", "sticker", "select", initial.sticker || "sparkle", [
+      ["sparkle", "Destello"],
+      ["star", "Estrella"],
+      ["heart", "Corazón"],
+      ["bolt", "Rayo"],
+    ]);
+    addPlanField(row, "Inicio (s)", "start_seconds", "number", initial.start_seconds);
+    addPlanField(row, "Duración (s)", "duration_seconds", "number", initial.duration_seconds);
+    addPlanField(row, "Posición", "position", "select", initial.position || "topRight", [
+      ["topLeft", "Arriba izquierda"],
+      ["topRight", "Arriba derecha"],
+      ["bottomLeft", "Abajo izquierda"],
+      ["bottomRight", "Abajo derecha"],
+      ["center", "Centro"],
+    ]);
+    addPlanField(row, "Animación", "effect", "select", initial.effect || "zoomIn", [
+      ["zoomIn", "Entrada con zoom"],
+      ["zoomOut", "Salida con zoom"],
+    ]);
+    addPlanField(row, "Color", "color", "color", initial.color || "#FFD84D");
+  }
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "remove-timeline-row";
+  remove.textContent = "Eliminar";
+  remove.setAttribute("aria-label", `Eliminar ${kind === "cut" ? "corte" : kind === "zoom" ? "zoom" : "sticker"}`);
+  remove.addEventListener("click", () => {
+    row.remove();
+    invalidateEditOptions();
+  });
+  row.append(remove);
+  for (const field of row.querySelectorAll("input, select")) {
+    field.addEventListener("input", invalidateEditOptions);
+    field.addEventListener("change", invalidateEditOptions);
+  }
+  list.append(row);
+  invalidateEditOptions();
+}
+
+function collectCreativePlan() {
+  const readRows = (id, fields) => Array.from(byId(id).querySelectorAll(".timeline-row")).map((row, index) => {
+    const item = {};
+    for (const fieldName of fields) {
+      const field = row.querySelector(`[data-field="${fieldName}"]`);
+      if (!field || (field.type === "number" && field.value.trim() === "")) {
+        throw new Error(`Completa los tiempos del elemento ${index + 1}.`);
+      }
+      item[fieldName] = field.type === "number" ? Number(field.value) : field.value;
+    }
+    return item;
+  });
+  return {
+    cuts: readRows("edit-cuts-list", ["start_seconds", "end_seconds"]),
+    zooms: readRows("edit-zooms-list", ["start_seconds", "end_seconds", "effect"]),
+    stickers: readRows("edit-stickers-list", [
+      "sticker", "start_seconds", "duration_seconds", "position", "effect", "color",
+    ]),
+  };
 }
 
 async function startProcessing(proposalId, authorizePaidApis, unknownCostAcknowledged) {
@@ -299,13 +425,23 @@ function clearEditProposal() {
   if (byId("unknown-cost-consent")) byId("unknown-cost-consent").checked = false;
 }
 
+function resetCreativePlanControls() {
+  for (const id of ["edit-cuts-list", "edit-zooms-list", "edit-stickers-list"]) {
+    const list = byId(id);
+    if (list) list.replaceChildren();
+  }
+}
+
 function syncEditOptionsForSelectedItem(item) {
   if (!item || state.editOptionsSourceId === item.id) return;
   state.editOptionsSourceId = item.id;
   byId("edit-subtitle-mode").value = "none";
+  byId("edit-output-profile").value = "1080p";
+  byId("edit-output-quality").value = "high";
   const supportedFps = [25, 30, 50, 60];
   const sourceFps = Math.round(Number(item.fps) || 30);
   byId("edit-output-fps").value = String(supportedFps.includes(sourceFps) ? sourceFps : 30);
+  resetCreativePlanControls();
   clearEditProposal();
 }
 
@@ -320,18 +456,37 @@ function renderEditProposal(proposal) {
   const edit = proposal.edit || {};
   const costs = proposal.costs || {};
   const apiPlan = proposal.api_plan || {};
+  const creativePlan = edit.creative_plan || { cuts: [], zooms: [], stickers: [] };
   const duration = Number(source.duration_seconds);
+  const outputDuration = Number(edit.expected_output_duration_seconds);
+  const sourceBitrate = Number(source.video_bit_rate_bps || source.format_bit_rate_bps || 0);
   const unknownCost = costs.total_estimate_usd === null || costs.total_estimate_usd === undefined;
+  const rangeLabel = (item) => `${Number(item.start_seconds).toFixed(2)}–${Number(item.end_seconds).toFixed(2)} s`;
+  const cutsLabel = (creativePlan.cuts || []).length
+    ? (creativePlan.cuts || []).map(rangeLabel).join(", ")
+    : "ninguno";
+  const zoomsLabel = (creativePlan.zooms || []).length
+    ? (creativePlan.zooms || []).map((item) => `${rangeLabel(item)} (${item.effect === "zoomIn" ? "acercar" : "alejar"})`).join(", ")
+    : "ninguno";
+  const stickersLabel = (creativePlan.stickers || []).length
+    ? (creativePlan.stickers || []).map((item) => `${item.sticker}, ${Number(item.start_seconds).toFixed(2)} s, ${Number(item.duration_seconds).toFixed(2)} s`).join("; ")
+    : "ninguno";
   const lines = [
     `Vídeo: ${proposal.source_name || "No disponible"} · ${Number.isFinite(duration) ? `${duration.toFixed(2)} s` : "duración desconocida"}`,
     `Origen: ${source.origin || "No identificado"}`,
     `Entrada: ${source.width || "?"} × ${source.height || "?"} · ${source.fps || "?"} FPS · ${source.video_codec || "códec desconocido"}`,
-    `Salida: MP4 ${edit.output_width || 1080} × ${edit.output_height || 1920} · ${edit.output_fps || "?"} FPS`,
+    `Bitrate de entrada medido por FFprobe: ${sourceBitrate > 0 ? `${(sourceBitrate / 1000000).toFixed(2)} Mbps` : "no informado"}`,
+    `Salida: MP4 ${edit.output_width || 1080} × ${edit.output_height || 1920} · ${edit.output_fps || "?"} FPS · calidad ${edit.output_quality || "?"}`,
+    `Duración final prevista: ${Number.isFinite(outputDuration) ? `${outputDuration.toFixed(2)} s` : "no disponible"}`,
     `Subtítulos: ${modeLabels[edit.subtitle_mode] || "No disponible"}`,
     `OpenAI: ${apiPlan.openai_transcription ? `transcripción prevista (${apiPlan.openai_transcription_chunks} fragmento/s)` : "no se llamará; coste de transcripción 0"}`,
-    `Audio: ${edit.keep_original_audio ? "se conserva el audio original" : "la entrada no tiene audio"}; no se añade música ni normalización`,
+    `Audio: ${edit.keep_original_audio ? "se conserva el audio original (y se recorta junto al vídeo)" : "la entrada no tiene audio"}; no se añade música ni normalización`,
     `Logo: ${edit.logo_enabled ? "se usará el logo ya configurado" : "ninguno configurado"}`,
-    `Encuadre: ${edit.framing || "no disponible"}; no se añaden cortes, zooms, transiciones ni stickers`,
+    `Encuadre: ${edit.framing || "no disponible"}`,
+    `Cortes que se quitarán: ${cutsLabel}`,
+    `Zooms: ${zoomsLabel}`,
+    `Stickers con animación de zoom: ${stickersLabel}`,
+    "El plan creativo de esta propuesta es manual; no se ha pedido a una IA que analice el contenido.",
     `Destino: ${proposal.destination || "no disponible"}`,
     `OpenAI estimado: ${formatCost(costs.openai_usd)}`,
     `Shotstack Stage estimado: ${formatCost(costs.shotstack_usd)}`,
@@ -547,11 +702,18 @@ function renderJob(job, sourceName = "") {
     ? `<div class="job-progress-track" aria-label="${escapeHtml(progressText)}"><div class="job-progress-fill" style="width:${Math.max(0, Math.min(100, progress))}%"></div></div>`
     : `<div class="job-progress-unmeasured">El servicio no informa el porcentaje de avance.</div>`;
   const phase = job.phase ? statusLabel(job.phase) : statusLabel(job.status);
+  const metadata = job.output_metadata || {};
+  const dimensions = metadata.dimensions;
+  const bitrate = Number(metadata.video_bit_rate_bps || metadata.format_bit_rate_bps || 0);
+  const outputMetadataMarkup = ["completed", "complete"].includes(status) && dimensions
+    ? `<div class="job-output-metadata"><strong>Mediciones reales de FFprobe</strong><span>${escapeHtml(dimensions.width)} × ${escapeHtml(dimensions.height)} · ${escapeHtml(metadata.fps ?? "FPS no disponible")} FPS · ${escapeHtml(metadata.video_codec || "códec no disponible")}</span><span>Bitrate: ${bitrate > 0 ? `${(bitrate / 1000000).toFixed(2)} Mbps` : "no informado por FFprobe"} · preset solicitado: ${escapeHtml(metadata.quality_preset || "no disponible")}</span><span>Duración final: ${Number.isFinite(Number(metadata.duration_seconds)) ? `${Number(metadata.duration_seconds).toFixed(2)} s` : "no disponible"}</span></div>`
+    : "";
   byId("job-status-tag").textContent = statusLabel(job.status).toLocaleUpperCase("es");
   byId("job-content").innerHTML = `<div class="job-live">
     <div><strong>${escapeHtml(sourceName || "Procesamiento")}</strong><p>${escapeHtml(phase)} · Identificador ${escapeHtml(job.id ?? "No disponible")}</p>${progressMarkup}</div>
     <span class="job-progress-label">${escapeHtml(progressText)}</span>
     ${job.error ? `<div class="job-error">${escapeHtml(job.error)}</div>` : ""}
+    ${outputMetadataMarkup}
   </div>`;
   const outputId = job.output_id || job.output?.id;
   if (outputId) showOutput(outputId);
@@ -869,14 +1031,14 @@ byId("video-input").addEventListener("change", async (event) => {
 
 byId("paid-consent").addEventListener("change", updateProcessButton);
 byId("unknown-cost-consent").addEventListener("change", updateProcessButton);
-for (const controlId of ["edit-subtitle-mode", "edit-output-fps"]) {
+  for (const controlId of ["edit-subtitle-mode", "edit-output-fps", "edit-output-profile", "edit-output-quality"]) {
   byId(controlId).addEventListener("change", () => {
-    clearEditProposal();
-    byId("cost-value").textContent = "Pendiente de propuesta";
-    byId("cost-note").textContent = "Prepara una propuesta nueva para estos ajustes.";
-    updateProcessButton();
+      invalidateEditOptions();
   });
 }
+  byId("add-cut-button").addEventListener("click", () => addCreativePlanRow("cut"));
+  byId("add-zoom-button").addEventListener("click", () => addCreativePlanRow("zoom"));
+  byId("add-sticker-button").addEventListener("click", () => addCreativePlanRow("sticker"));
 byId("process-button").addEventListener("click", async () => {
   const item = getSelectedItem();
   if (!item) return;
@@ -891,6 +1053,9 @@ byId("process-button").addEventListener("click", async () => {
       item.id,
       byId("edit-subtitle-mode").value,
       byId("edit-output-fps").value,
+      byId("edit-output-profile").value,
+      byId("edit-output-quality").value,
+      collectCreativePlan(),
     );
     renderEditProposal(result);
     displayToast("Propuesta preparada localmente. No se inició ningún servicio externo.");

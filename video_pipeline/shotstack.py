@@ -14,6 +14,14 @@ from urllib.parse import urlsplit
 import requests
 
 from .models import SubtitleSegment
+from .edit_plan import (
+    edited_duration,
+    map_subtitles_to_output,
+    normalize_edit_plan,
+    map_source_time_to_output,
+    retained_source_ranges,
+    sticker_svg,
+)
 from .style import VideoStyle
 
 logger = logging.getLogger(__name__)
@@ -33,6 +41,10 @@ def build_edit_payload(
     source_width: int = 0,
     source_height: int = 0,
     subtitle_mode: str = "dynamic",
+    cuts: list[dict[str, Any]] | None = None,
+    zooms: list[dict[str, Any]] | None = None,
+    stickers: list[dict[str, Any]] | None = None,
+    subtitles_already_mapped: bool = False,
 ) -> dict[str, Any]:
     style = style or VideoStyle()
     if not source_url.startswith("https://"):
@@ -47,11 +59,23 @@ def build_edit_payload(
         raise ValueError("Shotstack logo source must be an HTTPS URL.")
     if duration <= 0:
         raise ValueError("Video duration must be positive.")
+    plan = normalize_edit_plan(
+        {"cuts": cuts or [], "zooms": zooms or [], "stickers": stickers or []},
+        duration,
+    )
+    cuts = plan["cuts"]
+    zooms = plan["zooms"]
+    stickers = plan["stickers"]
     if subtitle_mode != "none" and not subtitles:
         raise ValueError("At least one subtitle segment is required.")
+    mapped_subtitles = (
+        subtitles
+        if subtitles_already_mapped
+        else map_subtitles_to_output(subtitles, cuts)
+    )
     if subtitle_mode != "none" and not any(
-        caption.text.strip() and caption.start < duration and caption.end > 0
-        for caption in subtitles
+        caption.text.strip() and caption.start < edited_duration(duration, cuts) and caption.end > 0
+        for caption in mapped_subtitles
     ):
         raise ValueError("No subtitle segment overlaps the video duration.")
     target_ratio = style.output_width / style.output_height
@@ -115,24 +139,72 @@ def build_edit_payload(
                 ]
             }
         )
-    tracks.append(
-        {
-            "clips": [
-                {
-                    "asset": {
-                        "type": "video",
-                        "src": source_url,
-                        "volume": 1.0,
-                        "transcode": True,
-                    },
-                    "start": 0,
-                    "length": round(duration, 3),
-                    "fit": video_fit,
-                    "position": "center",
-                }
-            ]
+    sticker_clips = []
+    for sticker in stickers:
+        sticker_start = sticker["start_seconds"]
+        sticker_end = sticker_start + sticker["duration_seconds"]
+        for part_start, part_end in retained_source_ranges(sticker_start, sticker_end, cuts):
+            output_start = map_source_time_to_output(part_start, cuts)
+            output_end = map_source_time_to_output(part_end, cuts)
+            if output_end - output_start <= 0.01:
+                continue
+            sticker_clips.append({
+                "asset": {
+                    "type": "svg",
+                    "src": sticker_svg(sticker["sticker"], sticker["color"]),
+                },
+                "start": round(output_start, 3),
+                "length": round(output_end - output_start, 3),
+                "width": 260,
+                "height": 260,
+                "position": sticker["position"],
+                "effect": sticker["effect"],
+            })
+    if sticker_clips:
+        tracks.append({"clips": sticker_clips})
+
+    video_clips = []
+    boundaries = {0.0, float(duration)}
+    for item in cuts + zooms:
+        boundaries.add(float(item["start_seconds"]))
+        boundaries.add(float(item["end_seconds"]))
+    ordered_boundaries = sorted(boundaries)
+    output_start = 0.0
+    video_asset = {
+        "type": "video",
+        "src": source_url,
+        "volume": 1.0,
+        "transcode": True,
+    }
+    for source_start, source_end in zip(ordered_boundaries, ordered_boundaries[1:]):
+        length = source_end - source_start
+        if length <= 0.001:
+            continue
+        midpoint = (source_start + source_end) / 2
+        if any(cut["start_seconds"] <= midpoint < cut["end_seconds"] for cut in cuts):
+            continue
+        clip = {
+            "asset": dict(video_asset),
+            "start": round(output_start, 3),
+            "length": round(length, 3),
+            "trim": round(source_start, 3),
+            "fit": video_fit,
+            "position": "center",
         }
-    )
+        zoom = next(
+            (
+                item for item in zooms
+                if item["start_seconds"] <= midpoint < item["end_seconds"]
+            ),
+            None,
+        )
+        if zoom:
+            clip["effect"] = zoom["effect"]
+        video_clips.append(clip)
+        output_start += length
+    if not video_clips:
+        raise ValueError("The edit plan does not leave any video clips.")
+    tracks.append({"clips": video_clips})
     return {
         "timeline": {
             "background": "#000000",
@@ -142,6 +214,7 @@ def build_edit_payload(
             "format": "mp4",
             "size": {"width": style.output_width, "height": style.output_height},
             "fps": style.output_fps,
+            "quality": style.output_quality,
         },
     }
 
