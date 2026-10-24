@@ -1,8 +1,8 @@
 {
   "font_family": "Roboto",
-  "font_size": 64,
-  "font_color": "#FFFFFF",
-  "highlight_color": "#FFD84D",
+  "font_size": 60,
+  "font_color": "#ffffff",
+  "highlight_color": "#ffd84d",
   "stroke_color": "#000000",
   "stroke_width": 4,
   "animation_style": "highlight",
@@ -14,13 +14,13 @@
   "logo_scale": 0.12,
   "logo_offset_x": -0.06,
   "logo_offset_y": -0.08,
-  "output_width": 1080,
-  "output_height": 1920,
-  "output_fps": 30,
+  "output_fps": "30",
   "max_input_size_mb": 500,
   "max_video_duration_seconds": 1800,
   "max_transcription_chunks": 2,
   "openai_price_per_audio_minute_usd": null,
   "shotstack_price_per_render_minute_usd": null,
-  "max_estimated_cost_usd": null
+  "max_estimated_cost_usd": null,
+  "output_width": 1080,
+  "output_height": 1920
 }
