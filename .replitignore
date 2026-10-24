@@ -1,2 +1,4 @@
 /data/
 /outputs/
+/generated-artifacts/
+/remotion-renderer/node_modules/

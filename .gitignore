@@ -3,3 +3,5 @@ __pycache__/
 .pytest_cache/
 /outputs/
 /data/
+/generated-artifacts/
+/remotion-renderer/node_modules/
