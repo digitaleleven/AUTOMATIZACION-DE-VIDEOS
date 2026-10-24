@@ -194,17 +194,38 @@
                   <strong id="cost-value">Desconocido</strong>
                   <p id="cost-note">Selecciona un vídeo para consultar la estimación disponible.</p>
                 </div>
+                <div class="edit-options" aria-labelledby="edit-options-title">
+                  <h3 id="edit-options-title">Edición para este vídeo</h3>
+                  <label for="edit-subtitle-mode">Subtítulos</label>
+                  <select id="edit-subtitle-mode" aria-describedby="edit-options-note">
+                    <option value="none" selected>Sin subtítulos</option>
+                    <option value="dynamic">Dinámicos, con palabras destacadas</option>
+                    <option value="simple">Sencillos, sin animación</option>
+                  </select>
+                  <label for="edit-output-fps">FPS de salida</label>
+                  <select id="edit-output-fps" aria-describedby="edit-options-note">
+                    <option value="25">25 FPS</option>
+                    <option value="30">30 FPS</option>
+                    <option value="50">50 FPS</option>
+                    <option value="60">60 FPS</option>
+                  </select>
+                  <p class="field-help" id="edit-options-note">La propuesta se prepara localmente, sin llamar a OpenAI, Shotstack ni Google. La salida es MP4 1080 × 1920.</p>
+                </div>
+                <button class="outline-button" id="process-button" type="button" disabled>Preparar propuesta local</button>
+                <div class="proposal-summary" id="proposal-summary" aria-live="polite" hidden></div>
                 <div class="health-list" aria-label="Estado de los servicios">
                   <div><span>OpenAI</span><b id="health-openai" class="health-unknown">Pendiente de actualizar</b></div>
                   <div><span>Shotstack</span><b id="health-shotstack" class="health-unknown">Pendiente de actualizar</b></div>
                   <div><span>Entorno</span><b id="health-environment" class="health-unknown">Pendiente de actualizar</b></div>
                   <div><span>Google Drive</span><b id="health-drive" class="health-unknown">Pendiente de actualizar</b></div>
                 </div>
-                <label class="consent-check"><input id="paid-consent" type="checkbox"><span>Autorizo el envío del vídeo a servicios externos de pago (OpenAI y Shotstack Stage).</span></label>
-                <label class="consent-check unknown-check" id="unknown-cost-wrap" hidden><input id="unknown-cost-consent" type="checkbox"><span>Entiendo que el coste es desconocido y podría haber cargos.</span></label>
-                <button class="primary-button" id="process-button" type="button" disabled><span>Iniciar procesamiento</span><b>→</b></button>
+                <div id="render-approval" hidden>
+                  <label class="consent-check"><input id="paid-consent" type="checkbox"><span id="paid-consent-copy">Autorizo el envío del vídeo a Shotstack Stage.</span></label>
+                  <label class="consent-check unknown-check" id="unknown-cost-wrap" hidden><input id="unknown-cost-consent" type="checkbox"><span>Entiendo que el coste es desconocido y podría haber cargos.</span></label>
+                  <button class="primary-button" id="approve-render-button" type="button" disabled><span>Aprobar y renderizar en Stage</span><b>→</b></button>
+                </div>
                 <button class="outline-button retry-drive-upload" id="retry-drive-upload-button" type="button" hidden>Reintentar solo la subida a Drive</button>
-                <p class="button-hint" id="process-hint">Selecciona un vídeo y revisa las autorizaciones.</p>
+                <p class="button-hint" id="process-hint">Selecciona un vídeo y prepara la propuesta. No se iniciará ningún servicio de pago en ese paso.</p>
               </aside>
             </div>
           </section>
@@ -228,8 +249,8 @@
                     <div class="field-pair"><label>Color del texto<input name="font_color" type="color"></label><label>Color del contorno<input name="stroke_color" type="color"></label></div>
                     <label>Color de resaltado<input name="highlight_color" type="color"></label>
                     <label>Animación de subtítulos<select name="animation_style"><option value="highlight">Resaltar palabra</option><option value="karaoke">Karaoke</option></select></label>
-                    <label>Símbolos por palabra clave<textarea name="emoji_by_keyword" rows="3" placeholder='{"palabra":"carácter Unicode"}' aria-describedby="emoji-help"></textarea></label>
-                    <small class="field-help" id="emoji-help">Asocia cada palabra con un carácter mediante JSON. Deja el campo vacío para no añadir símbolos.</small>
+                    <label>Emojis asociados a subtítulos<textarea name="emoji_by_keyword" rows="3" placeholder='{"palabra":"carácter Unicode"}' aria-describedby="emoji-help"></textarea></label>
+                    <small class="field-help" id="emoji-help">Solo se aplica al texto de los subtítulos. No crea stickers ni emojis independientes.</small>
                   </div>
                   <div class="style-group">
                     <h3>Composición y logo</h3>

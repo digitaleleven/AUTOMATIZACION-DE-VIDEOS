@@ -21,8 +21,8 @@ La usuaria decidió conectar una segunda cuenta Gmail existente y no la cuenta p
 
 **How to apply:** verificar server-side callbacks OAuth y tokens temporales de Picker; fallar cerrado, no registrar ni mostrar correo o tokens, y no ampliar ni revocar permisos por el flujo Picker sin autorización.
 
-`drive.file` no habilita por sí solo el descubrimiento de archivos nuevos en carpetas compartidas; `drive.readonly` sí permite leer el Drive completo de la cuenta secundaria. La aplicación debe limitar las consultas y escrituras a las tres carpetas acordadas. El acceso real a esas carpetas y la escritura de resultados siguen pendientes de verificación con OAuth autorizado por la propietaria.
+Según el brief de la propietaria del 24 de octubre de 2026, la cuenta secundaria completó un escaneo real de `01_ENTRADA` y una prueba de crear y borrar un archivo temporal en `02_PROCESADOS`. Esto no demuestra que un MP4 renderizado pueda subirse y reproducirse desde la carpeta de salida.
 
-**Why:** los scopes de Google expresan capacidades de la aplicación a nivel de cuenta; el aislamiento por carpeta se impone además en el código y debe verificarse operativamente.
+**Why:** la prueba temporal valida una escritura básica, pero no equivale a verificar el tamaño, formato, subida y reproducción del resultado final.
 
-**How to apply:** no afirmar que el flujo está completo hasta probar lectura de Entrada y creación en Procesados con la cuenta secundaria; nunca tratar las pruebas locales como evidencia de acceso a Drive real.
+**How to apply:** no repetir operaciones reales de Drive ni renders sin autorización separada; antes de declarar la integración completa, comprobar con permiso de la propietaria que un MP4 nuevo llega a `02_PROCESADOS` y se puede reproducir.

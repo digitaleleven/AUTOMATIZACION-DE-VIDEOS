@@ -3,6 +3,7 @@
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import json
 import sqlite3
 from typing import Any, Iterator
 
@@ -33,6 +34,7 @@ class ProcessingLedger:
                     subtitle_url TEXT,
                     logo_url TEXT,
                     render_id TEXT,
+                    edit_options_json TEXT NOT NULL DEFAULT '{}',
                     error TEXT,
                     updated_at TEXT NOT NULL
                 )
@@ -41,9 +43,14 @@ class ProcessingLedger:
             existing_columns = {
                 row["name"] for row in connection.execute("PRAGMA table_info(processing_jobs)")
             }
-            for column in ("subtitle_url", "logo_url"):
-                if column not in existing_columns:
-                    connection.execute(f"ALTER TABLE processing_jobs ADD COLUMN {column} TEXT")
+            if "subtitle_url" not in existing_columns:
+                connection.execute("ALTER TABLE processing_jobs ADD COLUMN subtitle_url TEXT")
+            if "logo_url" not in existing_columns:
+                connection.execute("ALTER TABLE processing_jobs ADD COLUMN logo_url TEXT")
+            if "edit_options_json" not in existing_columns:
+                connection.execute(
+                    "ALTER TABLE processing_jobs ADD COLUMN edit_options_json TEXT NOT NULL DEFAULT '{}'"
+                )
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -70,8 +77,13 @@ class ProcessingLedger:
         retry_failed: bool = False,
         max_attempts: int = 2,
         stale_after_seconds: int = 3600,
+        edit_options: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Claim a source, allowing at most one explicit retry after failure."""
+        requested_options = edit_options or {}
+        requested_options_json = json.dumps(
+            requested_options, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        )
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
@@ -83,9 +95,9 @@ class ProcessingLedger:
             if row is None:
                 connection.execute(
                     """INSERT INTO processing_jobs
-                    (source_sha256, source_path, status, attempts, updated_at)
-                    VALUES (?, ?, 'processing', 1, ?)""",
-                    (source_sha256, source_path, now),
+                    (source_sha256, source_path, status, attempts, edit_options_json, updated_at)
+                    VALUES (?, ?, 'processing', 1, ?, ?)""",
+                    (source_sha256, source_path, requested_options_json, now),
                 )
                 return self.get(source_sha256, connection=connection)
 
@@ -93,6 +105,15 @@ class ProcessingLedger:
             if job["status"] == "completed":
                 raise DuplicateProcessingError(
                     f"This video was already processed. Existing output: {job.get('output_path')}"
+                )
+            try:
+                previous_options = json.loads(job.get("edit_options_json") or "{}")
+            except (TypeError, json.JSONDecodeError):
+                previous_options = None
+            if previous_options != requested_options:
+                raise RetryNotAllowedError(
+                    "The requested edit settings differ from the previous attempt. "
+                    "Use an unprocessed source copy rather than reusing cached provider assets."
                 )
             if job["status"] == "processing":
                 updated = datetime.fromisoformat(job["updated_at"])

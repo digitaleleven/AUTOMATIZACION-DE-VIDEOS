@@ -907,3 +907,42 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .drive-folder-grid { grid-template-columns: 1fr; }
   .drive-folder:last-child { grid-column: auto; }
 }
+
+.edit-options {
+  display: grid;
+  gap: 8px;
+  margin: 14px 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface-soft);
+}
+.edit-options h3 { margin: 0 0 4px; color: var(--ink); font-size: 14px; }
+.edit-options label { margin-top: 4px; color: var(--muted); font-size: 12px; font-weight: 650; }
+.edit-options select {
+  width: 100%;
+  min-height: 42px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+}
+.proposal-summary {
+  margin: 12px 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent, #08c7c1);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.proposal-summary h3 { margin: 0 0 8px; font-size: 14px; }
+.proposal-summary ul { margin: 0 0 9px; padding-left: 18px; }
+.proposal-summary li { margin: 4px 0; overflow-wrap: anywhere; }
+.proposal-summary small { color: var(--muted); }
+#render-approval { display: grid; gap: 10px; margin-top: 12px; }
+#render-approval[hidden], .proposal-summary[hidden] { display: none !important; }

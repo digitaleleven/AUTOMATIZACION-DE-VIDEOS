@@ -179,6 +179,32 @@ class ShotstackPayloadTests(unittest.TestCase):
         self.assertEqual(logo_track["clips"][0]["asset"]["type"], "image")
         self.assertEqual(logo_track["clips"][0]["scale"], 0.1)
 
+    def test_simple_subtitles_are_static_and_do_not_highlight_words(self):
+        payload = build_edit_payload(
+            "https://media.example/video.mp4",
+            2.5,
+            [SubtitleSegment("Hola mundo", 0.2, 1.1)],
+            "https://media.example/subtitles.srt",
+            subtitle_mode="simple",
+        )
+        asset = payload["timeline"]["tracks"][0]["clips"][0]["asset"]
+        self.assertEqual(asset["animation"]["style"], "none")
+        self.assertNotIn("active", asset)
+
+    def test_no_subtitles_omits_caption_track_and_subtitle_asset(self):
+        payload = build_edit_payload(
+            "https://media.example/video.mp4",
+            2.5,
+            [],
+            None,
+            subtitle_mode="none",
+            source_width=360,
+            source_height=640,
+        )
+        tracks = payload["timeline"]["tracks"]
+        self.assertEqual(len(tracks), 1)
+        self.assertEqual(tracks[0]["clips"][0]["asset"]["type"], "video")
+
     def test_rejects_non_https_video_source(self):
         with self.assertRaises(ValueError):
             build_edit_payload(
@@ -489,6 +515,7 @@ class LocalMediaTests(unittest.TestCase):
                     source_path,
                     output_dir,
                     paid_api_authorized=True,
+                    subtitle_mode="dynamic",
                     openai_client=Mock(),
                     shotstack_client=renderer,
                     drive_uploader=drive_uploader,
@@ -518,6 +545,7 @@ class LocalMediaTests(unittest.TestCase):
                     source_path,
                     output_dir,
                     paid_api_authorized=True,
+                    subtitle_mode="dynamic",
                     openai_client=Mock(),
                     shotstack_client=renderer,
                     drive_uploader=drive_uploader,
@@ -529,6 +557,81 @@ class LocalMediaTests(unittest.TestCase):
                     state_db_path=state_path,
                 )
             self.assertEqual(source_path.read_bytes(), original_bytes)
+
+    def test_no_subtitles_skips_openai_and_subtitle_ingest(self):
+        from types import SimpleNamespace
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "clip.mov"
+            source.write_bytes(b"original-video")
+            original_bytes = source.read_bytes()
+            source_info = VideoInfo(
+                str(source), 1.0, 360, 640, True,
+                video_codec="h264", audio_codec="aac", fps=30,
+                size_bytes=source.stat().st_size,
+            )
+            output_info = VideoInfo(
+                str(root / "outputs" / "clip_vertical_edited.mp4"),
+                1.0, 1080, 1920, True,
+                video_codec="h264", audio_codec="aac", fps=30,
+            )
+
+            class LocalRenderer:
+                def __init__(self):
+                    self.uploaded_assets = []
+                    self.payload = None
+
+                def upload_local_video(self, path):
+                    return "https://media.example/source.mov"
+
+                def upload_local_asset(self, path, content_type):
+                    self.uploaded_assets.append(content_type)
+                    raise AssertionError("no-caption mode must not ingest subtitle assets")
+
+                def submit_render(self, payload):
+                    self.payload = payload
+                    return "offline-render-id"
+
+                def wait_for_render(self, render_id):
+                    return "https://media.example/rendered.mp4"
+
+                def download_render(self, url, destination):
+                    Path(destination).write_bytes(b"new-render")
+                    return Path(destination)
+
+            renderer = LocalRenderer()
+            with (
+                patch("video_pipeline.pipeline.probe_video", return_value=source_info),
+                patch(
+                    "video_pipeline.pipeline.prepare_video_for_shotstack",
+                    return_value=(SimpleNamespace(path=source, width=360, height=640), None),
+                ),
+                patch("video_pipeline.pipeline.validate_rendered_output", return_value=output_info),
+                patch("video_pipeline.pipeline.transcribe_video") as transcription,
+            ):
+                result = process_local_video(
+                    source,
+                    root / "outputs",
+                    paid_api_authorized=True,
+                    subtitle_mode="none",
+                    shotstack_client=renderer,
+                    upload_to_drive=False,
+                    config=PipelineConfig(shotstack_environment="stage"),
+                    state_db_path=root / "state.sqlite3",
+                )
+
+            transcription.assert_not_called()
+            self.assertEqual(renderer.uploaded_assets, [])
+            self.assertEqual(result["subtitle_segment_count"], 0)
+            self.assertEqual(result["paid_operations"]["openai_transcription_chunks"], 0)
+            self.assertEqual(len(renderer.payload["timeline"]["tracks"]), 1)
+            self.assertEqual(
+                renderer.payload["timeline"]["tracks"][0]["clips"][0]["asset"]["volume"],
+                1.0,
+            )
+            self.assertEqual(source.read_bytes(), original_bytes)
+            self.assertTrue(Path(result["output"]).name.endswith("_vertical_edited.mp4"))
 
 
 class StateAndStyleTests(unittest.TestCase):
@@ -547,6 +650,31 @@ class StateAndStyleTests(unittest.TestCase):
             ledger.mark_completed("hash-1", "outputs/video.mp4")
             with self.assertRaises(DuplicateProcessingError):
                 ledger.claim("hash-1", "input.mp4", retry_failed=True)
+
+    def test_ledger_does_not_reuse_provider_assets_for_different_edit_settings(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ledger = ProcessingLedger(Path(temp_dir) / "state.sqlite3")
+            options = {"subtitle_mode": "none", "output_fps": 50}
+            ledger.claim("same-source", "input.mov", edit_options=options)
+            ledger.update("same-source", render_id="stage-render-id")
+            ledger.mark_failed("same-source", "temporary problem")
+
+            with self.assertRaisesRegex(RetryNotAllowedError, "settings differ"):
+                ledger.claim(
+                    "same-source",
+                    "input.mov",
+                    retry_failed=True,
+                    edit_options={"subtitle_mode": "dynamic", "output_fps": 50},
+                )
+
+            resumed = ledger.claim(
+                "same-source",
+                "input.mov",
+                retry_failed=True,
+                edit_options=options,
+            )
+            self.assertEqual(resumed["attempts"], 2)
+            self.assertEqual(resumed["render_id"], "stage-render-id")
 
     def test_style_file_validates_supported_visual_and_usage_options(self):
         with tempfile.TemporaryDirectory() as temp_dir:

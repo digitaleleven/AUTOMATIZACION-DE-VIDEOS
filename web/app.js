@@ -2,6 +2,7 @@ const API = {
   health: "/api/health",
   library: "/api/library",
   upload: "/api/upload",
+  proposals: "/api/proposals",
   jobs: "/api/jobs",
   style: "/api/style",
   driveConfig: "/api/drive/config",
@@ -24,6 +25,8 @@ const state = {
   style: null,
   activeJob: null,
   pollTimer: null,
+  editProposal: null,
+  editOptionsSourceId: null,
   styleLoaded: false,
   drive: null,
   driveStatus: null,
@@ -91,12 +94,24 @@ async function uploadVideo(file) {
   });
 }
 
-async function startProcessing(sourceId, authorizePaidApis, unknownCostAcknowledged) {
-  return requestJson(API.jobs, {
+async function prepareEditProposal(sourceId, subtitleMode, outputFps) {
+  return requestJson(API.proposals, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       source_id: sourceId,
+      subtitle_mode: subtitleMode,
+      output_fps: Number(outputFps),
+    }),
+  });
+}
+
+async function startProcessing(proposalId, authorizePaidApis, unknownCostAcknowledged) {
+  return requestJson(API.jobs, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      proposal_id: proposalId,
       authorize_paid_apis: authorizePaidApis,
       unknown_cost_acknowledged: unknownCostAcknowledged,
     }),
@@ -271,11 +286,80 @@ function renderSummary() {
   byId("summary-source").textContent = "Datos actualizados";
 }
 
+function clearEditProposal() {
+  state.editProposal = null;
+  const summary = byId("proposal-summary");
+  if (summary) {
+    summary.hidden = true;
+    summary.replaceChildren();
+  }
+  const approval = byId("render-approval");
+  if (approval) approval.hidden = true;
+  if (byId("paid-consent")) byId("paid-consent").checked = false;
+  if (byId("unknown-cost-consent")) byId("unknown-cost-consent").checked = false;
+}
+
+function syncEditOptionsForSelectedItem(item) {
+  if (!item || state.editOptionsSourceId === item.id) return;
+  state.editOptionsSourceId = item.id;
+  byId("edit-subtitle-mode").value = "none";
+  const supportedFps = [25, 30, 50, 60];
+  const sourceFps = Math.round(Number(item.fps) || 30);
+  byId("edit-output-fps").value = String(supportedFps.includes(sourceFps) ? sourceFps : 30);
+  clearEditProposal();
+}
+
+function renderEditProposal(proposal) {
+  state.editProposal = proposal;
+  const modeLabels = {
+    none: "Sin subtítulos",
+    simple: "Subtítulos sencillos, sin animación",
+    dynamic: "Subtítulos dinámicos con palabras destacadas",
+  };
+  const source = proposal.source || {};
+  const edit = proposal.edit || {};
+  const costs = proposal.costs || {};
+  const apiPlan = proposal.api_plan || {};
+  const duration = Number(source.duration_seconds);
+  const unknownCost = costs.total_estimate_usd === null || costs.total_estimate_usd === undefined;
+  const lines = [
+    `Vídeo: ${proposal.source_name || "No disponible"} · ${Number.isFinite(duration) ? `${duration.toFixed(2)} s` : "duración desconocida"}`,
+    `Origen: ${source.origin || "No identificado"}`,
+    `Entrada: ${source.width || "?"} × ${source.height || "?"} · ${source.fps || "?"} FPS · ${source.video_codec || "códec desconocido"}`,
+    `Salida: MP4 ${edit.output_width || 1080} × ${edit.output_height || 1920} · ${edit.output_fps || "?"} FPS`,
+    `Subtítulos: ${modeLabels[edit.subtitle_mode] || "No disponible"}`,
+    `OpenAI: ${apiPlan.openai_transcription ? `transcripción prevista (${apiPlan.openai_transcription_chunks} fragmento/s)` : "no se llamará; coste de transcripción 0"}`,
+    `Audio: ${edit.keep_original_audio ? "se conserva el audio original" : "la entrada no tiene audio"}; no se añade música ni normalización`,
+    `Logo: ${edit.logo_enabled ? "se usará el logo ya configurado" : "ninguno configurado"}`,
+    `Encuadre: ${edit.framing || "no disponible"}; no se añaden cortes, zooms, transiciones ni stickers`,
+    `Destino: ${proposal.destination || "no disponible"}`,
+    `OpenAI estimado: ${formatCost(costs.openai_usd)}`,
+    `Shotstack Stage estimado: ${formatCost(costs.shotstack_usd)}`,
+    `Total estimado: ${formatCost(costs.total_estimate_usd)}`,
+  ];
+  const warnings = (proposal.warnings || []).filter(Boolean);
+  const summary = byId("proposal-summary");
+  summary.innerHTML = `<h3>Propuesta de edición</h3><ul>${lines.map((line) => `<li>${escapeHtml(line)}</li>`).join("")}</ul>${warnings.length ? `<p>${warnings.map(escapeHtml).join(" ")}</p>` : ""}<small>La propuesta se calculó localmente. No se han llamado servicios externos. Caduca en 15 minutos.</small>`;
+  summary.hidden = false;
+  byId("cost-value").textContent = formatCost(costs.total_estimate_usd);
+  byId("cost-note").textContent = costs.estimate_note || "No hay tarifas verificadas para calcular el coste.";
+  byId("unknown-cost-wrap").hidden = !unknownCost;
+  byId("unknown-cost-consent").checked = false;
+  byId("paid-consent").checked = false;
+  byId("paid-consent-copy").textContent = apiPlan.openai_transcription
+    ? "Autorizo enviar este vídeo a OpenAI para transcribirlo y a Shotstack Stage para un único render."
+    : "Autorizo enviar este vídeo a Shotstack Stage para un único render. No se usará OpenAI para transcribirlo.";
+  byId("render-approval").hidden = false;
+  updateProcessButton();
+}
+
 function renderSelectedItem() {
   const item = getSelectedItem();
   const video = byId("source-video");
   const placeholder = $(".stage-placeholder");
   if (!item) {
+    state.editOptionsSourceId = null;
+    clearEditProposal();
     video.hidden = true;
     video.removeAttribute("src");
     placeholder.hidden = false;
@@ -289,6 +373,7 @@ function renderSelectedItem() {
     updateProcessButton();
     return;
   }
+  syncEditOptionsForSelectedItem(item);
   video.src = sourceMediaUrl(item.id);
   video.load();
   video.hidden = false;
@@ -306,11 +391,14 @@ function renderSelectedItem() {
     ["ESTADO", statusLabel(item.status)],
   ];
   byId("file-summary").innerHTML = `<div class="metadata-grid">${fields.map(([key, value]) => `<div class="metadata-cell"><span>${escapeHtml(key)}</span><strong>${escapeHtml(value)}</strong></div>`).join("")}</div>`;
-  const costKnown = item.cost_estimate_usd !== null && item.cost_estimate_usd !== undefined;
-  byId("cost-value").textContent = formatCost(item.cost_estimate_usd);
-  byId("cost-note").textContent = costKnown ? "Estimación informada por el servicio; el importe final puede variar." : "El servicio no proporciona una estimación. No se ha supuesto ningún precio.";
-  byId("unknown-cost-wrap").hidden = costKnown;
-  if (costKnown) byId("unknown-cost-consent").checked = false;
+  if (state.editProposal?.source_id !== item.id) {
+    const costKnown = item.cost_estimate_usd !== null && item.cost_estimate_usd !== undefined;
+    byId("cost-value").textContent = formatCost(item.cost_estimate_usd);
+    byId("cost-note").textContent = costKnown
+      ? "Estimación local para una edición sin subtítulos; revisa la propuesta exacta antes de autorizar."
+      : "Prepara una propuesta para ver qué servicios se usarían y qué costes se conocen.";
+    byId("unknown-cost-wrap").hidden = true;
+  }
   const itemOutput = item.output_id ?? item.output?.id ?? (typeof item.output === "string" ? item.output : null);
   if (itemOutput) showOutput(itemOutput);
   else hideOutput();
@@ -499,13 +587,36 @@ function hideOutput() {
 
 function updateProcessButton() {
   const item = getSelectedItem();
-  const costUnknown = !item || item.cost_estimate_usd === null || item.cost_estimate_usd === undefined;
-  const consentOk = byId("paid-consent").checked && (!costUnknown || byId("unknown-cost-consent").checked);
   const busy = state.activeJob && !["completed", "complete", "failed", "error", "rejected"].includes(String(state.activeJob.status || "").toLowerCase());
   const itemStatus = String(item?.status || "").toLowerCase();
-  const alreadyProcessed = ["completed", "processing", "queued"].includes(itemStatus);
-  byId("process-button").disabled = !item || !consentOk || Boolean(busy) || alreadyProcessed;
-  byId("process-hint").textContent = !item ? "Selecciona un vídeo antes de continuar." : alreadyProcessed ? (itemStatus === "completed" ? "Este archivo ya tiene un resultado registrado." : "Este archivo ya está en procesamiento.") : !byId("paid-consent").checked ? "Marca la autorización explícita para continuar." : costUnknown && !byId("unknown-cost-consent").checked ? "Confirma también que aceptas el coste desconocido." : busy ? "Hay un trabajo en curso." : "Se enviará el vídeo a OpenAI y Shotstack Stage.";
+  const unavailable = ["completed", "processing", "queued", "failed"].includes(itemStatus);
+  const proposal = state.editProposal;
+  const unknownCost = !proposal
+    || proposal.costs?.total_estimate_usd === null
+    || proposal.costs?.total_estimate_usd === undefined;
+  const consentOk = byId("paid-consent").checked
+    && (!unknownCost || byId("unknown-cost-consent").checked);
+  const needsOpenAI = proposal?.api_plan?.openai_transcription === true;
+  const missingApi = proposal
+    && (!proposal.api_plan?.shotstack_key_configured
+      || (needsOpenAI && !proposal.api_plan?.openai_key_configured));
+  byId("process-button").disabled = !item || Boolean(busy) || unavailable;
+  byId("approve-render-button").disabled = !proposal || !consentOk || Boolean(missingApi) || Boolean(busy);
+  byId("process-hint").textContent = !item
+    ? "Selecciona un vídeo antes de continuar."
+    : unavailable
+      ? "Este vídeo ya tiene un resultado, está en proceso o requiere revisión de su error."
+      : busy
+        ? "Hay un trabajo en curso."
+        : !proposal
+          ? "Prepara una propuesta local; no llamará a proveedores ni consumirá créditos."
+          : missingApi
+            ? "Falta configurar una API necesaria; no se puede autorizar el render."
+            : !byId("paid-consent").checked
+              ? "Revisa la propuesta y marca tu autorización para habilitar el render."
+              : unknownCost && !byId("unknown-cost-consent").checked
+                ? "El coste es desconocido; confírmalo expresamente para continuar."
+                : "La propuesta está lista. El render solo empezará al pulsar el botón de aprobación.";
 }
 
 function renderStyle(style) {
@@ -758,19 +869,70 @@ byId("video-input").addEventListener("change", async (event) => {
 
 byId("paid-consent").addEventListener("change", updateProcessButton);
 byId("unknown-cost-consent").addEventListener("change", updateProcessButton);
+for (const controlId of ["edit-subtitle-mode", "edit-output-fps"]) {
+  byId(controlId).addEventListener("change", () => {
+    clearEditProposal();
+    byId("cost-value").textContent = "Pendiente de propuesta";
+    byId("cost-note").textContent = "Prepara una propuesta nueva para estos ajustes.";
+    updateProcessButton();
+  });
+}
 byId("process-button").addEventListener("click", async () => {
   const item = getSelectedItem();
   if (!item) return;
-  const unknown = item.cost_estimate_usd === null || item.cost_estimate_usd === undefined;
-  if (!byId("paid-consent").checked || (unknown && !byId("unknown-cost-consent").checked)) {
-    displayToast("Falta confirmar todas las autorizaciones requeridas.", true);
-    return;
-  }
   const button = byId("process-button");
   button.disabled = true;
-  button.querySelector("span").textContent = "Iniciando…";
+  button.textContent = "Preparando propuesta…";
+  const summary = byId("proposal-summary");
+  summary.hidden = false;
+  summary.textContent = "Validando el vídeo localmente y calculando el plan; no se llamará a ningún proveedor.";
   try {
-    const result = await startProcessing(item.id, true, unknown ? true : false);
+    const result = await prepareEditProposal(
+      item.id,
+      byId("edit-subtitle-mode").value,
+      byId("edit-output-fps").value,
+    );
+    renderEditProposal(result);
+    displayToast("Propuesta preparada localmente. No se inició ningún servicio externo.");
+  } catch (error) {
+    summary.hidden = false;
+    summary.textContent = `No se pudo preparar la propuesta: ${error.message}`;
+    byId("render-approval").hidden = true;
+    displayToast(`No se pudo preparar la propuesta: ${error.message}`, true);
+  } finally {
+    button.textContent = "Preparar propuesta local";
+    updateProcessButton();
+  }
+});
+
+byId("approve-render-button").addEventListener("click", async () => {
+  const proposal = state.editProposal;
+  if (!proposal) {
+    displayToast("Prepara y revisa primero una propuesta.", true);
+    return;
+  }
+  const unknown = proposal.costs?.total_estimate_usd === null
+    || proposal.costs?.total_estimate_usd === undefined;
+  if (!byId("paid-consent").checked || (unknown && !byId("unknown-cost-consent").checked)) {
+    displayToast("Falta confirmar la autorización y el coste desconocido.", true);
+    return;
+  }
+  const usesOpenAI = proposal.api_plan?.openai_transcription === true;
+  const providerSummary = usesOpenAI
+    ? "OpenAI para transcribir y Shotstack Stage para un único render."
+    : "Shotstack Stage para un único render; no se llamará a OpenAI.";
+  const costSummary = unknown
+    ? "El coste total no está disponible y podría haber cargos."
+    : `La estimación total es ${formatCost(proposal.costs.total_estimate_usd)}.`;
+  if (!window.confirm(`¿Apruebas esta propuesta de ${proposal.source_name}? ${providerSummary} ${costSummary}`)) {
+    return;
+  }
+  const item = getSelectedItem();
+  const button = byId("approve-render-button");
+  button.disabled = true;
+  button.querySelector("span").textContent = "Iniciando render…";
+  try {
+    const result = await startProcessing(proposal.proposal_id, true, unknown);
     const job = result?.job || result;
     state.activeJob = job;
     renderJob(job, item.original_filename || item.filename);
@@ -779,13 +941,13 @@ byId("process-button").addEventListener("click", async () => {
       state.pollTimer = setInterval(() => pollJob(job.id, item.original_filename || item.filename), 2500);
       await pollJob(job.id, item.original_filename || item.filename);
     }
-    displayToast("Solicitud de procesamiento enviada con tu autorización.");
+    displayToast("Render solicitado con tu aprobación expresa.");
   } catch (error) {
-    displayToast(`No se pudo iniciar el procesamiento: ${error.message}`, true);
+    displayToast(`No se pudo iniciar el render: ${error.message}`, true);
     byId("job-status-tag").textContent = "ERROR AL INICIAR";
     byId("job-content").innerHTML = `<div class="job-error">${escapeHtml(error.message)}</div>`;
   } finally {
-    button.querySelector("span").textContent = "Iniciar procesamiento";
+    button.querySelector("span").textContent = "Aprobar y renderizar en Stage";
     updateProcessButton();
   }
 });

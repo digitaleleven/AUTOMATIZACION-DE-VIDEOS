@@ -68,15 +68,23 @@ def build_dry_run_plan(
     config: PipelineConfig,
     directory: str | Path,
     style: VideoStyle | None = None,
+    subtitle_mode: str = "none",
 ) -> dict[str, Any]:
     """Probe local inputs and estimate call counts without contacting providers."""
+    if subtitle_mode not in {"dynamic", "simple", "none"}:
+        raise ValueError("subtitle_mode must be dynamic, simple, or none.")
     appearance = style or load_video_style()
+    transcription_required = subtitle_mode != "none"
     videos = find_local_videos(directory)
     inspections = []
     for item in videos:
         try:
             metadata = probe_video(item.path)
-            estimated_usd = _estimate_cost(metadata.duration, appearance)
+            estimated_usd = _estimate_cost(
+                metadata.duration,
+                appearance,
+                include_transcription=transcription_required,
+            )
             inspections.append(
                 {
                     **asdict(item),
@@ -84,13 +92,18 @@ def build_dry_run_plan(
                     "duration_seconds": metadata.duration,
                     "dimensions": {"width": metadata.width, "height": metadata.height},
                     "has_audio": metadata.has_audio,
-                    "estimated_openai_transcription_chunks": math.ceil(metadata.duration / 900),
+                    "estimated_openai_transcription_chunks": (
+                        math.ceil(metadata.duration / 900) if transcription_required else 0
+                    ),
                     "estimated_cost_usd": estimated_usd,
                     "fits_limits": (
                         metadata.size_bytes <= appearance.max_input_size_mb * 1024 * 1024
                         and metadata.duration <= appearance.max_video_duration_seconds
-                        and metadata.has_audio
-                        and math.ceil(metadata.duration / 900) <= appearance.max_transcription_chunks
+                        and (metadata.has_audio or not transcription_required)
+                        and (
+                            not transcription_required
+                            or math.ceil(metadata.duration / 900) <= appearance.max_transcription_chunks
+                        )
                     ),
                 }
             )
@@ -98,6 +111,7 @@ def build_dry_run_plan(
             inspections.append({**asdict(item), "valid_video": False, "validation_error": str(exc)})
     return {
         "mode": "dry-run",
+        "subtitle_mode": subtitle_mode,
         "external_services_called": [],
         "source_files_modified": False,
         "input_folder_id": config.input_folder_id,
@@ -108,7 +122,10 @@ def build_dry_run_plan(
         "discovered_local_mov_count": sum(Path(item.path).suffix.lower() == ".mov" for item in videos),
         "videos": inspections,
         "shotstack_environment": "stage",
-        "cost_estimate_note": _cost_estimate_note(appearance),
+        "cost_estimate_note": _cost_estimate_note(
+            appearance,
+            include_transcription=transcription_required,
+        ),
         "operation_limits": {
             "max_files_per_run": 1,
             "max_input_size_mb": appearance.max_input_size_mb,
@@ -118,9 +135,15 @@ def build_dry_run_plan(
         },
         "next_stages": [
             "validate and inspect the local MP4",
-            "transcribe with OpenAI (requires explicit paid-API authorization)",
-            "prepare timed 2–4-word subtitle clips",
-            "ingest and render 1080 × 1920 with Shotstack (requires explicit authorization)",
+            *(
+                [
+                    "transcribe with OpenAI (requires explicit paid-API authorization)",
+                    "prepare timed 2–4-word subtitle clips",
+                ]
+                if transcription_required
+                else ["skip transcription and subtitles"]
+            ),
+            "ingest and render 1080 × 1920 with Shotstack Stage (requires explicit authorization)",
             "download the verified render and create a new file in the processed Drive folder",
         ],
         "live_integrations_ready": {
@@ -258,10 +281,16 @@ def _write_drive_manifest(path: Path, manifest: dict[str, Any]) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def _new_output_path(directory: Path, source: Path) -> tuple[Path, Path]:
+def _new_output_path(
+    directory: Path,
+    source: Path,
+    *,
+    subtitle_mode: str = "dynamic",
+) -> tuple[Path, Path]:
     """Reserve a unique output name to prevent accidental overwrite/races."""
     directory.mkdir(parents=True, exist_ok=True)
-    base = f"{source.stem}_vertical_subtitled"
+    suffix_label = "edited" if subtitle_mode == "none" else "subtitled"
+    base = f"{source.stem}_vertical_{suffix_label}"
     suffix = 1
     while True:
         stem = base if suffix == 1 else f"{base}_{suffix}"
@@ -291,6 +320,7 @@ def process_local_video(
     drive_access_token: str | None = None,
     config: PipelineConfig | None = None,
     style: VideoStyle | None = None,
+    subtitle_mode: str = "none",
     state_db_path: str | Path = "data/processing.sqlite3",
     retry_failed: bool = False,
     progress_callback: Callable[[str], None] | None = None,
@@ -308,6 +338,9 @@ def process_local_video(
             "when you explicitly approve OpenAI transcription and Shotstack ingest/render."
         )
 
+    if subtitle_mode not in {"dynamic", "simple", "none"}:
+        raise ValueError("subtitle_mode must be dynamic, simple, or none.")
+    transcription_required = subtitle_mode != "none"
     settings = config or PipelineConfig.from_environment()
     appearance = style or load_video_style()
     if settings.shotstack_environment != "stage":
@@ -330,15 +363,19 @@ def process_local_video(
             f"Input is {video.duration:.1f} seconds; the configured maximum is "
             f"{appearance.max_video_duration_seconds} seconds."
         )
-    if not video.has_audio:
+    if transcription_required and not video.has_audio:
         raise ValueError("Input MP4 has no audio stream to transcribe.")
-    transcription_chunks = math.ceil(video.duration / 900)
-    if transcription_chunks > appearance.max_transcription_chunks:
+    transcription_chunks = math.ceil(video.duration / 900) if transcription_required else 0
+    if transcription_required and transcription_chunks > appearance.max_transcription_chunks:
         raise ValueError(
             f"Input requires {transcription_chunks} transcription chunks; the configured maximum is "
             f"{appearance.max_transcription_chunks}."
         )
-    estimated_cost = _estimate_cost(video.duration, appearance)
+    estimated_cost = _estimate_cost(
+        video.duration,
+        appearance,
+        include_transcription=transcription_required,
+    )
     if appearance.max_estimated_cost_usd is not None:
         if estimated_cost is None:
             raise ValueError(
@@ -361,7 +398,7 @@ def process_local_video(
     else:
         logo_path = None
 
-    if openai_client is None and not os.getenv("OPENAI_API_KEY"):
+    if transcription_required and openai_client is None and not os.getenv("OPENAI_API_KEY"):
         raise RuntimeError("OPENAI_API_KEY is not set in Replit Secrets.")
     if shotstack_client is None and not os.getenv("SHOTSTACK_API_KEY"):
         raise RuntimeError(
@@ -389,25 +426,32 @@ def process_local_video(
         str(source),
         retry_failed=retry_failed,
         max_attempts=2,
+        edit_options={
+            "subtitle_mode": subtitle_mode,
+            "style": asdict(appearance),
+        },
     )
     output_path: Path | None = None
     lock_path: Path | None = None
     try:
-        output_path, lock_path = _new_output_path(destination_dir, source)
+        output_path, lock_path = _new_output_path(
+            destination_dir,
+            source,
+            subtitle_mode=subtitle_mode,
+        )
         ledger.update(source_hash, output_path=str(output_path))
         with temporary_work_directory() as work_dir:
             logger.info("Inspecting %s (%dx%d, %.2f seconds)", source.name, video.width, video.height, video.duration)
             if progress_callback:
                 progress_callback("normalizing")
             editing_video, conversion = prepare_video_for_shotstack(video, work_dir)
-            if job.get("captions_json"):
-                captions = [
-                    SubtitleSegment(**item)
-                    for item in json.loads(job["captions_json"])
-                ]
+            captions: list[SubtitleSegment] = []
+            words_count = 0
+            if transcription_required and job.get("captions_json"):
+                captions = [SubtitleSegment(**item) for item in json.loads(job["captions_json"])]
                 logger.info("Reusing previously stored caption timings after a failed attempt")
                 words_count = sum(len(caption.text.split()) for caption in captions)
-            else:
+            elif transcription_required:
                 if progress_callback:
                     progress_callback("transcribing")
                 words: list[WordTiming] = transcribe_video(
@@ -422,14 +466,25 @@ def process_local_video(
                     source_hash,
                     captions_json=json.dumps([asdict(caption) for caption in captions], ensure_ascii=False),
                 )
-            srt_path = Path(work_dir) / "captions.srt"
-            if progress_callback:
-                progress_callback("preparing_captions")
-            srt_path.write_text(
-                captions_to_srt(captions, appearance.emoji_by_keyword),
-                encoding="utf-8",
-            )
-            logger.info("Prepared %d timed subtitle segments", len(captions))
+
+            subtitle_url = None
+            if transcription_required:
+                srt_path = Path(work_dir) / "captions.srt"
+                if progress_callback:
+                    progress_callback("preparing_captions")
+                srt_path.write_text(
+                    captions_to_srt(captions, appearance.emoji_by_keyword),
+                    encoding="utf-8",
+                )
+                logger.info("Prepared %d timed subtitle segments", len(captions))
+
+                if job.get("subtitle_url"):
+                    subtitle_url = job["subtitle_url"]
+                else:
+                    if progress_callback:
+                        progress_callback("uploading_captions")
+                    subtitle_url = renderer.upload_local_asset(srt_path, "application/x-subrip")
+                    ledger.update(source_hash, subtitle_url=subtitle_url)
 
             if job.get("shotstack_source_url"):
                 shotstack_source_url = job["shotstack_source_url"]
@@ -438,14 +493,6 @@ def process_local_video(
                     progress_callback("uploading")
                 shotstack_source_url = renderer.upload_local_video(editing_video.path)
                 ledger.update(source_hash, shotstack_source_url=shotstack_source_url)
-
-            if job.get("subtitle_url"):
-                subtitle_url = job["subtitle_url"]
-            else:
-                if progress_callback:
-                    progress_callback("uploading_captions")
-                subtitle_url = renderer.upload_local_asset(srt_path, "application/x-subrip")
-                ledger.update(source_hash, subtitle_url=subtitle_url)
 
             logo_url = job.get("logo_url")
             if logo_path and not logo_url:
@@ -463,6 +510,7 @@ def process_local_video(
                 logo_url=logo_url,
                 source_width=editing_video.width,
                 source_height=editing_video.height,
+                subtitle_mode=subtitle_mode,
             )
             render_id = job.get("render_id")
             render_url = None
@@ -521,6 +569,7 @@ def process_local_video(
             "output_audio_codec": validated_output.audio_codec,
             "output_fps": validated_output.fps,
             "transcribed_word_count": words_count,
+            "subtitle_mode": subtitle_mode,
             "subtitle_segment_count": len(captions),
             "render_id": render_id,
             "render_status_verified": True,
@@ -528,10 +577,13 @@ def process_local_video(
             "source_modified": False,
             "conversion": conversion,
             "estimated_cost_usd": _estimate_cost(video.duration, appearance),
-            "cost_estimate_note": _cost_estimate_note(appearance),
+            "cost_estimate_note": _cost_estimate_note(
+                appearance,
+                include_transcription=transcription_required,
+            ),
             "paid_operations": {
                 "openai_transcription_chunks": transcription_chunks,
-                "shotstack_ingested_assets": 2 + int(bool(logo_path)),
+                "shotstack_ingested_assets": 1 + int(transcription_required) + int(bool(logo_path)),
                 "shotstack_render_jobs": 1,
                 "max_renders_per_attempt": 1,
             },
@@ -552,27 +604,48 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _estimate_cost(duration_seconds: float, style: VideoStyle) -> float | None:
-    if (
-        style.openai_price_per_audio_minute_usd is None
-        or style.shotstack_price_per_render_minute_usd is None
-    ):
+def _estimate_cost(
+    duration_seconds: float,
+    style: VideoStyle,
+    *,
+    include_transcription: bool = True,
+) -> float | None:
+    if style.shotstack_price_per_render_minute_usd is None:
+        return None
+    if include_transcription and style.openai_price_per_audio_minute_usd is None:
         return None
     minutes = duration_seconds / 60
+    transcription_cost = (
+        minutes * float(style.openai_price_per_audio_minute_usd)
+        if include_transcription
+        else 0.0
+    )
     return round(
-        minutes * style.openai_price_per_audio_minute_usd
-        + minutes * style.shotstack_price_per_render_minute_usd,
+        transcription_cost + minutes * float(style.shotstack_price_per_render_minute_usd),
         4,
     )
 
 
-def _cost_estimate_note(style: VideoStyle) -> str:
-    if (
-        style.openai_price_per_audio_minute_usd is None
-        or style.shotstack_price_per_render_minute_usd is None
-    ):
+def _cost_estimate_note(
+    style: VideoStyle,
+    *,
+    include_transcription: bool = True,
+) -> str:
+    missing = []
+    if include_transcription and style.openai_price_per_audio_minute_usd is None:
+        missing.append("OpenAI transcription")
+    if style.shotstack_price_per_render_minute_usd is None:
+        missing.append("Shotstack Stage render")
+    if missing:
         return (
-            "USD estimate unavailable: add current account-specific per-minute prices "
-            "to video_style.json. Hard limits and explicit authorization remain active."
+            "Cost estimate unavailable for "
+            + " and ".join(missing)
+            + "; add current account-specific prices to video_style.json. "
+            "Explicit authorization remains required."
+        )
+    if not include_transcription:
+        return (
+            "No OpenAI transcription is included. Shotstack estimate uses the configured "
+            "account-specific rate; provider billing may differ."
         )
     return "Estimate uses the per-minute prices configured in video_style.json; provider billing may differ."

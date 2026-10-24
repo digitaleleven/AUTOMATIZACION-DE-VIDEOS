@@ -204,6 +204,20 @@ class VideoPanelApiTests(unittest.TestCase):
 
         status, _, body = self.request(
             "POST",
+            "/api/proposals",
+            body=json.dumps({
+                "source_id": "a" * 32,
+                "subtitle_mode": "none",
+                "output_fps": 50,
+            }).encode(),
+            headers={"Content-Type": "application/json"},
+            authenticated=False,
+        )
+        self.assertEqual(status, 401)
+        self.assertIn("Inicia sesión", json.loads(body.decode("utf-8"))["detail"])
+
+        status, _, body = self.request(
+            "POST",
             "/api/jobs",
             body=json.dumps({
                 "source_id": "a" * 32,
@@ -609,6 +623,22 @@ class VideoPanelApiTests(unittest.TestCase):
         self.assertTrue(json.loads(body.decode("utf-8"))["csrf_token"])
 
         style_before = self.panel.style()
+        status, _, _ = self.request(
+            "POST",
+            "/api/proposals",
+            body=json.dumps({
+                "source_id": "a" * 32,
+                "subtitle_mode": "none",
+                "output_fps": 50,
+            }).encode(),
+            headers={
+                "Cookie": self.session_cookie,
+                "X-CSRF-Token": "invalid",
+                "Content-Type": "application/json",
+            },
+        )
+        self.assertEqual(status, 403)
+
         status, _, body = self.request(
             "PUT",
             "/api/style",
@@ -673,6 +703,73 @@ class VideoPanelApiTests(unittest.TestCase):
         self.assertEqual(status, 403)
         self.assertIn("autorización explícita", json.loads(body.decode("utf-8"))["detail"])
         self.assertEqual(self.panel.library()[0]["status"], "ready")
+
+    def test_local_edit_proposal_defaults_to_no_subtitles_without_provider_calls(self):
+        status, response = self.upload(self.create_movie(".mov"))
+        self.assertEqual(status, 201)
+        source_id = response["item"]["id"]
+        with patch.object(self.panel, "health", side_effect=AssertionError("preflight must not inspect providers")):
+            status, _, body = self.request(
+                "POST",
+                "/api/proposals",
+                body=json.dumps({
+                    "source_id": source_id,
+                    "subtitle_mode": "none",
+                    "output_fps": 50,
+                }).encode(),
+                headers={"Content-Type": "application/json"},
+            )
+
+        self.assertEqual(status, 200)
+        proposal = json.loads(body.decode("utf-8"))
+        self.assertEqual(proposal["edit"]["subtitle_mode"], "none")
+        self.assertEqual(proposal["edit"]["output_fps"], 50)
+        self.assertEqual((proposal["edit"]["output_width"], proposal["edit"]["output_height"]), (1080, 1920))
+        self.assertEqual(proposal["source"]["origin"], "Subida local")
+        self.assertFalse(proposal["api_plan"]["openai_transcription"])
+        self.assertEqual(proposal["api_plan"]["openai_transcription_chunks"], 0)
+        self.assertEqual(proposal["api_plan"]["external_services_called_during_proposal"], [])
+        self.assertEqual(proposal["costs"]["openai_usd"], 0.0)
+        self.assertIsNone(proposal["costs"]["total_estimate_usd"])
+        self.assertIn(proposal["proposal_id"], self.panel.pending_proposals)
+
+    def test_render_requires_approved_single_use_local_proposal(self):
+        status, response = self.upload(self.create_movie(".mp4"))
+        self.assertEqual(status, 201)
+        proposal = self.panel.prepare_proposal({
+            "source_id": response["item"]["id"],
+            "subtitle_mode": "none",
+            "output_fps": 30,
+        })
+        base_payload = {
+            "proposal_id": proposal["proposal_id"],
+            "unknown_cost_acknowledged": True,
+        }
+        with self.assertRaises(PanelError) as missing_approval:
+            self.panel.start_job({**base_payload, "authorize_paid_apis": False})
+        self.assertEqual(missing_approval.exception.status_code, 403)
+
+        with (
+            patch.object(
+                self.panel,
+                "health",
+                return_value={
+                    "openai_key_configured": False,
+                    "shotstack_key_configured": True,
+                    "shotstack_environment": "stage",
+                },
+            ),
+            patch.object(self.panel, "drive_status", return_value={"ready": False, "authorized": False}),
+            patch.object(self.panel.executor, "submit") as submit,
+        ):
+            job = self.panel.start_job({**base_payload, "authorize_paid_apis": True})
+            self.assertEqual(job["edit_options"]["subtitle_mode"], "none")
+            self.assertEqual(job["edit_options"]["output_fps"], 30)
+            submit.assert_called_once()
+            with self.assertRaises(PanelError) as repeated:
+                self.panel.start_job({**base_payload, "authorize_paid_apis": True})
+
+        self.assertEqual(repeated.exception.status_code, 409)
 
     def test_invalid_style_is_rejected_without_overwriting_configuration(self):
         original = (self.root / "video_style.json").read_bytes()

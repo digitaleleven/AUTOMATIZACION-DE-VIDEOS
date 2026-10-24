@@ -6,7 +6,7 @@ unless a user explicitly starts a job with paid-API authorization.
 
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from email.utils import formatdate
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from http.cookies import CookieError, SimpleCookie
@@ -60,7 +60,7 @@ from .drive import (
     save_file_selections,
     save_folder_selection,
 )
-from .pipeline import _estimate_cost, process_local_video, sync_drive_media
+from .pipeline import _cost_estimate_note, _estimate_cost, process_local_video, sync_drive_media
 from .state import ProcessingLedger
 from .style import VideoStyle, load_video_style, save_video_style
 
@@ -110,11 +110,19 @@ class DashboardStore:
                     estimated_cost_usd REAL,
                     output_id TEXT,
                     result_json TEXT,
+                    edit_options_json TEXT NOT NULL DEFAULT '{}',
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL
                 )
                 """
             )
+            job_columns = {
+                row["name"] for row in db.execute("PRAGMA table_info(dashboard_jobs)")
+            }
+            if "edit_options_json" not in job_columns:
+                db.execute(
+                    "ALTER TABLE dashboard_jobs ADD COLUMN edit_options_json TEXT NOT NULL DEFAULT '{}'"
+                )
             db.execute(
                 "CREATE INDEX IF NOT EXISTS dashboard_jobs_source_created "
                 "ON dashboard_jobs(source_id, created_at DESC)"
@@ -187,14 +195,28 @@ class DashboardStore:
             ).fetchone()
         return dict(row) if row else None
 
-    def create_job(self, job_id: str, source_id: str, estimate: float | None) -> None:
+    def create_job(
+        self,
+        job_id: str,
+        source_id: str,
+        estimate: float | None,
+        edit_options: dict[str, Any] | None = None,
+    ) -> None:
         now = time.time()
         with self.lock, self._connect() as db:
             db.execute(
                 """INSERT INTO dashboard_jobs
-                   (id, source_id, status, phase, progress, estimated_cost_usd, created_at, updated_at)
-                   VALUES (?, ?, 'queued', 'queued', NULL, ?, ?, ?)""",
-                (job_id, source_id, estimate, now, now),
+                   (id, source_id, status, phase, progress, estimated_cost_usd,
+                    edit_options_json, created_at, updated_at)
+                   VALUES (?, ?, 'queued', 'queued', NULL, ?, ?, ?, ?)""",
+                (
+                    job_id,
+                    source_id,
+                    estimate,
+                    json.dumps(edit_options or {}, ensure_ascii=False),
+                    now,
+                    now,
+                ),
             )
 
     def update_job(self, job_id: str, **fields: Any) -> None:
@@ -233,6 +255,10 @@ class DashboardStore:
 
 
 def _public_job(job: dict[str, Any]) -> dict[str, Any]:
+    try:
+        edit_options = json.loads(job.get("edit_options_json") or "{}")
+    except (TypeError, json.JSONDecodeError):
+        edit_options = {}
     return {
         "id": job["id"],
         "source_id": job["source_id"],
@@ -241,6 +267,7 @@ def _public_job(job: dict[str, Any]) -> dict[str, Any]:
         "progress": job["progress"],
         "error": job["error"],
         "estimated_cost_usd": job["estimated_cost_usd"],
+        "edit_options": edit_options if isinstance(edit_options, dict) else {},
         "output_id": job["output_id"],
         "created_at": job["created_at"],
         "updated_at": job["updated_at"],
@@ -267,6 +294,7 @@ class VideoPanel:
         self.job_lock = threading.Lock()
         self.drive_scan_lock = threading.Lock()
         self.active_job_id: str | None = None
+        self.pending_proposals: dict[str, dict[str, Any]] = {}
         self.drive_store = None
         self.drive_oauth = None
         self.drive_client = None
@@ -1000,7 +1028,11 @@ class VideoPanel:
     def _public_library_item(self, upload: dict[str, Any]) -> dict[str, Any]:
         metadata = json.loads(upload["metadata_json"])
         style = load_video_style(self.style_path)
-        estimate = _estimate_cost(float(metadata["duration"]), style)
+        estimate = _estimate_cost(
+            float(metadata["duration"]),
+            style,
+            include_transcription=False,
+        )
         job = self.store.latest_job_for_source(upload["id"])
         if job:
             status = job["status"]
@@ -1064,16 +1096,243 @@ class VideoPanel:
         )
         return result
 
-    def start_job(self, payload: Any) -> dict[str, Any]:
+    def prepare_proposal(self, payload: Any) -> dict[str, Any]:
+        """Inspect one local source and prepare an expiring plan without provider calls."""
         if not isinstance(payload, dict):
-            raise PanelError("La solicitud del trabajo debe ser un objeto JSON.")
+            raise PanelError("La propuesta debe ser un objeto JSON.")
         source_id = str(payload.get("source_id") or "")
         if not re.fullmatch(r"[0-9a-f]{32}", source_id):
             raise PanelError("Identificador de vídeo no válido.")
         upload = self.store.get_upload(source_id)
         if not upload:
             raise PanelError("No se encontró el vídeo seleccionado.", 404)
-        style = self._style_for_upload(source_id)
+
+        subtitle_mode = str(payload.get("subtitle_mode") or "none")
+        if subtitle_mode not in {"dynamic", "simple", "none"}:
+            raise PanelError("Elige subtítulos dinámicos, sencillos o sin subtítulos.")
+        try:
+            output_fps = int(payload.get("output_fps", 30))
+        except (TypeError, ValueError):
+            raise PanelError("Los FPS de salida deben ser 25, 30, 50 o 60.") from None
+        if output_fps not in {25, 30, 50, 60}:
+            raise PanelError("Los FPS de salida deben ser 25, 30, 50 o 60.")
+
+        item = self._public_library_item(upload)
+        if item["status"] in {"completed", "processing", "queued"}:
+            raise PanelError("Este vídeo ya tiene un resultado o un trabajo activo.", 409)
+        if item["status"] == "failed":
+            raise PanelError("El último intento falló. Revisa el error antes de preparar otra propuesta.", 409)
+
+        style = replace(self._style_for_upload(source_id), output_fps=output_fps)
+        video = probe_video(self._source_path(upload))
+        if video.video_codec not in ALLOWED_CODECS:
+            raise PanelError("El vídeo debe usar H.264 o HEVC/H.265.")
+        if video.size_bytes > style.max_input_size_mb * 1024 * 1024:
+            raise PanelError(f"El vídeo supera el límite configurado de {style.max_input_size_mb} MB.", 413)
+        if video.duration > style.max_video_duration_seconds:
+            raise PanelError(
+                f"El vídeo supera el límite configurado de {style.max_video_duration_seconds} segundos.",
+                413,
+            )
+        transcription_required = subtitle_mode != "none"
+        if transcription_required and not video.has_audio:
+            raise PanelError("Para generar subtítulos se necesita una pista de audio.")
+        transcription_chunks = (
+            (int(video.duration) + 899) // 900 if transcription_required else 0
+        )
+        if transcription_required and transcription_chunks > style.max_transcription_chunks:
+            raise PanelError(
+                f"El vídeo requiere {transcription_chunks} fragmentos de transcripción; "
+                f"el máximo configurado es {style.max_transcription_chunks}.",
+                413,
+            )
+        if style.logo_path:
+            logo = Path(style.logo_path).expanduser().resolve()
+            if (
+                not logo.is_file()
+                or logo.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp"}
+                or logo.stat().st_size > 20 * 1024 * 1024
+            ):
+                raise PanelError("El logo configurado no es accesible o supera los límites admitidos.")
+        settings = PipelineConfig.from_environment()
+        if settings.shotstack_environment != "stage":
+            raise PanelError("La configuración no permite preparar renders fuera de Shotstack Stage.", 409)
+
+        estimate = _estimate_cost(
+            video.duration,
+            style,
+            include_transcription=transcription_required,
+        )
+        if style.max_estimated_cost_usd is not None:
+            if estimate is None:
+                raise PanelError(
+                    "Hay un límite de gasto configurado, pero faltan tarifas para verificarlo.",
+                    409,
+                )
+            if estimate > style.max_estimated_cost_usd:
+                raise PanelError(
+                    f"La estimación ${estimate:.4f} supera el límite configurado "
+                    f"${style.max_estimated_cost_usd:.4f}.",
+                    409,
+                )
+
+        minutes = video.duration / 60
+        openai_cost = (
+            0.0
+            if not transcription_required
+            else (
+                round(minutes * style.openai_price_per_audio_minute_usd, 4)
+                if style.openai_price_per_audio_minute_usd is not None
+                else None
+            )
+        )
+        shotstack_cost = (
+            round(minutes * style.shotstack_price_per_render_minute_usd, 4)
+            if style.shotstack_price_per_render_minute_usd is not None
+            else None
+        )
+        drive_import = (
+            self.drive_store.get_import_for_local_upload(source_id)
+            if self.drive_store
+            else None
+        )
+        source_ratio = video.width / video.height if video.width and video.height else 9 / 16
+        target_ratio = style.output_width / style.output_height
+        proposal_id = uuid.uuid4().hex
+        now = time.time()
+        options = {"subtitle_mode": subtitle_mode, "output_fps": output_fps}
+        proposal = {
+            "proposal_id": proposal_id,
+            "source_id": source_id,
+            "source_sha256": upload["source_sha256"],
+            "options": options,
+            "style": asdict(style),
+            "estimate": estimate,
+            "created_at": now,
+            "expires_at": now + 900,
+            "used": False,
+        }
+        with self.job_lock:
+            self.pending_proposals = {
+                key: value
+                for key, value in self.pending_proposals.items()
+                if value.get("expires_at", 0) > now and not value.get("used")
+            }
+            if len(self.pending_proposals) >= 100:
+                oldest = min(
+                    self.pending_proposals,
+                    key=lambda key: self.pending_proposals[key].get("created_at", 0),
+                )
+                self.pending_proposals.pop(oldest, None)
+            self.pending_proposals[proposal_id] = proposal
+
+        return {
+            "proposal_id": proposal_id,
+            "expires_in_seconds": 900,
+            "source_id": source_id,
+            "source_name": upload["original_filename"],
+            "source": {
+                "duration_seconds": round(video.duration, 3),
+                "width": video.width,
+                "height": video.height,
+                "video_codec": video.video_codec,
+                "audio_codec": video.audio_codec,
+                "fps": video.fps,
+                "origin": "Google Drive · 01_ENTRADA" if drive_import else "Subida local",
+            },
+            "edit": {
+                "subtitle_mode": subtitle_mode,
+                "output_width": style.output_width,
+                "output_height": style.output_height,
+                "output_fps": output_fps,
+                "framing": (
+                    "rellenar; la relación 9:16 coincide, sin recorte previsto"
+                    if abs(source_ratio - target_ratio) <= 0.015
+                    else "contener sin deformar; puede haber bandas"
+                ),
+                "keep_original_audio": video.has_audio,
+                "logo_enabled": bool(style.logo_path),
+                "background_music": False,
+                "cuts_or_zoom": False,
+                "transitions_or_stickers": False,
+            },
+            "api_plan": {
+                "openai_transcription": transcription_required,
+                "openai_transcription_chunks": transcription_chunks,
+                "shotstack_environment": "stage",
+                "shotstack_render_jobs": 1,
+                "shotstack_ingested_assets": (
+                    1 + int(transcription_required) + int(bool(style.logo_path))
+                ),
+                "max_renders_per_attempt": 1,
+                "openai_key_configured": bool(os.getenv("OPENAI_API_KEY")),
+                "shotstack_key_configured": bool(os.getenv("SHOTSTACK_API_KEY")),
+                "external_services_called_during_proposal": [],
+            },
+            "costs": {
+                "openai_usd": openai_cost,
+                "shotstack_usd": shotstack_cost,
+                "total_estimate_usd": estimate,
+                "estimate_note": _cost_estimate_note(
+                    style,
+                    include_transcription=transcription_required,
+                ),
+            },
+            "destination": (
+                "Google Drive · 02_PROCESADOS"
+                if drive_import
+                else str(self.output_dir)
+            ),
+            "warnings": [
+                warning
+                for warning in [
+                    "La salida 1080 × 1920 reduce la resolución respecto a la entrada."
+                    if video.width > style.output_width or video.height > style.output_height
+                    else "",
+                    "La salida 1080 × 1920 amplía la entrada y no recupera detalle."
+                    if video.width < style.output_width or video.height < style.output_height
+                    else "",
+                    "El perfil 2160 × 3840 no está configurado ni verificado en Shotstack Stage."
+                    if (video.width, video.height) == (2160, 3840)
+                    else "",
+                    "No incluye cortes, zooms, transiciones, stickers, música ni normalización de audio."
+                    if video.has_audio
+                    else "No incluye cortes, zooms, transiciones, stickers ni música.",
+                    "Sin subtítulos: no se enviará audio a OpenAI."
+                    if not transcription_required
+                    else "",
+                ]
+                if warning
+            ],
+        }
+
+    def start_job(self, payload: Any) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise PanelError("La solicitud del trabajo debe ser un objeto JSON.")
+        if payload.get("authorize_paid_apis") is not True:
+            raise PanelError("Falta la autorización explícita para el render de Shotstack Stage.", 403)
+        proposal_id = str(payload.get("proposal_id") or "")
+        if not re.fullmatch(r"[0-9a-f]{32}", proposal_id):
+            raise PanelError("Prepara y revisa una propuesta antes de autorizar el render.", 409)
+        with self.job_lock:
+            proposal = self.pending_proposals.get(proposal_id)
+            if (
+                not proposal
+                or proposal.get("used")
+                or proposal.get("expires_at", 0) <= time.time()
+            ):
+                raise PanelError(
+                    "La propuesta no existe, ya se utilizó o ha caducado. Prepara una nueva.",
+                    409,
+                )
+            proposal = dict(proposal)
+
+        source_id = proposal["source_id"]
+        upload = self.store.get_upload(source_id)
+        if not upload or upload["source_sha256"] != proposal["source_sha256"]:
+            raise PanelError("El vídeo de la propuesta ya no coincide con el original.", 409)
+        style = VideoStyle(**proposal["style"])
+        edit_options = dict(proposal["options"])
         item = self._public_library_item(upload)
         if item["status"] in {"completed", "processing", "queued"}:
             raise PanelError(
@@ -1085,9 +1344,7 @@ class VideoPanel:
                 "El último intento falló. El panel no reintenta automáticamente para evitar cargos duplicados.",
                 409,
             )
-        estimate = item["cost_estimate_usd"]
-        if payload.get("authorize_paid_apis") is not True:
-            raise PanelError("Falta la autorización explícita para OpenAI y Shotstack Stage.", 403)
+        estimate = proposal["estimate"]
         if estimate is None and payload.get("unknown_cost_acknowledged") is not True:
             raise PanelError("El coste estimado es desconocido; confirma ese riesgo para continuar.", 403)
         if style.max_estimated_cost_usd is not None:
@@ -1100,8 +1357,12 @@ class VideoPanel:
                     409,
                 )
         health = self.health()
-        if not health["openai_key_configured"] or not health["shotstack_key_configured"]:
-            raise PanelError("Falta una clave de API en Secrets; no se inició ningún trabajo.", 409)
+        needs_openai = edit_options["subtitle_mode"] != "none"
+        if (
+            (needs_openai and not health["openai_key_configured"])
+            or not health["shotstack_key_configured"]
+        ):
+            raise PanelError("Falta una clave de API necesaria en Secrets; no se inició ningún trabajo.", 409)
         if health["shotstack_environment"] != "stage":
             raise PanelError("La configuración no permite iniciar trabajos fuera de Shotstack Stage.", 409)
         drive_import = (
@@ -1121,14 +1382,22 @@ class VideoPanel:
             raise PanelError("Selecciona la carpeta Procesados con Google Picker antes de procesar.", 409)
 
         with self.job_lock:
+            current_proposal = self.pending_proposals.get(proposal_id)
+            if (
+                not current_proposal
+                or current_proposal.get("used")
+                or current_proposal.get("expires_at", 0) <= time.time()
+            ):
+                raise PanelError("La propuesta ha caducado o ya se utilizó. Prepara una nueva.", 409)
             if self.active_job_id:
                 active = self.store.get_job(self.active_job_id)
                 if active and active["status"] not in TERMINAL_STATUSES:
                     raise PanelError("Ya hay un vídeo en procesamiento.", 409)
             job_id = uuid.uuid4().hex
-            self.store.create_job(job_id, source_id, estimate)
+            self.store.create_job(job_id, source_id, estimate, edit_options)
+            current_proposal["used"] = True
             self.active_job_id = job_id
-        self.executor.submit(self._run_job, job_id, upload, estimate, style)
+        self.executor.submit(self._run_job, job_id, upload, estimate, style, edit_options)
         return self.store.get_job(job_id) or {}
 
     def _run_job(
@@ -1137,6 +1406,7 @@ class VideoPanel:
         upload: dict[str, Any],
         estimate: float | None,
         style: VideoStyle,
+        edit_options: dict[str, Any],
     ) -> None:
         drive_import = (
             self.drive_store.get_import_for_local_upload(upload["id"])
@@ -1173,6 +1443,7 @@ class VideoPanel:
                 drive_uploader=drive_uploader,
                 config=PipelineConfig.from_environment(),
                 style=style,
+                subtitle_mode=edit_options["subtitle_mode"],
                 state_db_path=self.store.database_path,
                 progress_callback=update_phase,
             )
@@ -1834,6 +2105,8 @@ required minlength="16" {disabled}>
                 length = int(self.headers.get("Content-Length", "0"))
                 item = self.server.panel.upload(name, length, self.rfile)
                 self._json({"item": item}, 201)
+            elif self.command == "POST" and path == "/api/proposals":
+                self._json(self.server.panel.prepare_proposal(self._read_json()), 200)
             elif self.command == "POST" and path == "/api/jobs":
                 self._json(self.server.panel.start_job(self._read_json()), 202)
             elif self.command == "POST" and path == "/api/drive/oauth/start":

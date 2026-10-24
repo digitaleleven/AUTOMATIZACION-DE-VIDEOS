@@ -27,24 +27,29 @@ def build_edit_payload(
     source_url: str,
     duration: float,
     subtitles: list[SubtitleSegment],
-    subtitle_url: str,
+    subtitle_url: str | None,
     style: VideoStyle | None = None,
     logo_url: str | None = None,
     source_width: int = 0,
     source_height: int = 0,
+    subtitle_mode: str = "dynamic",
 ) -> dict[str, Any]:
     style = style or VideoStyle()
     if not source_url.startswith("https://"):
         raise ValueError("Shotstack source must be an HTTPS URL.")
-    if not subtitle_url.startswith("https://"):
-        raise ValueError("Shotstack subtitle source must be an HTTPS URL.")
+    if subtitle_mode not in {"dynamic", "simple", "none"}:
+        raise ValueError("subtitle_mode must be dynamic, simple, or none.")
+    if subtitle_mode != "none" and (
+        not subtitle_url or not subtitle_url.startswith("https://")
+    ):
+        raise ValueError("Shotstack subtitle source must be an HTTPS URL when subtitles are enabled.")
     if logo_url is not None and not logo_url.startswith("https://"):
         raise ValueError("Shotstack logo source must be an HTTPS URL.")
     if duration <= 0:
         raise ValueError("Video duration must be positive.")
-    if not subtitles:
+    if subtitle_mode != "none" and not subtitles:
         raise ValueError("At least one subtitle segment is required.")
-    if not any(
+    if subtitle_mode != "none" and not any(
         caption.text.strip() and caption.start < duration and caption.end > 0
         for caption in subtitles
     ):
@@ -54,37 +59,46 @@ def build_edit_payload(
     # Center-crop only a near-matching vertical source. Preserve all of a
     # differently-shaped source with letterboxing rather than cutting faces.
     video_fit = "crop" if abs(source_ratio - target_ratio) <= 0.015 else "contain"
-    caption_track = {
-        "clips": [
-            {
-                "asset": {
-                    "type": "rich-caption",
-                    "src": subtitle_url,
-                    "font": {
-                        "family": style.font_family,
-                        "size": style.font_size,
-                        "weight": 700,
-                        "color": style.font_color,
-                    },
-                    "align": {"vertical": "middle"},
-                    "stroke": {
-                        "width": style.stroke_width,
-                        "color": style.stroke_color,
-                        "opacity": 1,
-                    },
-                    "animation": {"style": style.animation_style},
-                    "active": {"font": {"color": style.highlight_color, "opacity": 1}},
-                },
-                "start": 0,
-                "length": "end",
-                "width": 960,
-                "height": 250,
-                "position": style.caption_position,
-                "offset": {"x": 0, "y": style.caption_offset_y},
+    tracks = []
+    if subtitle_mode != "none":
+        caption_asset = {
+            "type": "rich-caption",
+            "src": subtitle_url,
+            "font": {
+                "family": style.font_family,
+                "size": style.font_size,
+                "weight": 700 if subtitle_mode == "dynamic" else 500,
+                "color": style.font_color,
+            },
+            "align": {"vertical": "middle"},
+            "stroke": {
+                "width": style.stroke_width,
+                "color": style.stroke_color,
+                "opacity": 1,
+            },
+            "animation": {
+                "style": style.animation_style if subtitle_mode == "dynamic" else "none"
+            },
+        }
+        if subtitle_mode == "dynamic":
+            caption_asset["active"] = {
+                "font": {"color": style.highlight_color, "opacity": 1}
             }
-        ]
-    }
-    tracks = [caption_track]
+        tracks.append(
+            {
+                "clips": [
+                    {
+                        "asset": caption_asset,
+                        "start": 0,
+                        "length": "end",
+                        "width": 960,
+                        "height": 250,
+                        "position": style.caption_position,
+                        "offset": {"x": 0, "y": style.caption_offset_y},
+                    }
+                ]
+            }
+        )
     if logo_url:
         tracks.append(
             {
