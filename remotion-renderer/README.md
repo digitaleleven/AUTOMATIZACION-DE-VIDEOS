@@ -17,10 +17,13 @@ pnpm --dir remotion-renderer run render:sample -- \
 ```
 
 El script comprueba la entrada con FFprobe, trabaja sobre una copia temporal,
-produce 250 fotogramas (5 segundos, 1080 × 1920, 50 FPS), conserva el original,
+produce 285 fotogramas (5,7 segundos, 1080 × 1920, 50 FPS), conserva el original,
 valida el MP4 con FFprobe y realiza una decodificación de lectura con FFmpeg.
-No reintenta el render. Los registros completos, informe y medición de recursos
-se guardan junto al MP4; los fallos conservan `error.log`.
+El nombre de la copia se pasa a la composición como `sourceFile`; el audio se
+extrae a PCM temporal conservando frecuencia y canales, y los cortes se
+convierten de fotogramas a segundos para Remotion. No reintenta el render. Los
+registros completos, informe y medición de recursos se guardan junto al MP4;
+los fallos conservan `error.log`.
 
 Las dependencias se fijan en `package.json` y `pnpm-lock.yaml`. Los paquetes,
 archivos de trabajo y medios generados se excluyen de Git y del despliegue.

@@ -2,3 +2,4 @@
 - [Origen de Preview interno](replit-preview-origin.md) — Valida el editor de Replit solo junto a un `X-Forwarded-Host` exacto del proyecto y protocolo HTTPS.
 - [Envíos inciertos a Shotstack](shotstack-ambiguous-submissions.md) — Una respuesta sin ID puede haber encolado el render; no reintentar hasta reconciliar el estado remoto.
 - [Workspace pnpm anidado](nested-pnpm-workspace.md) — En un workspace aislado bajo la raíz Python, el filtro puede no seleccionar su único paquete; instala desde su propia raíz.
+- [Diagnóstico del proxy Remotion](remotion-proxy-cancellation.md) — El aviso genérico de disco no demuestra falta de espacio; `ECANCELED` puede ser el cliente cerrando la respuesta de fotograma.

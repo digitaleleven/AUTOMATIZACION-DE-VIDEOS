@@ -17,8 +17,9 @@ import { performance } from "node:perf_hooks";
 
 const PACKAGE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const FPS = 50;
-const DURATION_SECONDS = 5;
-const DURATION_IN_FRAMES = FPS * DURATION_SECONDS;
+const DURATION_IN_FRAMES = 285;
+const DURATION_SECONDS = DURATION_IN_FRAMES / FPS;
+const MIN_SOURCE_DURATION_SECONDS = 12;
 const CHROMIUM = path.join(PACKAGE_DIR, "tools/chromium-offline.sh");
 
 const run = (command, args) =>
@@ -86,7 +87,7 @@ const probe = async (filePath) => {
     "-v",
     "error",
     "-show_entries",
-    "format=duration,size,format_name:stream=codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate",
+    "format=duration,size,format_name:stream=codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate,sample_rate,channels",
     "-of",
     "json",
     filePath,
@@ -148,14 +149,20 @@ try {
   const inputAudio = inputProbe.streams?.find((stream) => stream.codec_type === "audio");
   const inputDuration = Number(inputProbe.format?.duration);
   const sourceFps = parseRate(inputVideo?.avg_frame_rate || inputVideo?.r_frame_rate);
-  if (!inputVideo || !Number.isFinite(inputDuration) || inputDuration < DURATION_SECONDS) {
-    throw new Error("Input must contain a video stream of at least five seconds.");
+  if (
+    !inputVideo ||
+    !Number.isFinite(inputDuration) ||
+    inputDuration < MIN_SOURCE_DURATION_SECONDS
+  ) {
+    throw new Error(
+      `Input must contain a video stream of at least ${MIN_SOURCE_DURATION_SECONDS} seconds for the selected source segments.`,
+    );
   }
   if (!sourceFps) throw new Error("FFprobe did not return a valid source frame rate.");
 
   const sourceFrameCount = Math.round(inputDuration * sourceFps);
-  const trimAfter = Math.max(0, sourceFrameCount - Math.round(sourceFps * DURATION_SECONDS));
   const sourceFile = `source${path.extname(inputPath).toLowerCase()}`;
+  const audioFile = inputAudio ? "source-audio.wav" : null;
 
   console.log(`input=${inputPath}`);
   console.log(`input_sha256=${inputHashBefore}`);
@@ -170,17 +177,57 @@ try {
   if ((await hashFile(copiedInput)) !== inputHashBefore) {
     throw new Error("The temporary source copy does not match the original.");
   }
+  if (audioFile) {
+    const copiedAudio = path.join(publicDirectory, audioFile);
+    await run("ffmpeg", [
+      "-nostdin",
+      "-v",
+      "error",
+      "-i",
+      inputPath,
+      "-map",
+      "0:a:0",
+      "-vn",
+      "-c:a",
+      "pcm_s16le",
+      copiedAudio,
+    ]);
+    const extractedAudioProbe = await probe(copiedAudio);
+    const extractedAudio = extractedAudioProbe.streams?.find(
+      (stream) => stream.codec_type === "audio",
+    );
+    if (
+      extractedAudio?.codec_name !== "pcm_s16le" ||
+      extractedAudio.sample_rate !== inputAudio.sample_rate ||
+      extractedAudio.channels !== inputAudio.channels
+    ) {
+      throw new Error(
+        `Extracted audio does not preserve source format: ${JSON.stringify({
+          source: {
+            sample_rate: inputAudio.sample_rate,
+            channels: inputAudio.channels,
+          },
+          extracted: extractedAudio,
+        })}`,
+      );
+    }
+    console.log(`extracted_audio_probe=${JSON.stringify(extractedAudioProbe)}`);
+  }
 
   const serveUrl = await bundle({
-    entryPoint: path.join(PACKAGE_DIR, "src/index.jsx"),
+    entryPoint: path.join(PACKAGE_DIR, "src/index.tsx"),
     publicDir: publicDirectory,
     onProgress: (progress) => console.log(`bundle_progress=${progress}%`),
   });
-  const inputProps = { sourceFile, trimAfter };
+  const inputProps = {
+    sourceFile,
+    sourceDurationInFrames: sourceFrameCount,
+    audioFile,
+  };
   const browserOptions = { enableMultiProcessOnLinux: true };
   const composition = await selectComposition({
     serveUrl,
-    id: "RemotionLocalSample",
+    id: "MATRIX-MOTION-Remotion-Phase1",
     inputProps,
     browserExecutable: CHROMIUM,
     chromiumOptions: browserOptions,

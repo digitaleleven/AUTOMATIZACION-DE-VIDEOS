@@ -14,7 +14,6 @@ import { TransitionSeries, linearTiming } from "@remotion/transitions";
 import { fade } from "@remotion/transitions/fade";
 
 const FPS = 50;
-const SOURCE_FRAMES = 941;
 const TRANSITION_FRAMES = 20;
 const SEGMENTS = [
   { sourceStart: 0, frames: 100, outputStart: 0 },
@@ -24,12 +23,20 @@ const SEGMENTS = [
 const DURATION_IN_FRAMES = 285;
 
 type ClipProps = {
+  sourceFile: string;
+  sourceDurationInFrames: number;
   sourceStart: number;
   frames: number;
   zoom: boolean;
 };
 
-const Clip: FC<ClipProps> = ({ sourceStart, frames, zoom }) => {
+const Clip: FC<ClipProps> = ({
+  sourceFile,
+  sourceDurationInFrames,
+  sourceStart,
+  frames,
+  zoom,
+}) => {
   const frame = useCurrentFrame();
   const scale = zoom
     ? interpolate(frame, [0, frames - 1], [1, 1.12], {
@@ -42,9 +49,9 @@ const Clip: FC<ClipProps> = ({ sourceStart, frames, zoom }) => {
   return (
     <AbsoluteFill style={{ backgroundColor: "#09090b", overflow: "hidden" }}>
       <OffthreadVideo
-        src={staticFile("0415-source.mov")}
-        trimBefore={sourceStart}
-        trimAfter={SOURCE_FRAMES - sourceStart - frames}
+        src={staticFile(sourceFile)}
+        trimBefore={sourceStart / FPS}
+        trimAfter={Math.max(0, sourceDurationInFrames - sourceStart - frames) / FPS}
         muted
         style={{
           width: "100%",
@@ -80,23 +87,32 @@ const audioVolume = (
 };
 
 const AudioSegment: FC<{
+  audioFile: string | null;
   sourceStart: number;
   frames: number;
   outputStart: number;
   fadeInFrames: number;
   fadeOutFrames: number;
-}> = ({ sourceStart, frames, outputStart, fadeInFrames, fadeOutFrames }) => (
-  <Sequence from={outputStart} durationInFrames={frames} layout="none">
-    <Audio
-      src={staticFile("0415-audio.wav")}
-      trimBefore={sourceStart}
-      durationInFrames={frames}
-      volume={(frame) =>
-        audioVolume(frame, frames, fadeInFrames, fadeOutFrames)
-      }
-    />
-  </Sequence>
-);
+}> = ({
+  audioFile,
+  sourceStart,
+  frames,
+  outputStart,
+  fadeInFrames,
+  fadeOutFrames,
+}) =>
+  audioFile ? (
+    <Sequence from={outputStart} durationInFrames={frames} layout="none">
+      <Audio
+        src={staticFile(audioFile)}
+        trimBefore={sourceStart / FPS}
+        durationInFrames={frames}
+        volume={(frame) =>
+          audioVolume(frame, frames, fadeInFrames, fadeOutFrames)
+        }
+      />
+    </Sequence>
+  ) : null;
 
 const AnimatedSparkle: FC = () => {
   const frame = useCurrentFrame();
@@ -135,14 +151,18 @@ const AnimatedSparkle: FC = () => {
   );
 };
 
-const PhaseOneSample: FC = () => {
-  const source = staticFile("0415-source.mov");
-
+const PhaseOneSample: FC<{
+  sourceFile: string;
+  sourceDurationInFrames: number;
+  audioFile: string | null;
+}> = ({ sourceFile, sourceDurationInFrames, audioFile }) => {
   return (
     <AbsoluteFill style={{ backgroundColor: "#09090b" }}>
       <TransitionSeries>
         <TransitionSeries.Sequence durationInFrames={SEGMENTS[0].frames}>
           <Clip
+            sourceFile={sourceFile}
+            sourceDurationInFrames={sourceDurationInFrames}
             sourceStart={SEGMENTS[0].sourceStart}
             frames={SEGMENTS[0].frames}
             zoom={false}
@@ -154,6 +174,8 @@ const PhaseOneSample: FC = () => {
         />
         <TransitionSeries.Sequence durationInFrames={SEGMENTS[1].frames}>
           <Clip
+            sourceFile={sourceFile}
+            sourceDurationInFrames={sourceDurationInFrames}
             sourceStart={SEGMENTS[1].sourceStart}
             frames={SEGMENTS[1].frames}
             zoom
@@ -165,6 +187,8 @@ const PhaseOneSample: FC = () => {
         />
         <TransitionSeries.Sequence durationInFrames={SEGMENTS[2].frames}>
           <Clip
+            sourceFile={sourceFile}
+            sourceDurationInFrames={sourceDurationInFrames}
             sourceStart={SEGMENTS[2].sourceStart}
             frames={SEGMENTS[2].frames}
             zoom={false}
@@ -174,6 +198,7 @@ const PhaseOneSample: FC = () => {
 
       {SEGMENTS.map((segment, index) => (
         <AudioSegment
+          audioFile={audioFile}
           key={segment.sourceStart}
           sourceStart={segment.sourceStart}
           frames={segment.frames}
@@ -198,5 +223,10 @@ export const RemotionRoot: FC = () => (
     height={1920}
     fps={FPS}
     durationInFrames={DURATION_IN_FRAMES}
+    defaultProps={{
+      sourceFile: "source.mov",
+      sourceDurationInFrames: 941,
+      audioFile: null,
+    }}
   />
 );
