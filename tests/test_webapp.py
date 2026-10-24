@@ -316,6 +316,21 @@ class VideoPanelApiTests(unittest.TestCase):
             self.assertIn("text/html", dict(headers)["Content-Type"])
             self.assertIn(b'<form method="post" action="/login"', body)
 
+            for request_host in (preview_host, "replit.com"):
+                status, _, body = self.request(
+                    "GET",
+                    "/login",
+                    headers={
+                        "Host": request_host,
+                        "Origin": "https://replit.com",
+                        "X-Forwarded-Host": preview_host,
+                        "X-Forwarded-Proto": "https",
+                    },
+                    authenticated=False,
+                )
+                self.assertEqual(status, 200)
+                self.assertIn(b'<form method="post" action="/login"', body)
+
             status, _, _ = self.request(
                 "POST",
                 "/login",

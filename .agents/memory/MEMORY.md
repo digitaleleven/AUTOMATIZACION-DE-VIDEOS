@@ -1,1 +1,2 @@
 - [Permisos y costes](drive-and-paid-apis.md) — No ampliar permisos de Drive ni activar llamadas de pago o renders reales sin autorización explícita.
+- [Origen de Preview interno](replit-preview-origin.md) — Valida el editor de Replit solo junto a un `X-Forwarded-Host` exacto del proyecto y protocolo HTTPS.

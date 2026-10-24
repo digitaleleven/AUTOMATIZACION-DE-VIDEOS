@@ -765,7 +765,8 @@ required minlength="16" {disabled}>
             return parsed_host.hostname.rstrip(".").lower()
 
         local_hosts = {"localhost", "127.0.0.1", "::1"}
-        allowed_hosts = set(local_hosts)
+        proxy_hosts = local_hosts | {"replit.com"}
+        app_hosts = set()
         for variable in ("REPLIT_DEV_DOMAIN", "REPLIT_DOMAINS"):
             for configured in os.getenv(variable, "").split(","):
                 configured = configured.strip()
@@ -775,52 +776,84 @@ required minlength="16" {disabled}>
                     configured = urlsplit(configured).netloc
                 configured_host = hostname(configured)
                 if configured_host:
-                    allowed_hosts.add(configured_host)
+                    app_hosts.add(configured_host)
+        allowed_hosts = local_hosts | app_hosts
 
         request_host = hostname(self.headers.get("Host", ""))
         forwarded_header = self.headers.get("X-Forwarded-Host", "")
         forwarded_host = hostname(forwarded_header) if forwarded_header else None
         forwarded_proto_header = self.headers.get("X-Forwarded-Proto", "")
         forwarded_proto = forwarded_proto_header.strip().lower()
-        if forwarded_proto and ("," in forwarded_proto or forwarded_proto not in {"http", "https"}):
+        try:
+            parsed_origin = urlsplit(origin) if origin else None
+            origin_host = hostname(parsed_origin.netloc) if parsed_origin else None
+            origin_port = parsed_origin.port if parsed_origin else None
+        except ValueError:
+            parsed_origin = None
+            origin_host = None
+            origin_port = None
+
+        origin_label = (
+            f"{parsed_origin.scheme.lower()}://{origin_host}"
+            if parsed_origin and origin_host
+            else "missing" if not origin else "invalid"
+        )
+
+        def reject(check: str) -> None:
+            logger.warning(
+                "Origin/Host rejected check=%s Host=%s Origin=%s "
+                "X-Forwarded-Host=%s X-Forwarded-Proto=%s",
+                check,
+                request_host or "invalid",
+                origin_label,
+                forwarded_host or ("invalid" if forwarded_header else "missing"),
+                forwarded_proto if forwarded_proto in {"http", "https"} else (
+                    "invalid" if forwarded_proto_header else "missing"
+                ),
+            )
             raise PanelError("Solicitud rechazada: origen no permitido.", 403)
-        if (
-            not request_host
-            or request_host not in allowed_hosts
-            or (forwarded_header and forwarded_host not in allowed_hosts)
+
+        if not request_host:
+            reject("invalid_host")
+        if forwarded_proto and (
+            "," in forwarded_proto or forwarded_proto not in {"http", "https"}
         ):
-            raise PanelError("Solicitud rechazada: origen no permitido.", 403)
+            reject("invalid_forwarded_proto")
+        if forwarded_header and forwarded_host not in app_hosts:
+            reject("forwarded_host_not_allowed")
+
+        forwarded_proxy_host = (
+            request_host in proxy_hosts and forwarded_host in app_hosts
+        )
+        if request_host not in allowed_hosts and not forwarded_proxy_host:
+            reject("host_not_allowed")
 
         effective_host = request_host
         if forwarded_host:
-            if request_host in local_hosts:
+            if request_host in proxy_hosts:
                 effective_host = forwarded_host
             elif forwarded_host != request_host:
-                raise PanelError("Solicitud rechazada: origen no permitido.", 403)
+                reject("forwarded_host_mismatch")
 
         if not origin:
             return
 
-        try:
-            parsed_origin = urlsplit(origin)
-            origin_host = hostname(parsed_origin.netloc)
-            origin_port = parsed_origin.port
-        except ValueError:
-            raise PanelError("Solicitud rechazada: origen no permitido.", 403) from None
+        if not parsed_origin or not origin_host:
+            reject("invalid_origin")
         origin_scheme = parsed_origin.scheme.lower()
         if origin_host == "replit.com":
             # The editor's embedded Preview is cross-origin. Trust that exact
-            # editor origin only when Replit forwards this app's configured
-            # development hostname over HTTPS from the local proxy.
+            # editor origin only when Replit forwards this app's exact
+            # development hostname over HTTPS.
             if (
                 origin_scheme == "https"
                 and origin_port in {None, 443}
-                and request_host in local_hosts
-                and forwarded_host in allowed_hosts - local_hosts
+                and effective_host in app_hosts
+                and forwarded_host in app_hosts
                 and forwarded_proto == "https"
             ):
                 return
-            raise PanelError("Solicitud rechazada: origen no permitido.", 403)
+            reject("editor_origin_without_matching_preview_proxy")
         if (
             origin_scheme not in {"http", "https"}
             or parsed_origin.username
@@ -833,8 +866,13 @@ required minlength="16" {disabled}>
             or origin_host != effective_host
             or (origin_host not in local_hosts and origin_scheme != "https")
             or (origin_host not in local_hosts and origin_port not in {None, 443})
+            or (
+                origin_host not in local_hosts
+                and forwarded_proto
+                and forwarded_proto != origin_scheme
+            )
         ):
-            raise PanelError("Solicitud rechazada: origen no permitido.", 403)
+            reject("origin_not_matching_allowed_host")
 
     def _read_json(self) -> Any:
         raw_length = self.headers.get("Content-Length")
