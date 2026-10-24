@@ -62,6 +62,7 @@ from .drive import (
     save_folder_selection,
 )
 from .pipeline import _cost_estimate_note, _estimate_cost, process_local_video, sync_drive_media
+from .shotstack import ShotstackClient, ShotstackError
 from .state import ProcessingLedger
 from .style import VideoStyle, load_video_style, save_video_style
 
@@ -128,9 +129,19 @@ class DashboardStore:
                 db.execute(
                     "ALTER TABLE dashboard_jobs ADD COLUMN edit_options_json TEXT NOT NULL DEFAULT '{}'"
                 )
+            if "attempt_number" not in job_columns:
+                db.execute(
+                    "ALTER TABLE dashboard_jobs ADD COLUMN attempt_number INTEGER NOT NULL DEFAULT 1"
+                )
+            if "retry_of_job_id" not in job_columns:
+                db.execute("ALTER TABLE dashboard_jobs ADD COLUMN retry_of_job_id TEXT")
             db.execute(
                 "CREATE INDEX IF NOT EXISTS dashboard_jobs_source_created "
                 "ON dashboard_jobs(source_id, created_at DESC)"
+            )
+            db.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS dashboard_jobs_retry_once "
+                "ON dashboard_jobs(retry_of_job_id) WHERE retry_of_job_id IS NOT NULL"
             )
             # A worker cannot survive a process restart. Report that honestly
             # rather than leaving stale jobs marked as actively running.
@@ -206,23 +217,81 @@ class DashboardStore:
         source_id: str,
         estimate: float | None,
         edit_options: dict[str, Any] | None = None,
+        *,
+        attempt_number: int = 1,
+        retry_of_job_id: str | None = None,
     ) -> None:
         now = time.time()
         with self.lock, self._connect() as db:
             db.execute(
                 """INSERT INTO dashboard_jobs
                    (id, source_id, status, phase, progress, estimated_cost_usd,
-                    edit_options_json, created_at, updated_at)
-                   VALUES (?, ?, 'queued', 'queued', NULL, ?, ?, ?, ?)""",
+                    edit_options_json, attempt_number, retry_of_job_id, created_at, updated_at)
+                   VALUES (?, ?, 'queued', 'queued', NULL, ?, ?, ?, ?, ?, ?)""",
                 (
                     job_id,
                     source_id,
                     estimate,
                     json.dumps(edit_options or {}, ensure_ascii=False),
+                    attempt_number,
+                    retry_of_job_id,
                     now,
                     now,
                 ),
             )
+
+    def create_retry_job(
+        self,
+        previous_job_id: str,
+        job_id: str,
+        estimate: float | None,
+        edit_options: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Atomically reserve the single permitted retry for one failed attempt."""
+        now = time.time()
+        with self.lock, self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            previous = db.execute(
+                "SELECT * FROM dashboard_jobs WHERE id = ?",
+                (previous_job_id,),
+            ).fetchone()
+            if not previous:
+                raise PanelError("No se encontró el intento fallido.", 404)
+            previous = dict(previous)
+            latest = db.execute(
+                """SELECT id FROM dashboard_jobs WHERE source_id = ?
+                   ORDER BY created_at DESC, rowid DESC LIMIT 1""",
+                (previous["source_id"],),
+            ).fetchone()
+            retry_count = db.execute(
+                "SELECT COUNT(*) AS count FROM dashboard_jobs WHERE source_id = ? AND attempt_number > 1",
+                (previous["source_id"],),
+            ).fetchone()["count"]
+            if previous["status"] != "failed":
+                raise PanelError("Solo se puede reintentar un intento que terminó con error.", 409)
+            if int(previous.get("attempt_number") or 1) != 1 or retry_count:
+                raise PanelError("Ya se utilizó el único reintento permitido para este vídeo.", 409)
+            if not latest or latest["id"] != previous_job_id:
+                raise PanelError("El intento seleccionado ya no es el más reciente.", 409)
+            try:
+                db.execute(
+                    """INSERT INTO dashboard_jobs
+                       (id, source_id, status, phase, progress, estimated_cost_usd,
+                        edit_options_json, attempt_number, retry_of_job_id, created_at, updated_at)
+                       VALUES (?, ?, 'queued', 'queued', NULL, ?, ?, 2, ?, ?, ?)""",
+                    (
+                        job_id,
+                        previous["source_id"],
+                        estimate,
+                        json.dumps(edit_options, ensure_ascii=False),
+                        previous_job_id,
+                        now,
+                        now,
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                raise PanelError("Este intento ya tiene un reintento reservado.", 409) from None
+        return self.get_job(job_id) or {}
 
     def update_job(self, job_id: str, **fields: Any) -> None:
         allowed = {"status", "phase", "progress", "error", "estimated_cost_usd", "output_id", "result_json"}
@@ -252,6 +321,17 @@ class DashboardStore:
                 (source_id,),
             ).fetchone()
         return dict(row) if row else None
+
+    def job_history_for_source(self, source_id: str) -> list[dict[str, Any]]:
+        with self.lock, self._connect() as db:
+            rows = db.execute(
+                """SELECT id, status, phase, error, attempt_number, retry_of_job_id,
+                          estimated_cost_usd, created_at, updated_at
+                   FROM dashboard_jobs WHERE source_id = ?
+                   ORDER BY attempt_number ASC, created_at ASC, rowid ASC""",
+                (source_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def list_uploads(self) -> list[dict[str, Any]]:
         with self.lock, self._connect() as db:
@@ -289,6 +369,8 @@ def _public_job(job: dict[str, Any]) -> dict[str, Any]:
         "edit_options": edit_options if isinstance(edit_options, dict) else {},
         "output_metadata": output_metadata,
         "output_id": job["output_id"],
+        "attempt_number": int(job.get("attempt_number") or 1),
+        "retry_of_job_id": job.get("retry_of_job_id"),
         "created_at": job["created_at"],
         "updated_at": job["updated_at"],
     }
@@ -1048,6 +1130,8 @@ class VideoPanel:
     def _public_library_item(self, upload: dict[str, Any]) -> dict[str, Any]:
         metadata = json.loads(upload["metadata_json"])
         style = load_video_style(self.style_path)
+        processing = self.store.ledger.get(upload["source_sha256"])
+        attempt_history = self.store.job_history_for_source(upload["id"])
         estimate = _estimate_cost(
             float(metadata["duration"]),
             style,
@@ -1059,7 +1143,6 @@ class VideoPanel:
             output_id = job["output_id"]
             error = job["error"]
         else:
-            processing = self.store.ledger.get(upload["source_sha256"])
             if processing.get("status") == "completed":
                 status = "completed"
                 output_path = processing.get("output_path")
@@ -1114,6 +1197,31 @@ class VideoPanel:
             and drive_import.get("status") == "upload_failed"
             and self.store.latest_job_for_source(upload["id"])
         )
+        latest_options = {}
+        if job:
+            try:
+                latest_options = json.loads(job.get("edit_options_json") or "{}")
+            except (TypeError, json.JSONDecodeError):
+                latest_options = {}
+        attempts_used = int(processing.get("attempts") or 0)
+        has_retry = any(int(attempt.get("attempt_number") or 1) > 1 for attempt in attempt_history)
+        result.update({
+            "attempt_history": attempt_history,
+            "latest_job_id": job.get("id") if job else None,
+            "latest_attempt_number": int(job.get("attempt_number") or 1) if job else None,
+            "retry_settings": latest_options if isinstance(latest_options, dict) else {},
+            "retry_estimated_cost_usd": job.get("estimated_cost_usd") if job else None,
+            "retry_remote_status_check_available": bool(processing.get("render_id")),
+            "can_retry_render": bool(
+                job
+                and job.get("status") == "failed"
+                and int(job.get("attempt_number") or 1) == 1
+                and processing.get("status") == "failed"
+                and attempts_used == 1
+                and not has_retry
+                and not drive_import
+            ),
+        })
         return result
 
     def prepare_proposal(self, payload: Any) -> dict[str, Any]:
@@ -1461,6 +1569,185 @@ class VideoPanel:
         self.executor.submit(self._run_job, job_id, upload, estimate, style, edit_options)
         return self.store.get_job(job_id) or {}
 
+    def retry_job(self, job_id: str, payload: Any) -> dict[str, Any]:
+        """Reserve one owner-authorized retry, preserving the original attempt."""
+        if not isinstance(payload, dict):
+            raise PanelError("La solicitud de reintento debe ser un objeto JSON.")
+        if payload.get("authorize_paid_apis") is not True or payload.get("confirm_single_retry") is not True:
+            raise PanelError("Falta la autorización expresa para un único reintento en Shotstack Stage.", 403)
+        if not re.fullmatch(r"[0-9a-f]{32}", job_id):
+            raise PanelError("Identificador de trabajo no válido.")
+
+        with self.job_lock:
+            previous = self.store.get_job(job_id)
+            if not previous:
+                raise PanelError("No se encontró el intento fallido.", 404)
+            if previous["status"] != "failed":
+                raise PanelError("Solo se puede reintentar un intento que terminó con error.", 409)
+            if int(previous.get("attempt_number") or 1) != 1:
+                raise PanelError("Este trabajo ya es el reintento único permitido.", 409)
+
+            upload = self.store.get_upload(previous["source_id"])
+            if not upload:
+                raise PanelError("No se encontró el vídeo original.", 404)
+            latest = self.store.latest_job_for_source(upload["id"])
+            if not latest or latest["id"] != job_id:
+                raise PanelError("El intento seleccionado ya no es el más reciente.", 409)
+            if self.active_job_id:
+                active = self.store.get_job(self.active_job_id)
+                if active and active["status"] not in TERMINAL_STATUSES:
+                    raise PanelError("Hay otro trabajo en curso; no se enviará este reintento.", 409)
+
+            drive_import = (
+                self.drive_store.get_import_for_local_upload(upload["id"])
+                if self.drive_store
+                else None
+            )
+            if drive_import:
+                raise PanelError(
+                    "Este reintento está limitado a vídeos locales; no modificará ni consultará Google Drive.",
+                    409,
+                )
+
+            processing = self.store.ledger.get(upload["source_sha256"])
+            if processing.get("status") != "failed" or int(processing.get("attempts") or 0) != 1:
+                raise PanelError(
+                    "El estado local no confirma un único intento fallido; se bloquea el reenvío.",
+                    409,
+                )
+            if self.store.job_history_for_source(upload["id"])[-1]["id"] != job_id:
+                raise PanelError("El historial cambió; actualiza el panel antes de reintentar.", 409)
+
+            saved = json.loads(processing.get("edit_options_json") or "{}")
+            if not isinstance(saved, dict) or not isinstance(saved.get("style"), dict):
+                raise PanelError("No se pudo recuperar la configuración exacta del primer intento.", 409)
+            try:
+                style = VideoStyle(**saved["style"])
+            except (TypeError, ValueError) as exc:
+                raise PanelError("La configuración guardada del primer intento no es válida.", 409) from exc
+            subtitle_mode = saved.get("subtitle_mode")
+            creative_plan = saved.get("creative_plan")
+            if subtitle_mode not in {"none", "simple", "dynamic"} or not isinstance(creative_plan, dict):
+                raise PanelError("Faltan opciones guardadas para reproducir la misma edición.", 409)
+
+            original_options = previous.get("edit_options") or {}
+            output_profile = next(
+                (
+                    profile for profile, dimensions in OUTPUT_PROFILES.items()
+                    if dimensions == (style.output_width, style.output_height)
+                ),
+                None,
+            )
+            if (
+                original_options.get("subtitle_mode") != subtitle_mode
+                or original_options.get("output_profile") != output_profile
+                or original_options.get("output_quality") != style.output_quality
+                or int(original_options.get("output_fps") or 0) != style.output_fps
+                or original_options.get("creative_plan") != creative_plan
+            ):
+                raise PanelError(
+                    "Las opciones guardadas del trabajo no coinciden; no se cambiará ni reconstruirá la edición.",
+                    409,
+                )
+
+            source_path = self._source_path(upload)
+            try:
+                with source_path.open("rb") as source_file:
+                    source_hash = hashlib.file_digest(source_file, "sha256").hexdigest()
+            except OSError:
+                raise PanelError("No se puede leer el original; no se iniciará el reintento.", 409) from None
+            if source_hash != upload["source_sha256"]:
+                raise PanelError("El original cambió desde el primer intento; no se reintentará.", 409)
+
+            try:
+                config = PipelineConfig.from_environment()
+            except ValueError as exc:
+                raise PanelError("La configuración de Shotstack no está lista para Stage.", 409) from exc
+            if config.shotstack_environment != "stage":
+                raise PanelError("Los reintentos están bloqueados fuera de Shotstack Stage.", 409)
+            health = self.health()
+            if not health["shotstack_key_configured"]:
+                raise PanelError("Falta la configuración de Shotstack; no se inició ningún trabajo.", 409)
+            if subtitle_mode != "none" and not health["openai_key_configured"]:
+                raise PanelError("Falta la configuración de OpenAI requerida por esta edición.", 409)
+
+            estimate = previous.get("estimated_cost_usd")
+            if estimate is None and payload.get("unknown_cost_acknowledged") is not True:
+                raise PanelError("El coste es desconocido; confirma expresamente ese riesgo.", 403)
+            if style.max_estimated_cost_usd is not None:
+                if estimate is None or estimate > style.max_estimated_cost_usd:
+                    raise PanelError("El reintento supera el límite de coste configurado.", 409)
+
+            render_id = processing.get("render_id")
+            resume_existing_render = False
+            if render_id:
+                try:
+                    remote_status, _ = ShotstackClient(environment="stage").render_status(render_id)
+                except ShotstackError as exc:
+                    raise PanelError(
+                        f"No se pudo verificar el estado remoto; no se envió un reintento: {exc}",
+                        502,
+                    ) from None
+                if remote_status == "done":
+                    resume_existing_render = True
+                elif remote_status not in {"failed", "cancelled"}:
+                    raise PanelError(
+                        "Shotstack informa un render activo o un estado no concluyente; no se duplicará.",
+                        409,
+                    )
+            else:
+                previous_error = f"{previous.get('error') or ''} {processing.get('error') or ''}"
+                if "HTTP 400" not in previous_error:
+                    raise PanelError(
+                        "No hay ID remoto ni rechazo HTTP 400 verificable; no es seguro reenviar.",
+                        409,
+                    )
+                if payload.get("confirm_no_render_id") is not True:
+                    raise PanelError(
+                        "No existe ID de render para consultar a Shotstack. Confirma que aceptas esta limitación.",
+                        403,
+                    )
+
+            retry_options = {
+                "subtitle_mode": subtitle_mode,
+                "output_profile": output_profile,
+                "output_quality": style.output_quality,
+                "output_fps": style.output_fps,
+                "creative_plan": creative_plan,
+            }
+            retry_id = uuid.uuid4().hex
+            retry = self.store.create_retry_job(
+                job_id,
+                retry_id,
+                estimate,
+                retry_options,
+            )
+            self.active_job_id = retry_id
+
+        try:
+            self.executor.submit(
+                self._run_job,
+                retry_id,
+                upload,
+                estimate,
+                style,
+                retry_options,
+                retry_failed=True,
+            )
+        except RuntimeError:
+            self.store.update_job(
+                retry_id,
+                status="failed",
+                phase="failed",
+                error="No se pudo iniciar el trabajador local; no se envió ninguna solicitud.",
+            )
+            with self.job_lock:
+                if self.active_job_id == retry_id:
+                    self.active_job_id = None
+            raise PanelError("No se pudo iniciar el reintento local.", 503) from None
+        retry["resumes_existing_render"] = resume_existing_render
+        return retry
+
     def _run_job(
         self,
         job_id: str,
@@ -1468,6 +1755,8 @@ class VideoPanel:
         estimate: float | None,
         style: VideoStyle,
         edit_options: dict[str, Any],
+        *,
+        retry_failed: bool = False,
     ) -> None:
         drive_import = (
             self.drive_store.get_import_for_local_upload(upload["id"])
@@ -1507,6 +1796,7 @@ class VideoPanel:
                 subtitle_mode=edit_options["subtitle_mode"],
                 creative_plan=edit_options.get("creative_plan"),
                 state_db_path=self.store.database_path,
+                retry_failed=retry_failed,
                 progress_callback=update_phase,
             )
             if drive_import and self.drive_store:
@@ -2171,6 +2461,15 @@ required minlength="16" {disabled}>
                 self._json(self.server.panel.prepare_proposal(self._read_json()), 200)
             elif self.command == "POST" and path == "/api/jobs":
                 self._json(self.server.panel.start_job(self._read_json()), 202)
+            elif (
+                self.command == "POST"
+                and re.fullmatch(r"/api/jobs/[0-9a-f]{32}/retry", path)
+            ):
+                failed_job_id = path.split("/")[3]
+                self._json(
+                    self.server.panel.retry_job(failed_job_id, self._read_json()),
+                    202,
+                )
             elif self.command == "POST" and path == "/api/drive/oauth/start":
                 self._handle_google_oauth_start()
             elif self.command == "POST" and path == "/api/drive/scan":
