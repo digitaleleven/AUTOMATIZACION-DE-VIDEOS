@@ -26,7 +26,7 @@
           <button class="rail-link" type="button" data-scroll="configuracion"><span class="nav-symbol">☷</span>Configuración</button>
         </nav>
         <div class="sidebar-safety">
-          <div class="safety-heading"><span class="local-indicator"><i></i><span id="connection-label">Sin consultar</span></span></div>
+          <div class="safety-heading"><span class="local-indicator"><i></i><span id="connection-label">Pendiente de actualizar</span></span></div>
           <p>Los originales permanecen intactos. No hay envíos sin autorización explícita.</p>
           <button class="text-button" id="connect-button" type="button">Revisar conexión <span>→</span></button>
         </div>
@@ -47,8 +47,8 @@
           <section class="intro" id="inicio">
             <div class="intro-copy-wrap">
               <p class="eyebrow">VIDEO AUTOMATION STUDIO <span>·</span> VERTICAL 9:16</p>
-              <h1>Del original a <span>publicación.</span></h1>
-              <p class="intro-copy">De vídeo original a contenido listo para publicar. Prepara tus vídeos verticales, revisa cada resultado y autoriza el procesamiento cuando estés listo.</p>
+              <h1>Vídeos para <span>publicar.</span></h1>
+              <p class="intro-copy">De vídeo original a contenido listo para publicar. Prepara tus vídeos verticales, revisa cada resultado y autoriza el procesamiento cuando quieras.</p>
             </div>
             <div class="hero-action">
               <button id="upload-trigger" class="hero-upload" type="button"><span class="upload-mark">＋</span><span>Añadir vídeo</span><b>→</b></button>
@@ -57,10 +57,10 @@
             </div>
           </section>
 
-          <section class="summary-strip" aria-label="Resumen real de la biblioteca">
+          <section class="summary-strip" aria-label="Resumen de la biblioteca">
             <article class="summary-item">
               <span class="summary-mark pending-mark"></span>
-              <div><p>PENDIENTES</p><strong id="summary-pending">—</strong><small id="summary-pending-note">Sin consultar</small></div>
+              <div><p>PENDIENTES</p><strong id="summary-pending">—</strong><small id="summary-pending-note">Pendiente de actualizar</small></div>
             </article>
             <article class="summary-item">
               <span class="summary-mark processed-mark"></span>
@@ -70,30 +70,30 @@
               <span class="summary-mark error-mark"></span>
               <div><p>ERRORES</p><strong id="summary-errors">—</strong><small>Requieren revisión</small></div>
             </article>
-            <span class="summary-source" id="summary-source">Actualiza para consultar datos reales</span>
+            <span class="summary-source" id="summary-source">Actualiza para ver la información disponible</span>
           </section>
 
           <div class="notice-band" role="note">
             <span class="notice-icon" aria-hidden="true">i</span>
             <p><strong>El original no se modifica.</strong> OpenAI y Shotstack Stage solo se usan al iniciar un procesamiento con tu autorización explícita.</p>
-            <span class="notice-local">SOLO LOCAL</span>
+            <span class="notice-local">SIN ENVÍOS AUTOMÁTICOS</span>
           </div>
 
           <section class="section-block" id="biblioteca">
             <div class="section-head">
               <div><p class="eyebrow">01 / ARCHIVOS</p><h2>Tu biblioteca</h2></div>
-              <span class="count-tag" id="library-count">Sin consultar</span>
+              <span class="count-tag" id="library-count">Pendiente de actualizar</span>
             </div>
             <div class="library-panel">
               <div class="list-toolbar">
-                <span>FUENTES DISPONIBLES</span>
+                <span>VÍDEOS DISPONIBLES</span>
                 <button class="small-action" type="button" data-action="upload">＋ Añadir vídeo</button>
               </div>
               <div id="library-list" class="library-list" aria-live="polite">
                 <div class="empty-state">
-                  <div class="empty-glyph">▧</div><h3>Tu mesa está vacía</h3>
-                  <p>Consulta la biblioteca local o añade un vídeo MP4 o MOV.</p>
-                  <button class="outline-button" type="button" data-action="connect">Cargar biblioteca</button>
+                  <div class="empty-glyph">▧</div><h3>Tu biblioteca está vacía</h3>
+                  <p>Añade tu primer vídeo para empezar a crear contenido.</p>
+                  <button class="outline-button" type="button" data-action="connect">Consultar biblioteca</button>
                 </div>
               </div>
               <div class="upload-progress" id="upload-message" role="status" aria-live="polite" hidden></div>
@@ -102,27 +102,27 @@
 
           <section class="section-block" id="estudio">
             <div class="section-head">
-              <div><p class="eyebrow">02 / ESTUDIO</p><h2>Fuente y resultado</h2></div>
-              <span class="preview-status" id="selected-status">NINGÚN ARCHIVO</span>
+              <div><p class="eyebrow">02 / ESTUDIO</p><h2>Vídeo original y resultado</h2></div>
+              <span class="preview-status" id="selected-status">NINGÚN VÍDEO</span>
             </div>
             <div class="studio-grid">
               <article class="preview-card">
-                <div class="preview-head"><span>ORIGINAL</span><span>FUENTE INTACTA</span></div>
+                <div class="preview-head"><span>ORIGINAL</span><span>ORIGINAL PROTEGIDO</span></div>
                 <div class="video-stage" id="source-stage">
                   <div class="stage-placeholder"><div class="play-outline">▶</div><p>Selecciona un vídeo para ver el original</p></div>
-                  <video id="source-video" controls playsinline preload="metadata" hidden></video>
+                  <video id="source-video" controls playsinline preload="metadata" aria-label="Vídeo original" hidden></video>
                 </div>
-                <div class="file-summary" id="file-summary"><div class="summary-empty">Los metadatos reales aparecerán al seleccionar un vídeo.</div></div>
+                <div class="file-summary" id="file-summary"><div class="summary-empty">Los datos del vídeo aparecerán aquí al seleccionarlo.</div></div>
               </article>
               <article class="preview-card output-card">
                 <div class="preview-head"><span>VÍDEO VERTICAL</span><span>1080 × 1920 · 9:16</span></div>
                 <div class="output-empty" id="output-empty">
                   <div class="output-symbol">▣</div><strong>Aún no hay resultado</strong>
-                  <p>El archivo editado aparecerá aquí cuando se complete un procesamiento real.</p>
+                  <p>El vídeo editado aparecerá aquí cuando termine el procesamiento.</p>
                 </div>
                 <div class="output-panel" id="output-panel" hidden>
                   <div class="output-title"><div><p class="eyebrow">RESULTADO REAL</p><h3>Vídeo procesado</h3></div><span class="output-badge">ARCHIVO NUEVO</span></div>
-                  <video id="output-video" controls playsinline preload="metadata"></video>
+                  <video id="output-video" controls playsinline preload="metadata" aria-label="Vídeo editado"></video>
                   <a id="output-link" class="download-link" href="#" download>Descargar resultado <span>↓</span></a>
                 </div>
               </article>
@@ -136,7 +136,7 @@
             </div>
             <div class="process-layout">
               <div class="job-content" id="job-content">
-                <div class="job-empty"><span class="job-empty-line"></span><div><strong>Aún no hay trabajos en esta sesión</strong><p>Las fases y los errores aparecerán aquí cuando existan datos reales del servicio.</p></div></div>
+                <div class="job-empty"><span class="job-empty-line"></span><div><strong>Todavía no has iniciado ningún procesamiento</strong><p>El estado y los errores aparecerán aquí cuando haya información disponible.</p></div></div>
               </div>
               <aside class="process-card">
                 <div class="card-kicker"><span>ANTES DE CONTINUAR</span><span class="card-dot"></span></div>
@@ -145,11 +145,11 @@
                   <strong id="cost-value">Desconocido</strong>
                   <p id="cost-note">Selecciona un vídeo para consultar la estimación disponible.</p>
                 </div>
-                <div class="health-list" aria-label="Estado de integraciones">
-                  <div><span>OpenAI</span><b id="health-openai" class="health-unknown">Sin consultar</b></div>
-                  <div><span>Shotstack</span><b id="health-shotstack" class="health-unknown">Sin consultar</b></div>
-                  <div><span>Entorno</span><b id="health-environment" class="health-unknown">Desconocido</b></div>
-                  <div><span>Google Drive</span><b id="health-drive" class="health-unknown">Sin consultar</b></div>
+                <div class="health-list" aria-label="Estado de los servicios">
+                  <div><span>OpenAI</span><b id="health-openai" class="health-unknown">Pendiente de actualizar</b></div>
+                  <div><span>Shotstack</span><b id="health-shotstack" class="health-unknown">Pendiente de actualizar</b></div>
+                  <div><span>Entorno</span><b id="health-environment" class="health-unknown">Pendiente de actualizar</b></div>
+                  <div><span>Google Drive</span><b id="health-drive" class="health-unknown">Pendiente de actualizar</b></div>
                 </div>
                 <label class="consent-check"><input id="paid-consent" type="checkbox"><span>Autorizo el envío del vídeo a servicios externos de pago (OpenAI y Shotstack Stage).</span></label>
                 <label class="consent-check unknown-check" id="unknown-cost-wrap" hidden><input id="unknown-cost-consent" type="checkbox"><span>Entiendo que el coste es desconocido y podría haber cargos.</span></label>
@@ -161,50 +161,50 @@
 
           <section class="section-block settings-section" id="configuracion">
             <div class="settings-top">
-              <div><p class="eyebrow">04 / CONFIGURACIÓN</p><h2>Estilo de edición</h2><p>Los valores se cargan y guardan en la configuración real del motor.</p></div>
+              <div><p class="eyebrow">04 / CONFIGURACIÓN</p><h2>Estilo de edición</h2><p>El estilo se consulta y se guarda en la configuración de la aplicación.</p></div>
               <div class="settings-actions">
-                <button type="button" class="outline-button" id="load-style-button">Cargar estilo</button>
+                <button type="button" class="outline-button" id="load-style-button">Consultar estilo</button>
                 <button type="submit" form="style-form" class="dark-button" id="save-style-button" disabled>Guardar cambios <span>→</span></button>
               </div>
             </div>
             <form id="style-form">
-              <div class="style-form-message" id="style-message" aria-live="polite">Carga la configuración para consultar los valores actuales.</div>
+              <div class="style-form-message" id="style-message" aria-live="polite">Consulta la configuración para ver y ajustar los valores.</div>
               <fieldset id="style-fields" disabled hidden>
                 <div class="style-grid">
                   <div class="style-group">
                     <h3>Subtítulos</h3>
-                    <label>Familia tipográfica<input name="font_family" type="text"></label>
-                    <div class="field-pair"><label>Tamaño de fuente<input name="font_size" type="number" min="12" max="200" step="1"></label><label>Grosor de trazo<input name="stroke_width" type="number" min="0" max="20" step="1"></label></div>
-                    <div class="field-pair"><label>Color de texto<input name="font_color" type="color"></label><label>Color de trazo<input name="stroke_color" type="color"></label></div>
+                    <label>Tipo de letra<input name="font_family" type="text"></label>
+                    <div class="field-pair"><label>Tamaño del texto<input name="font_size" type="number" min="12" max="200" step="1"></label><label>Grosor del contorno<input name="stroke_width" type="number" min="0" max="20" step="1"></label></div>
+                    <div class="field-pair"><label>Color del texto<input name="font_color" type="color"></label><label>Color del contorno<input name="stroke_color" type="color"></label></div>
                     <label>Color de resaltado<input name="highlight_color" type="color"></label>
                     <label>Animación de subtítulos<select name="animation_style"><option value="highlight">Resaltar palabra</option><option value="karaoke">Karaoke</option></select></label>
-                    <label>Reglas de caracteres por palabra<textarea name="emoji_by_keyword" rows="3" placeholder='{"palabra":"carácter Unicode"}' aria-describedby="emoji-help"></textarea></label>
-                    <small class="field-help" id="emoji-help">Formato JSON: palabra y carácter Unicode. Déjalo vacío para no aplicar reglas.</small>
+                    <label>Símbolos por palabra clave<textarea name="emoji_by_keyword" rows="3" placeholder='{"palabra":"carácter Unicode"}' aria-describedby="emoji-help"></textarea></label>
+                    <small class="field-help" id="emoji-help">Asocia cada palabra con un carácter mediante JSON. Deja el campo vacío para no añadir símbolos.</small>
                   </div>
                   <div class="style-group">
                     <h3>Composición y logo</h3>
                     <label>Posición de subtítulos<select name="caption_position"><option value="bottom">Inferior</option><option value="middle">Centro</option><option value="top">Superior</option></select></label>
-                    <label>Desplazamiento vertical<input name="caption_offset_y" type="number" min="0" max="0.8" step="0.01"></label>
-                    <label>Ruta del logo en el entorno local<input name="logo_path" type="text" placeholder="Sin logo configurado"></label>
+                    <label>Ajuste vertical del subtítulo<input name="caption_offset_y" type="number" min="0" max="0.8" step="0.01"></label>
+                    <label>Ubicación del logo en Replit<input name="logo_path" type="text" placeholder="Sin logo configurado"></label>
                     <label>Posición del logo<select name="logo_position"><option value="top">Arriba</option><option value="topRight">Arriba a la derecha</option><option value="right">Derecha</option><option value="bottomRight">Abajo a la derecha</option><option value="bottom">Abajo</option><option value="bottomLeft">Abajo a la izquierda</option><option value="left">Izquierda</option><option value="topLeft">Arriba a la izquierda</option><option value="center">Centro</option></select></label>
-                    <div class="field-pair"><label>Tamaño del logo<input name="logo_scale" type="number" min="0.02" max="0.4" step="0.01"></label><label>FPS de salida<select name="output_fps"><option value="25">25 FPS</option><option value="30">30 FPS</option><option value="50">50 FPS</option><option value="60">60 FPS</option></select></label></div>
-                    <div class="field-pair"><label>Desplazamiento X del logo<input name="logo_offset_x" type="number" min="-1" max="1" step="0.01"></label><label>Desplazamiento Y del logo<input name="logo_offset_y" type="number" min="-1" max="1" step="0.01"></label></div>
-                    <p class="field-help">La ruta debe apuntar a un archivo accesible desde el entorno de Replit.</p>
+                    <div class="field-pair"><label>Tamaño del logo<input name="logo_scale" type="number" min="0.02" max="0.4" step="0.01"></label><label>Fotogramas por segundo<select name="output_fps"><option value="25">25 FPS</option><option value="30">30 FPS</option><option value="50">50 FPS</option><option value="60">60 FPS</option></select></label></div>
+                    <div class="field-pair"><label>Ajuste horizontal X del logo<input name="logo_offset_x" type="number" min="-1" max="1" step="0.01"></label><label>Ajuste vertical Y del logo<input name="logo_offset_y" type="number" min="-1" max="1" step="0.01"></label></div>
+                    <p class="field-help">El archivo del logo debe estar disponible en el entorno de Replit.</p>
                   </div>
                   <div class="style-group">
                     <h3>Límites y costes</h3>
-                    <label>Tamaño máximo de entrada (MB)<input name="max_input_size_mb" type="number" min="1" step="1"></label>
-                    <label>Duración máxima (segundos)<input name="max_video_duration_seconds" type="number" min="1" step="1"></label>
-                    <label>Máximo de bloques de transcripción<input name="max_transcription_chunks" type="number" min="1" step="1"></label>
-                    <label>OpenAI · USD por minuto de audio<input name="openai_price_per_audio_minute_usd" type="number" min="0" step="0.0001" placeholder="Desconocido"></label>
-                    <label>Shotstack · USD por minuto de render<input name="shotstack_price_per_render_minute_usd" type="number" min="0" step="0.0001" placeholder="Desconocido"></label>
+                    <label>Tamaño máximo del vídeo (MB)<input name="max_input_size_mb" type="number" min="1" step="1"></label>
+                    <label>Duración máxima del vídeo (segundos)<input name="max_video_duration_seconds" type="number" min="1" step="1"></label>
+                    <label>Fragmentos máximos por transcripción<input name="max_transcription_chunks" type="number" min="1" step="1"></label>
+                    <label>OpenAI · coste por minuto de audio (USD)<input name="openai_price_per_audio_minute_usd" type="number" min="0" step="0.0001" placeholder="Desconocido"></label>
+                    <label>Shotstack · coste por minuto de vídeo procesado (USD)<input name="shotstack_price_per_render_minute_usd" type="number" min="0" step="0.0001" placeholder="Desconocido"></label>
                     <label>Límite estimado total (USD)<input name="max_estimated_cost_usd" type="number" min="0" step="0.01" placeholder="Sin límite configurado"></label>
                   </div>
                 </div>
               </fieldset>
             </form>
           </section>
-          <footer><span>MATRIX MOTION / ENTORNO LOCAL</span><span>Las tarifas y las credenciales no se verifican desde esta vista.</span></footer>
+          <footer><span>MATRIX MOTION / ENTORNO LOCAL</span><span>Los precios y las claves de acceso no se comprueban desde esta pantalla.</span></footer>
         </div>
       </main>
     </div>
@@ -212,7 +212,7 @@
     <nav class="mobile-nav" aria-label="Navegación móvil">
       <button class="rail-link active" type="button" data-scroll="inicio"><span>⌂</span>Inicio</button>
       <button class="rail-link" type="button" data-scroll="biblioteca"><span>▤</span>Biblioteca</button>
-      <button class="rail-link" type="button" data-scroll="estudio"><span>▣</span>Estudio</button>
+      <button class="rail-link" type="button" data-scroll="estudio"><span>▣</span>Edición</button>
       <button class="rail-link" type="button" data-scroll="procesamiento"><span>⌁</span>Estado</button>
       <button class="rail-link" type="button" data-scroll="configuracion"><span>☷</span>Ajustes</button>
     </nav>

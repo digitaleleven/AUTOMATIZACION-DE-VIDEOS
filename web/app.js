@@ -25,7 +25,7 @@ async function requestJson(url, options = {}) {
   try {
     response = await fetch(url, { ...options, credentials: "same-origin" });
   } catch (error) {
-    throw new Error(`No se pudo conectar con el servicio local. ${error.message}`);
+    throw new Error(`No se pudo conectar con la aplicación. ${error.message}`);
   }
   const text = await response.text();
   let body = null;
@@ -33,7 +33,7 @@ async function requestJson(url, options = {}) {
     try { body = JSON.parse(text); } catch { body = { detail: text }; }
   }
   if (!response.ok) {
-    const message = body?.detail || body?.error || body?.message || `Error HTTP ${response.status}`;
+    const message = body?.detail || body?.error || body?.message || `No se pudo completar la solicitud (código ${response.status}).`;
     throw new Error(String(message));
   }
   return body;
@@ -145,14 +145,14 @@ function displayToast(message, isError = false) {
 
 function statusLabel(status) {
   const labels = {
-    queued: "En cola", pending: "Pendiente", ready: "Listo", validating: "Validando",
-    processing: "Procesando", transcribing: "Transcribiendo", rendering: "Renderizando",
-    downloading: "Descargando", completed: "Completado", complete: "Completado",
-    failed: "Error", error: "Error", rejected: "Rechazado",
-    normalizing: "Preparando compatibilidad", preparing_captions: "Preparando subtítulos",
-    uploading: "Subiendo fuente a Shotstack Stage",
-    uploading_captions: "Subiendo subtítulos a Shotstack Stage",
-    validating_output: "Validando resultado", interrupted: "Interrumpido",
+    queued: "En espera", pending: "Pendiente", ready: "Listo para procesar", validating: "Comprobando",
+    processing: "En curso", transcribing: "Transcribiendo el audio", rendering: "Generando el vídeo",
+    downloading: "Descargando el resultado", completed: "Completado", complete: "Completado",
+    failed: "Error", error: "Error", rejected: "No admitido",
+    normalizing: "Preparando el formato del vídeo", preparing_captions: "Preparando subtítulos",
+    uploading: "Enviando el vídeo a Shotstack Stage",
+    uploading_captions: "Enviando los subtítulos a Shotstack Stage",
+    validating_output: "Comprobando el resultado", interrupted: "Interrumpido",
   };
   return labels[String(status || "").toLowerCase()] || (status ? String(status) : "No disponible");
 }
@@ -162,7 +162,7 @@ function renderLibrary() {
   byId("library-count").textContent = state.library.length ? `${state.library.length} ARCHIVO${state.library.length === 1 ? "" : "S"}` : "0 ARCHIVOS";
   renderSummary();
   if (!state.library.length) {
-    list.innerHTML = `<div class="empty-state"><div class="empty-glyph">▧</div><h3>Tu mesa está vacía</h3><p>${state.libraryLoaded ? "No hay vídeos en el servicio local. Añade un MP4 o MOV para empezar." : "Consulta la biblioteca local o añade un vídeo MP4 o MOV."}</p><button class="outline-button" type="button" data-action="${state.libraryLoaded ? "upload" : "connect"}">${state.libraryLoaded ? "Añadir un vídeo" : "Cargar biblioteca"}</button></div>`;
+    list.innerHTML = `<div class="empty-state"><div class="empty-glyph">▧</div><h3>Tu biblioteca está vacía</h3><p>${state.libraryLoaded ? "Todavía no hay vídeos. Añade un archivo MP4 o MOV para empezar." : "Añade tu primer vídeo para empezar a crear contenido."}</p><button class="outline-button" type="button" data-action="${state.libraryLoaded ? "upload" : "connect"}">${state.libraryLoaded ? "Añadir un vídeo" : "Consultar biblioteca"}</button></div>`;
     return;
   }
   list.innerHTML = state.library.map((item) => {
@@ -193,7 +193,7 @@ function renderSummary() {
   byId("summary-processed").textContent = String(count(processedStatuses));
   byId("summary-errors").textContent = String(count(errorStatuses));
   byId("summary-pending-note").textContent = "Listos o en curso";
-  byId("summary-source").textContent = "Datos del servicio local";
+  byId("summary-source").textContent = "Datos actualizados";
 }
 
 function renderSelectedItem() {
@@ -205,8 +205,8 @@ function renderSelectedItem() {
     video.removeAttribute("src");
     placeholder.hidden = false;
     hideOutput();
-    byId("selected-status").textContent = "NINGÚN ARCHIVO";
-    byId("file-summary").innerHTML = `<div class="summary-empty">Los metadatos del archivo aparecerán aquí cuando selecciones una fuente.</div>`;
+    byId("selected-status").textContent = "NINGÚN VÍDEO";
+    byId("file-summary").innerHTML = `<div class="summary-empty">Los datos del vídeo aparecerán aquí al seleccionarlo.</div>`;
     byId("cost-value").textContent = "Desconocido";
     byId("cost-note").textContent = "Selecciona un vídeo para consultar la estimación disponible.";
     byId("unknown-cost-wrap").hidden = true;
@@ -247,18 +247,18 @@ function renderHealth(health) {
   state.health = health;
   const set = (id, configured) => {
     const el = byId(id);
-    el.textContent = configured === true ? "Presente · no verificada" : configured === false ? "No configurada" : "Desconocido";
+    el.textContent = configured === true ? "Configurada · sin verificar" : configured === false ? "No configurada" : "No disponible";
     el.className = configured === true ? "health-ok" : configured === false ? "health-no" : "health-unknown";
   };
   set("health-openai", health?.openai_key_configured);
   set("health-shotstack", health?.shotstack_key_configured);
   const env = health?.shotstack_environment;
-  byId("health-environment").textContent = env == null || env === "" ? "Desconocido" : String(env);
+  byId("health-environment").textContent = env == null || env === "" ? "No disponible" : String(env);
   const drive = health?.drive_connected;
-  byId("health-drive").textContent = drive === true ? "Conectado" : drive === false ? "No conectado" : "Desconocido";
+  byId("health-drive").textContent = drive === true ? "Conectado" : drive === false ? "No conectado" : "No disponible";
   byId("health-drive").className = drive === true ? "health-ok" : drive === false ? "health-muted" : "health-unknown";
   const connected = Boolean(health);
-  byId("connection-label").textContent = connected ? "Servicio conectado" : "Sin conectar";
+  byId("connection-label").textContent = connected ? "Servicio disponible" : "Sin conexión";
   $(".local-indicator").classList.toggle("connected", connected);
 }
 
@@ -280,14 +280,14 @@ function renderJob(job, sourceName = "") {
   }
   const status = String(job.status || "").toLowerCase();
   const progress = job.progress === null || job.progress === undefined ? Number.NaN : Number(job.progress);
-  const progressText = Number.isFinite(progress) ? `${Math.max(0, Math.min(100, progress))}%` : "Progreso no cuantificado";
+  const progressText = Number.isFinite(progress) ? `${Math.max(0, Math.min(100, progress))}%` : "Avance no disponible";
   const progressMarkup = Number.isFinite(progress)
     ? `<div class="job-progress-track" aria-label="${escapeHtml(progressText)}"><div class="job-progress-fill" style="width:${Math.max(0, Math.min(100, progress))}%"></div></div>`
-    : `<div class="job-progress-unmeasured">El servicio informa la fase, no un porcentaje.</div>`;
+    : `<div class="job-progress-unmeasured">El servicio no informa el porcentaje de avance.</div>`;
   const phase = job.phase ? statusLabel(job.phase) : statusLabel(job.status);
   byId("job-status-tag").textContent = statusLabel(job.status).toLocaleUpperCase("es");
   byId("job-content").innerHTML = `<div class="job-live">
-    <div><strong>${escapeHtml(sourceName || "Trabajo de procesamiento")}</strong><p>${escapeHtml(phase)} · ID ${escapeHtml(job.id ?? "No disponible")}</p>${progressMarkup}</div>
+    <div><strong>${escapeHtml(sourceName || "Procesamiento")}</strong><p>${escapeHtml(phase)} · Identificador ${escapeHtml(job.id ?? "No disponible")}</p>${progressMarkup}</div>
     <span class="job-progress-label">${escapeHtml(progressText)}</span>
     ${job.error ? `<div class="job-error">${escapeHtml(job.error)}</div>` : ""}
   </div>`;
@@ -331,7 +331,7 @@ function updateProcessButton() {
   const itemStatus = String(item?.status || "").toLowerCase();
   const alreadyProcessed = ["completed", "processing", "queued"].includes(itemStatus);
   byId("process-button").disabled = !item || !consentOk || Boolean(busy) || alreadyProcessed;
-  byId("process-hint").textContent = !item ? "Selecciona una fuente antes de continuar." : alreadyProcessed ? (itemStatus === "completed" ? "Este archivo ya tiene un resultado registrado." : "Este archivo ya está en procesamiento.") : !byId("paid-consent").checked ? "Marca la autorización explícita para continuar." : costUnknown && !byId("unknown-cost-consent").checked ? "Confirma también que aceptas el coste desconocido." : busy ? "Hay un trabajo en curso." : "Se enviará el vídeo a OpenAI y Shotstack Stage.";
+  byId("process-hint").textContent = !item ? "Selecciona un vídeo antes de continuar." : alreadyProcessed ? (itemStatus === "completed" ? "Este archivo ya tiene un resultado registrado." : "Este archivo ya está en procesamiento.") : !byId("paid-consent").checked ? "Marca la autorización explícita para continuar." : costUnknown && !byId("unknown-cost-consent").checked ? "Confirma también que aceptas el coste desconocido." : busy ? "Hay un trabajo en curso." : "Se enviará el vídeo a OpenAI y Shotstack Stage.";
 }
 
 function renderStyle(style) {
@@ -350,7 +350,7 @@ function renderStyle(style) {
   byId("style-fields").disabled = false;
   byId("style-fields").hidden = false;
   byId("save-style-button").disabled = false;
-  byId("style-message").textContent = "Configuración real cargada. Puedes editarla y guardar los cambios.";
+  byId("style-message").textContent = "Estilo cargado. Puedes ajustar los valores y guardar los cambios.";
 }
 
 function collectStyle() {
@@ -382,14 +382,23 @@ function collectStyle() {
 
 async function refreshWorkspace() {
   byId("refresh-button").disabled = true;
-  byId("refresh-button").textContent = "Consultando…";
+  byId("refresh-button").textContent = "Actualizando…";
   try {
     const results = await Promise.allSettled([loadHealth(), loadLibrary()]);
     const healthResult = results[0];
     const libraryResult = results[1];
     const errors = [];
     if (healthResult.status === "fulfilled") renderHealth(healthResult.value);
-    else errors.push(`Estado del servicio: ${healthResult.reason.message}`);
+    else {
+      byId("connection-label").textContent = "No se pudo comprobar";
+      $(".local-indicator").classList.remove("connected");
+      for (const id of ["health-openai", "health-shotstack", "health-environment", "health-drive"]) {
+        const status = byId(id);
+        status.textContent = "No disponible";
+        status.className = "health-unknown";
+      }
+      errors.push(`No se pudo consultar el estado del servicio: ${healthResult.reason.message}`);
+    }
     if (libraryResult.status === "fulfilled") {
       state.library = libraryResult.value;
       state.libraryLoaded = true;
@@ -398,9 +407,14 @@ async function refreshWorkspace() {
       }
       renderLibrary();
       renderSelectedItem();
-    } else errors.push(`Biblioteca: ${libraryResult.reason.message}`);
+    } else {
+      byId("library-count").textContent = "No se pudo consultar";
+      byId("summary-pending-note").textContent = "No se pudo consultar";
+      byId("summary-source").textContent = "No se pudo consultar la biblioteca";
+      errors.push(`No se pudo consultar la biblioteca: ${libraryResult.reason.message}`);
+    }
     if (errors.length) displayToast(errors.join(" · "), true);
-    else displayToast(state.library.length ? "Estado y biblioteca actualizados." : "Biblioteca vacía: el servicio no tiene vídeos disponibles.");
+    else displayToast(state.library.length ? "Estado y biblioteca actualizados." : "Tu biblioteca está vacía. Añade un vídeo para empezar.");
   } finally {
     byId("refresh-button").disabled = false;
     byId("refresh-button").innerHTML = 'Actualizar datos <span>↻</span>';
@@ -414,8 +428,8 @@ async function pollJob(jobId, sourceName) {
   } catch (error) {
     clearInterval(state.pollTimer);
     state.pollTimer = null;
-    byId("job-content").insertAdjacentHTML("beforeend", `<div class="job-error">No se pudo consultar el estado del trabajo: ${escapeHtml(error.message)}. Usa «Actualizar datos» para volver a consultar la biblioteca.</div>`);
-    displayToast(`Error al consultar el trabajo: ${error.message}`, true);
+    byId("job-content").insertAdjacentHTML("beforeend", `<div class="job-error">No se pudo consultar el estado del procesamiento: ${escapeHtml(error.message)}. Usa «Actualizar datos» para volver a intentarlo.</div>`);
+    displayToast(`No se pudo consultar el procesamiento: ${error.message}`, true);
   }
 }
 
@@ -458,7 +472,7 @@ byId("video-input").addEventListener("change", async (event) => {
   }
   const message = byId("upload-message");
   message.hidden = false;
-  message.textContent = `Validando y guardando ${file.name} en el entorno local…`;
+  message.textContent = `Guardando ${file.name} en la aplicación…`;
   try {
     const uploaded = await uploadVideo(file);
     const returnedId = uploaded?.id ?? uploaded?.item?.id ?? uploaded?.source_id;
@@ -468,8 +482,8 @@ byId("video-input").addEventListener("change", async (event) => {
     state.selectedId = returnedId ?? freshLibrary.find((item) => item.filename === file.name || item.original_filename === file.name)?.id ?? freshLibrary[0]?.id ?? null;
     renderLibrary();
     renderSelectedItem();
-    message.textContent = "Carga local completada. Revisa los metadatos y la estimación antes de procesar.";
-    displayToast("Vídeo recibido por el servicio local.");
+    message.textContent = "Vídeo guardado. Revisa sus datos y el coste estimado antes de iniciar el procesamiento.";
+    displayToast("Vídeo añadido a la biblioteca.");
   } catch (error) {
     message.textContent = `No se pudo cargar el vídeo: ${error.message}`;
     displayToast(`Error de carga: ${error.message}`, true);
@@ -515,12 +529,12 @@ byId("process-button").addEventListener("click", async () => {
 byId("load-style-button").addEventListener("click", async () => {
   const button = byId("load-style-button");
   button.disabled = true;
-  byId("style-message").textContent = "Consultando la configuración real…";
+    byId("style-message").textContent = "Consultando el estilo…";
   try {
     renderStyle(await loadStyle());
   } catch (error) {
-    byId("style-message").textContent = `No se pudo cargar el estilo: ${error.message}`;
-    displayToast(`Error al cargar el estilo: ${error.message}`, true);
+    byId("style-message").textContent = `No se pudo consultar el estilo: ${error.message}`;
+    displayToast(`No se pudo consultar el estilo: ${error.message}`, true);
   } finally {
     button.disabled = false;
   }
@@ -528,7 +542,7 @@ byId("load-style-button").addEventListener("click", async () => {
 byId("style-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   if (!state.styleLoaded) {
-    displayToast("Carga primero la configuración real antes de guardar.", true);
+    displayToast("Consulta primero el estilo antes de guardar los cambios.", true);
     return;
   }
   const button = byId("save-style-button");
@@ -541,7 +555,7 @@ byId("style-form").addEventListener("submit", async (event) => {
     state.libraryLoaded = true;
     renderLibrary();
     renderSelectedItem();
-    byId("style-message").textContent = "Cambios guardados en la configuración del servicio.";
+    byId("style-message").textContent = "Cambios guardados.";
     displayToast("Estilo visual guardado.");
   } catch (error) {
     byId("style-message").textContent = `No se pudieron guardar los cambios: ${error.message}`;
