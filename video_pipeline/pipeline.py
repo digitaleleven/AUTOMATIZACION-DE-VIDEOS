@@ -22,7 +22,11 @@ from .media import (
 )
 from .edit_plan import edited_duration, map_subtitles_to_output, normalize_edit_plan
 from .models import SubtitleSegment, WordTiming
-from .shotstack import ShotstackClient, build_edit_payload
+from .shotstack import (
+    ShotstackClient,
+    ShotstackSubmissionUnknownError,
+    build_edit_payload,
+)
 from .state import ProcessingLedger
 from .style import VideoStyle, load_video_style
 from .subtitles import build_subtitle_segments, captions_to_srt
@@ -619,7 +623,14 @@ def process_local_video(
             },
         }
     except Exception as exc:
-        ledger.mark_failed(source_hash, f"{type(exc).__name__}: {exc}")
+        if isinstance(exc, ShotstackSubmissionUnknownError):
+            ledger.update(
+                source_hash,
+                status="submission_unknown",
+                error=f"{type(exc).__name__}: {exc}"[:1600],
+            )
+        else:
+            ledger.mark_failed(source_hash, f"{type(exc).__name__}: {exc}")
         raise
     finally:
         if lock_path is not None:

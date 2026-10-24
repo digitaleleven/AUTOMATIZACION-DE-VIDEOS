@@ -114,6 +114,11 @@ class ProcessingLedger:
                 raise DuplicateProcessingError(
                     f"This video was already processed. Existing output: {job.get('output_path')}"
                 )
+            if job["status"] == "submission_unknown":
+                raise RetryNotAllowedError(
+                    "Shotstack may have accepted the previous render request. "
+                    "Reconcile its remote status before any retry."
+                )
             if allow_third_attempt and job["status"] != "failed":
                 raise RetryNotAllowedError("The controlled third attempt requires a failed prior attempt.")
             try:

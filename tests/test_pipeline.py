@@ -1,3 +1,4 @@
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -25,6 +26,7 @@ from video_pipeline.pipeline import (
 from video_pipeline.shotstack import (
     ShotstackClient,
     ShotstackError,
+    ShotstackSubmissionUnknownError,
     build_edit_payload,
     validate_shotstack_payload,
 )
@@ -379,6 +381,81 @@ class ShotstackPayloadTests(unittest.TestCase):
         self.assertIn("Found 3 validation errors", diagnostic)
         self.assertIn("[URL redacted]", diagnostic)
         self.assertNotIn("private-value", diagnostic)
+
+    def test_shotstack_render_submission_parses_official_response_envelope(self):
+        session = Mock()
+        submit_response = Mock()
+        submit_response.status_code = 201
+        submit_response.raise_for_status.return_value = None
+        submit_response.json.return_value = {
+            "success": True,
+            "message": "Created",
+            "response": {
+                "message": "Render Successfully Queued",
+                "id": "stage-render-id",
+            },
+        }
+        status_response = Mock()
+        status_response.raise_for_status.return_value = None
+        status_response.json.return_value = {
+            "success": True,
+            "message": "OK",
+            "response": {
+                "status": "done",
+                "id": "stage-render-id",
+                "url": "https://media.example/render.mp4",
+            },
+        }
+        session.post.return_value = submit_response
+        session.get.return_value = status_response
+        client = ShotstackClient(api_key="test-only-not-a-real-key", session=session)
+
+        render_id = client.submit_render({"timeline": {"tracks": []}})
+        status, url = client.render_status(render_id)
+
+        self.assertEqual(render_id, "stage-render-id")
+        self.assertEqual(status, "done")
+        self.assertEqual(url, "https://media.example/render.mp4")
+        self.assertIn("/edit/stage/render", session.post.call_args.args[0])
+        self.assertIn("/edit/stage/render/stage-render-id", session.get.call_args.args[0])
+
+    def test_shotstack_render_submission_keeps_legacy_data_id_compatibility(self):
+        session = Mock()
+        response = Mock()
+        response.status_code = 200
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "data": {
+                "id": "legacy-render-id",
+                "attributes": {"status": "queued"},
+            }
+        }
+        session.post.return_value = response
+        client = ShotstackClient(api_key="test-only-not-a-real-key", session=session)
+
+        self.assertEqual(client.submit_render({"timeline": {"tracks": []}}), "legacy-render-id")
+
+    def test_missing_render_id_is_recorded_as_ambiguous_without_provider_values(self):
+        session = Mock()
+        response = Mock()
+        response.status_code = 201
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "success": True,
+            "message": "Created; token=must-not-leak",
+            "response": {"message": "Queued", "status": "queued"},
+        }
+        session.post.return_value = response
+        client = ShotstackClient(api_key="test-only-not-a-real-key", session=session)
+
+        with self.assertLogs("video_pipeline.shotstack", level="ERROR") as captured:
+            with self.assertRaises(ShotstackSubmissionUnknownError) as raised:
+                client.submit_render({"timeline": {"tracks": []}})
+        diagnostic = str(raised.exception) + "\n" + "\n".join(captured.output)
+        self.assertIn("HTTP 201", diagnostic)
+        self.assertIn("response.status", diagnostic)
+        self.assertIn("may have been accepted", diagnostic)
+        self.assertNotIn("must-not-leak", diagnostic)
 
     def test_subtitles_shift_with_cuts_and_do_not_extend_into_removed_ranges(self):
         cuts = [{"start_seconds": 4, "end_seconds": 5}]
@@ -825,6 +902,62 @@ class LocalMediaTests(unittest.TestCase):
             self.assertTrue(Path(result["output"]).name.endswith("_vertical_edited.mp4"))
 
 
+class PipelineSubmissionStateTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg tools are required")
+    def test_ambiguous_shotstack_submission_is_persisted_and_not_retried(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.mp4"
+            subprocess.run(
+                [
+                    "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+                    "-f", "lavfi", "-i", "color=c=blue:s=360x640:d=1:r=30",
+                    "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                    "-shortest", str(source),
+                ],
+                check=True,
+                capture_output=True,
+                timeout=30,
+            )
+
+            class AmbiguousShotstackStub:
+                def __init__(self):
+                    self.submit_calls = 0
+
+                def upload_local_video(self, _path):
+                    return "https://media.example/ingested.mp4"
+
+                def submit_render(self, _payload):
+                    self.submit_calls += 1
+                    raise ShotstackSubmissionUnknownError(
+                        "HTTP 201 without an ID; the remote request may have been accepted."
+                    )
+
+            renderer = AmbiguousShotstackStub()
+            state_path = root / "state.sqlite3"
+            kwargs = {
+                "paid_api_authorized": True,
+                "upload_to_drive": False,
+                "shotstack_client": renderer,
+                "config": PipelineConfig(shotstack_environment="stage"),
+                "style": VideoStyle(),
+                "subtitle_mode": "none",
+                "state_db_path": state_path,
+            }
+            with self.assertRaises(ShotstackSubmissionUnknownError):
+                process_local_video(source, root / "outputs", **kwargs)
+
+            ledger = ProcessingLedger(state_path)
+            state = ledger.get(hashlib.sha256(source.read_bytes()).hexdigest())
+            self.assertEqual(state["status"], "submission_unknown")
+            self.assertEqual(state["attempts"], 1)
+
+            with self.assertRaisesRegex(RetryNotAllowedError, "Reconcile its remote status"):
+                process_local_video(source, root / "outputs", retry_failed=True, **kwargs)
+            self.assertEqual(renderer.submit_calls, 1)
+
+
 class StateAndStyleTests(unittest.TestCase):
     def test_ledger_caps_normal_retry_and_requires_explicit_third_attempt_gate(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -857,6 +990,25 @@ class StateAndStyleTests(unittest.TestCase):
             ledger.mark_completed("hash-1", "outputs/video.mp4")
             with self.assertRaises(DuplicateProcessingError):
                 ledger.claim("hash-1", "input.mp4", retry_failed=True)
+
+    def test_ledger_blocks_retry_when_render_submission_outcome_is_unknown(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ledger = ProcessingLedger(Path(temp_dir) / "state.sqlite3")
+            ledger.claim("unknown-submit", "input.mp4")
+            ledger.update(
+                "unknown-submit",
+                status="submission_unknown",
+                error="HTTP 201 response did not include an ID",
+            )
+
+            with self.assertRaisesRegex(RetryNotAllowedError, "Reconcile its remote status"):
+                ledger.claim(
+                    "unknown-submit",
+                    "input.mp4",
+                    retry_failed=True,
+                    max_attempts=3,
+                    allow_third_attempt=True,
+                )
 
     def test_ledger_does_not_reuse_provider_assets_for_different_edit_settings(self):
         with tempfile.TemporaryDirectory() as temp_dir:

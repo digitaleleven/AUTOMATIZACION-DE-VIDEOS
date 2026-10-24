@@ -33,6 +33,52 @@ class ShotstackError(RuntimeError):
     """Raised for Shotstack API, ingestion, render, or download failures."""
 
 
+class ShotstackSubmissionUnknownError(ShotstackError):
+    """The render POST returned JSON without an ID, so acceptance is uncertain."""
+
+
+def _render_response_resource(payload: dict[str, Any]) -> dict[str, Any]:
+    """Read Shotstack's documented response envelope and the legacy JSON:API envelope."""
+    response = payload.get("response")
+    if isinstance(response, dict):
+        return response
+
+    data = payload.get("data")
+    if isinstance(data, dict):
+        attributes = data.get("attributes")
+        if isinstance(attributes, dict):
+            resource = dict(attributes)
+            if data.get("id") is not None:
+                resource.setdefault("id", data["id"])
+            return resource
+        return data
+    return {}
+
+
+def _safe_response_field_paths(payload: dict[str, Any]) -> str:
+    """Describe response keys without logging any provider-supplied values."""
+    paths: list[str] = []
+
+    def visit(value: Any, prefix: str = "", depth: int = 0) -> None:
+        if len(paths) >= 24 or depth > 3:
+            return
+        if isinstance(value, dict):
+            for key, child in list(value.items())[:16]:
+                safe_key = re.sub(r"[^A-Za-z0-9_-]+", "_", str(key))[:40] or "field"
+                path = f"{prefix}.{safe_key}" if prefix else safe_key
+                if path not in paths:
+                    paths.append(path)
+                if isinstance(child, (dict, list)):
+                    visit(child, path, depth + 1)
+                if len(paths) >= 24:
+                    break
+        elif isinstance(value, list) and value:
+            visit(value[0], f"{prefix}[0]", depth + 1)
+
+    visit(payload)
+    return ", ".join(paths) if paths else "<empty object>"
+
+
 def _redact_provider_text(value: Any, limit: int = 300) -> str:
     text = re.sub(r"[\x00-\x1f\x7f]+", " ", str(value))
     text = re.sub(r"https?://[^\s\"'<>]+", "[URL redacted]", text, flags=re.IGNORECASE)
@@ -489,10 +535,23 @@ class ShotstackClient:
             )
         except requests.RequestException as exc:
             raise ShotstackError("Could not submit the Shotstack render.") from None
-        data = self._json_response(response, "render submission").get("data", {})
-        render_id = data.get("id")
-        if not render_id:
-            raise ShotstackError("Shotstack render response did not include a render ID.")
+        response_payload = self._json_response(response, "render submission")
+        render_id = _render_response_resource(response_payload).get("id")
+        if not isinstance(render_id, (str, int)) or isinstance(render_id, bool) or not str(render_id).strip():
+            status_code = getattr(response, "status_code", None)
+            safe_status = status_code if isinstance(status_code, int) and not isinstance(status_code, bool) else "unknown"
+            field_paths = _safe_response_field_paths(response_payload)
+            logger.error(
+                "Shotstack render submission returned HTTP %s without a recognized render ID; "
+                "response fields: %s",
+                safe_status,
+                field_paths,
+            )
+            raise ShotstackSubmissionUnknownError(
+                f"Shotstack render submission returned HTTP {safe_status} without a recognized render ID "
+                f"(response fields: {field_paths}). The request may have been accepted; "
+                "do not retry until its remote status is reconciled."
+            )
         return str(render_id)
 
     def wait_for_render(self, render_id: str) -> str:
@@ -510,8 +569,10 @@ class ShotstackClient:
 
     def render_status(self, render_id: str) -> tuple[str, str | None]:
         payload = self._get_json(f"{self.edit_base}/render/{render_id}", "render status")
-        attributes = payload.get("data", {}).get("attributes", {})
-        return str(attributes.get("status") or "unknown"), attributes.get("url")
+        resource = _render_response_resource(payload)
+        status = resource.get("status")
+        url = resource.get("url")
+        return str(status or "unknown"), url if isinstance(url, str) else None
 
     def download_render(self, url: str, destination: str | Path) -> Path:
         target = Path(destination)
