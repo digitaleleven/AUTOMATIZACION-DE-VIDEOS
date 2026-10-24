@@ -112,3 +112,73 @@ mtime_ms = 1792867642932
 storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/9564d5f3-bc79-4f17-97d6-1f5e6cb45626/5801df10-1e5f-4bc0-be8b-eb659cd62b35"
 storage_version_token = "1792867737543614"
 content_type = "image/png"
+
+[[outputs]]
+id = "9A6y9YVy7hP4JxXN86zD1"
+uri = "file://generated-artifacts/drive-inspection/q03b/hdr-sdr-preview/compare-8s.png"
+type = "image"
+title = "HDR → SDR, muestra a 8 s"
+description = "Hable a la izquierda y Mobius a la derecha; fotograma de la persona."
+logical_id = "73ad8741-8ed6-4420-a68b-608fb735293e"
+content_hash = "sha256:9e6984592e9737c346dd6d741db010fff9199c08ae156273f2fb7e12e9ca5559"
+size = 989718
+mtime_ms = 1792870005943
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/73ad8741-8ed6-4420-a68b-608fb735293e/0760b06c-2632-43d9-b81f-5fa1e98c8025"
+storage_version_token = "1792870200525484"
+content_type = "image/png"
+
+[[outputs]]
+id = "yBF2YSPfxWe2sMc9UZVnV"
+uri = "file://generated-artifacts/drive-inspection/q03b/hdr-sdr-preview/compare-25s.png"
+type = "image"
+title = "HDR → SDR, muestra a 25 s"
+description = "Hable a la izquierda y Mobius a la derecha; muestra de aplicación del producto."
+logical_id = "51e4d12d-308f-4ef4-aec5-54e530342a99"
+content_hash = "sha256:8fc2ab6d02096a487688fb50eb8d51a5615a682d3b49a80cfc7ca568070d057c"
+size = 966242
+mtime_ms = 1792870006813
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/51e4d12d-308f-4ef4-aec5-54e530342a99/80126749-b9f4-4666-a95f-af0374b8288f"
+storage_version_token = "1792870201277912"
+content_type = "image/png"
+
+[[outputs]]
+id = "IsKV6bFZsX28VWQ9xjFFk"
+uri = "file://generated-artifacts/drive-inspection/q03b/hdr-sdr-preview/compare-49s.png"
+type = "image"
+title = "HDR → SDR, muestra a 49 s"
+description = "Hable a la izquierda y Mobius a la derecha; fotograma de la recomendación final."
+logical_id = "d6140cbd-b288-4c6c-97cf-9aab6ac7ec00"
+content_hash = "sha256:b276a539c348bccc037d9f997b792c74aaeaf0ad473ebeda21a7f2a14caf0699"
+size = 999182
+mtime_ms = 1792870007642
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/d6140cbd-b288-4c6c-97cf-9aab6ac7ec00/5641675e-c781-43dd-acf0-80f5ad56f819"
+storage_version_token = "1792870202023773"
+content_type = "image/png"
+
+[[outputs]]
+id = "O22zBEf-oIShi7wouj8C-"
+uri = "file://generated-artifacts/drive-inspection/q03b/hailey-bieber-review.wav"
+type = "audio"
+title = "Audio para revisar ‘Hailey Bieber’"
+description = "Recorte local de la pista AAC principal; intervalo útil para escuchar el nombre sin volver a transcribir."
+logical_id = "0c2ccb79-3f01-4329-b4f9-d27799c89d83"
+content_hash = "sha256:9809b3705220b5b942b1dccda6207564f1df2a105dcd5031a360fbd510d9fb25"
+size = 288078
+mtime_ms = 1792869960581
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/0c2ccb79-3f01-4329-b4f9-d27799c89d83/968d4089-c278-4f08-91a3-ea9bd20b7d41"
+storage_version_token = "1792870202824440"
+content_type = "audio/wav"
+
+[[outputs]]
+id = "w_zeKoNr8taepbAD5N32N"
+uri = "file://generated-artifacts/drive-inspection/q03b/glazing-milk-review.wav"
+type = "audio"
+title = "Audio para revisar ‘Glazing Milk’"
+description = "Recorte local de la pista AAC principal; permite escuchar la frase y revisar la separación entre palabras."
+logical_id = "81b17fd5-672c-42ce-8e7e-4666c430de92"
+content_hash = "sha256:641d04215b4fa4a47cbb4ac08404e9a766d479a1bff8b7e7b8d8be55a608e36f"
+size = 268878
+mtime_ms = 1792869961737
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/81b17fd5-672c-42ce-8e7e-4666c430de92/aa215110-3e93-495c-b2b7-fd26eaff8bf0"
+storage_version_token = "1792870203586297"
+content_type = "audio/wav"
