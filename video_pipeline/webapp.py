@@ -639,7 +639,7 @@ font-weight:750}} button:disabled{{opacity:.5;cursor:not-allowed}} .error{{color
 code{{font-family:ui-monospace,monospace;font-size:.92em}}
 </style></head><body><main>
 <div class="brand">MATRIX MOTION</div><div class="sub">VIDEO AUTOMATION STUDIO</div>
-<h1>Acceso de propietaria</h1><p>Inicia sesión para abrir tu espacio de trabajo.</p>
+<h1>Acceso al panel</h1><p>Inicia sesión para abrir tu espacio de trabajo.</p>
 {setup_message}{error_message}
 <form method="post" action="/login" autocomplete="on">
 <input type="hidden" name="csrf_token" value="{html.escape(challenge, quote=True)}">
