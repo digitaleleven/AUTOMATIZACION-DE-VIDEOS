@@ -31,6 +31,7 @@ class VideoPanelApiTests(unittest.TestCase):
                 "GOOGLE_OAUTH_CLIENT_ID": "",
                 "GOOGLE_OAUTH_CLIENT_SECRET": "",
                 "GOOGLE_OAUTH_REDIRECT_URI": "",
+                "GOOGLE_OAUTH_ALLOWED_EMAIL": "",
             },
         )
         self.env_patcher.start()
@@ -762,6 +763,7 @@ class VideoPanelApiTests(unittest.TestCase):
                 client_secret="test-client-secret",
                 redirect_uri="https://matrix.example.test/oauth/google/callback",
                 session_secret=os.environ["SESSION_SECRET"],
+                allowed_email="automation@gmail.com",
             ),
             self.panel.drive_store,
         )
@@ -806,6 +808,86 @@ class VideoPanelApiTests(unittest.TestCase):
         )
         self.assertEqual(status, 400)
         self.assertNotIn("unused", body.decode("utf-8"))
+
+    def test_drive_write_test_route_requires_owner_csrf_and_explicit_confirmation(self):
+        with patch.object(
+            self.panel,
+            "test_drive_output_write",
+            return_value={
+                "created_and_deleted": True,
+                "mime_type": "video/mp4",
+                "destination": "02_PROCESADOS",
+            },
+        ) as write_probe:
+            status, _, _ = self.request(
+                "POST",
+                "/api/drive/test-write",
+                body=b'{"confirm":true}',
+                headers={"Content-Type": "application/json"},
+                authenticated=False,
+            )
+            self.assertEqual(status, 401)
+
+            status, _, _ = self.request(
+                "POST",
+                "/api/drive/test-write",
+                body=b'{"confirm":false}',
+                headers={"Content-Type": "application/json"},
+            )
+            self.assertEqual(status, 400)
+            write_probe.assert_not_called()
+
+            status, _, body = self.request(
+                "POST",
+                "/api/drive/test-write",
+                body=b'{"confirm":true}',
+                headers={"Content-Type": "application/json"},
+            )
+            self.assertEqual(status, 200)
+            self.assertTrue(json.loads(body.decode("utf-8"))["created_and_deleted"])
+            write_probe.assert_called_once_with()
+
+    def test_write_probe_uploads_and_deletes_only_its_synthetic_mp4_with_fake_drive(self):
+        class FakeDriveClient:
+            def __init__(self):
+                self.uploaded_name = None
+                self.deleted_id = None
+
+            def upload_new_file(self, path, *, folder_id, app_properties):
+                path = Path(path)
+                self.uploaded_name = path.name
+                self.assert_valid = path.is_file() and path.stat().st_size > 0
+                self.assert_folder = folder_id
+                self.assert_source = app_properties["matrixMotionSource"]
+                return {
+                    "id": "f" * 20,
+                    "name": path.name,
+                    "mimeType": "video/mp4",
+                    "parents": [folder_id],
+                }
+
+            def delete_created_file(self, file_id):
+                self.deleted_id = file_id
+
+        fake = FakeDriveClient()
+        self.panel.drive_oauth = SimpleNamespace(
+            status=lambda: {
+                "ready": True,
+                "authorized": True,
+                "identity_verified": True,
+            }
+        )
+        self.panel.drive_client = fake
+        result = self.panel.test_drive_output_write()
+        self.assertTrue(result["created_and_deleted"])
+        self.assertEqual(result["mime_type"], "video/mp4")
+        self.assertEqual(result["destination"], "02_PROCESADOS")
+        self.assertTrue(fake.uploaded_name.startswith("matrix-motion-write-test-"))
+        self.assertTrue(fake.uploaded_name.endswith(".mp4"))
+        self.assertTrue(fake.assert_valid)
+        self.assertEqual(fake.assert_folder, "1J6Z0bsWb2dQNKY4hyq4xl7tigtm_pQKN")
+        self.assertRegex(fake.assert_source, r"^[a-f0-9]{64}$")
+        self.assertEqual(fake.deleted_id, "f" * 20)
 
     def test_drive_upload_retry_reuses_render_without_starting_pipeline(self):
         source_id = "a" * 32

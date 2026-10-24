@@ -14,3 +14,9 @@ La propietaria aprobó como objetivo de producto la detección automática de v�
 **Why:** la auditoría separa la aprobación del objetivo de automatización de las decisiones de seguridad y ejecución que aún requieren aprobación.
 
 **How to apply:** diseña la propuesta actual para la detección automática, pero espera aprobación explícita antes de implementar o cambiar permisos; conserva una frontera proveedor-adaptador para futuras modalidades sin introducir multiusuario ahora.
+
+La usuaria decidió conectar una segunda cuenta Gmail existente y no la cuenta principal, para que la documentación profesional o confidencial de la principal no quede expuesta a MATRIX MOTION. La identidad OAuth debe coincidir exactamente con el correo secundario configurado antes de guardar o usar tokens.
+
+**Why:** separar la identidad de automatización evita que una selección accidental de la cuenta principal autorice el panel.
+
+**How to apply:** exigir verificación server-side del correo de Google y fallar cerrado si falta la cuenta permitida; no registrar ni mostrar el correo o tokens, y no ampliar scopes sin nueva autorización.

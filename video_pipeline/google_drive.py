@@ -32,10 +32,15 @@ logger = logging.getLogger(__name__)
 
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
+REVOKE_URL = "https://oauth2.googleapis.com/revoke"
+USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"
 DRIVE_API = "https://www.googleapis.com/drive/v3"
 SCOPE_DRIVE_READONLY = "https://www.googleapis.com/auth/drive.readonly"
 SCOPE_DRIVE_FILE = "https://www.googleapis.com/auth/drive.file"
-DRIVE_SCOPES = (SCOPE_DRIVE_READONLY, SCOPE_DRIVE_FILE)
+SCOPE_OPENID = "openid"
+SCOPE_EMAIL = "email"
+DRIVE_SCOPES = (SCOPE_DRIVE_READONLY, SCOPE_DRIVE_FILE, SCOPE_OPENID, SCOPE_EMAIL)
+DRIVE_ACCESS_SCOPES = (SCOPE_DRIVE_READONLY, SCOPE_DRIVE_FILE)
 GOOGLE_DOC_MIME = "application/vnd.google-apps.document"
 VIDEO_EXTENSIONS = {".mp4", ".mov"}
 MAX_DRIVE_VIDEO_BYTES = 2 * 1024 * 1024 * 1024
@@ -54,6 +59,7 @@ class DriveOAuthConfig:
     client_secret: str
     redirect_uri: str
     session_secret: str
+    allowed_email: str = ""
 
     @classmethod
     def from_environment(cls) -> "DriveOAuthConfig":
@@ -64,6 +70,7 @@ class DriveOAuthConfig:
             client_secret=os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", "").strip(),
             redirect_uri=os.getenv("GOOGLE_OAUTH_REDIRECT_URI", "").strip(),
             session_secret=os.getenv("SESSION_SECRET", ""),
+            allowed_email=os.getenv("GOOGLE_OAUTH_ALLOWED_EMAIL", "").strip(),
         )
 
     @property
@@ -77,6 +84,10 @@ class DriveOAuthConfig:
             missing.append("GOOGLE_OAUTH_REDIRECT_URI")
         if not self.session_secret:
             missing.append("SESSION_SECRET")
+        if not self.allowed_email:
+            missing.append("GOOGLE_OAUTH_ALLOWED_EMAIL")
+        elif not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", self.allowed_email):
+            missing.append("GOOGLE_OAUTH_ALLOWED_EMAIL (formato no válido)")
         try:
             redirect = urlsplit(self.redirect_uri)
             _ = redirect.port
@@ -309,13 +320,28 @@ class GoogleDriveOAuth:
 
     def status(self) -> dict[str, Any]:
         bundle = self.store.token_bundle()
-        authorized = bool(bundle and bundle.get("refresh_token"))
-        verified_at = bundle.get("last_verified_at") if bundle else None
+        stored_email = str(bundle.get("account_email") or "").strip().casefold() if bundle else ""
+        allowed_email = self.config.allowed_email.strip().casefold()
+        identity_verified = bool(
+            stored_email
+            and allowed_email
+            and hmac.compare_digest(stored_email, allowed_email)
+            and bundle.get("identity_verified_at")
+        )
+        authorized = bool(bundle and bundle.get("refresh_token") and identity_verified)
+        verified_at = bundle.get("last_verified_at") if authorized and bundle else None
         return {
             "enabled": self.config.enabled,
             "configured": not self.config.missing,
             "ready": self.config.ready,
             "authorized": authorized,
+            "identity_verified": identity_verified,
+            "identity_mismatch": bool(
+                bundle
+                and bundle.get("refresh_token")
+                and allowed_email
+                and not identity_verified
+            ),
             "verified": bool(verified_at),
             "last_verified_at": verified_at,
             "connected": bool(verified_at),
@@ -328,6 +354,23 @@ class GoogleDriveOAuth:
         if not self.config.ready:
             raise GoogleDriveError(
                 "La conexión de Drive sigue desactivada o falta su configuración. No se inició OAuth."
+            )
+
+    def _revoke_unaccepted_grant(self, payload: dict[str, Any]) -> None:
+        token = payload.get("refresh_token") or payload.get("access_token")
+        if not token:
+            return
+        try:
+            response = self.http.post(
+                REVOKE_URL,
+                data={"token": str(token)},
+                timeout=20,
+            )
+            response.raise_for_status()
+        except Exception as exc:
+            logger.warning(
+                "Could not revoke an unaccepted Google OAuth grant (%s).",
+                type(exc).__name__,
             )
 
     def authorization_url(self) -> tuple[str, str]:
@@ -344,7 +387,7 @@ class GoogleDriveOAuth:
             "response_type": "code",
             "scope": " ".join(DRIVE_SCOPES),
             "access_type": "offline",
-            "prompt": "consent",
+            "prompt": "select_account consent",
             "include_granted_scopes": "false",
             "state": state,
             "code_challenge": challenge,
@@ -380,24 +423,63 @@ class GoogleDriveOAuth:
 
         if not isinstance(payload, dict) or not payload.get("access_token"):
             raise GoogleDriveError("Google no devolvió un token de acceso válido.")
-        old_bundle = self.store.token_bundle() or {}
-        refresh_token = payload.get("refresh_token") or old_bundle.get("refresh_token")
-        if not refresh_token:
-            raise GoogleDriveError(
-                "Google no devolvió un refresh token. Revoca el acceso anterior en Google y vuelve a conectar."
-            )
         granted_scopes = payload.get("scope")
         if granted_scopes:
             actual = set(str(granted_scopes).split())
-            if not set(DRIVE_SCOPES).issubset(actual):
+            if not set(DRIVE_ACCESS_SCOPES).issubset(actual):
+                self._revoke_unaccepted_grant(payload)
                 raise GoogleDriveError(
-                    "Google no concedió todos los permisos configurados; no se guardó la conexión."
+                    "Google no concedió los permisos de Drive configurados; no se guardó la conexión."
                 )
+        try:
+            identity_response = self.http.get(
+                USERINFO_URL,
+                headers={"Authorization": f"Bearer {payload['access_token']}"},
+                timeout=20,
+            )
+            identity_response.raise_for_status()
+            identity = identity_response.json()
+        except Exception as exc:
+            logger.warning("Google OAuth identity verification failed (%s)", type(exc).__name__)
+            self._revoke_unaccepted_grant(payload)
+            raise GoogleDriveError(
+                "Google no pudo verificar la identidad autorizada. No se guardó la conexión."
+            ) from exc
+        if not isinstance(identity, dict):
+            identity = {}
+        account_email = str(identity.get("email") or "").strip().casefold()
+        if (
+            not account_email
+            or identity.get("email_verified") is not True
+            or not hmac.compare_digest(account_email, self.config.allowed_email.strip().casefold())
+        ):
+            self._revoke_unaccepted_grant(payload)
+            raise GoogleDriveError(
+                "La cuenta seleccionada no coincide con la cuenta secundaria autorizada. No se guardó la conexión."
+            )
+        old_bundle = self.store.token_bundle() or {}
+        old_email = str(old_bundle.get("account_email") or "").strip().casefold()
+        same_account = bool(
+            old_email
+            and hmac.compare_digest(old_email, account_email)
+            and old_bundle.get("identity_verified_at")
+        )
+        refresh_token = payload.get("refresh_token") or (
+            old_bundle.get("refresh_token") if same_account else None
+        )
+        if not refresh_token:
+            self._revoke_unaccepted_grant(payload)
+            raise GoogleDriveError(
+                "Google no devolvió un refresh token para la cuenta secundaria. "
+                "Revoca el acceso anterior de esa cuenta y vuelve a conectar."
+            )
         bundle = {
             "access_token": payload["access_token"],
             "refresh_token": refresh_token,
             "expires_at": time.time() + max(0, int(payload.get("expires_in", 3600))),
             "scopes": granted_scopes.split() if granted_scopes else None,
+            "account_email": account_email,
+            "identity_verified_at": time.time(),
         }
         self.store.save_token_bundle(bundle)
 
@@ -406,6 +488,17 @@ class GoogleDriveOAuth:
         bundle = self.store.token_bundle()
         if not bundle or not bundle.get("refresh_token"):
             raise GoogleDriveError("Google Drive no está conectado.")
+        stored_email = str(bundle.get("account_email") or "").strip().casefold()
+        allowed_email = self.config.allowed_email.strip().casefold()
+        if (
+            not stored_email
+            or not allowed_email
+            or not bundle.get("identity_verified_at")
+            or not hmac.compare_digest(stored_email, allowed_email)
+        ):
+            raise GoogleDriveError(
+                "La conexión guardada no pertenece a la cuenta secundaria autorizada. Vuelve a conectar la cuenta correcta."
+            )
         if (
             not force_refresh
             and bundle.get("access_token")
@@ -607,6 +700,16 @@ class GoogleDriveClient:
         )
         self.oauth.store.mark_verified()
         return result
+
+    def delete_created_file(self, file_id: str) -> None:
+        """Delete a file created by this process, after validating its Drive ID."""
+        if not _DRIVE_ID.fullmatch(file_id):
+            raise GoogleDriveError("El identificador del archivo temporal no es válido.")
+        self._request(
+            "DELETE",
+            f"{DRIVE_API}/files/{quote(file_id, safe='')}",
+            params={"supportsAllDrives": "true"},
+        )
 
     def find_output_by_source(self, source_key: str, folder_id: str = PROCESSED_FOLDER_ID) -> dict[str, Any] | None:
         if not re.fullmatch(r"[a-f0-9]{64}", source_key):

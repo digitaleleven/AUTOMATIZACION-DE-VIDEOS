@@ -7,6 +7,7 @@ const API = {
   driveStatus: "/api/drive/status",
   driveOauthStart: "/api/drive/oauth/start",
   driveScan: "/api/drive/scan",
+  driveWriteTest: "/api/drive/test-write",
   driveRetryUpload: "/api/drive/retry-upload",
 };
 
@@ -112,6 +113,14 @@ async function scanDrive() {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: "{}",
+  });
+}
+
+async function testDriveWrite() {
+  return requestJson(API.driveWriteTest, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ confirm: true }),
   });
 }
 
@@ -318,16 +327,22 @@ function renderDriveStatus(drive) {
   const detail = byId("drive-status-detail");
   const connect = byId("drive-connect-button");
   const scan = byId("drive-scan-button");
+  const writeTest = byId("drive-write-test-button");
   if (!drive) {
     title.textContent = "Estado no disponible";
     detail.textContent = "No se pudo consultar la configuración local de OAuth.";
     connect.disabled = true;
     scan.disabled = true;
+    writeTest.disabled = true;
     return;
   }
   if (drive.storage_error) {
     title.textContent = "No se pudo abrir la conexión guardada";
     detail.textContent = "La clave de cifrado no coincide con la guardada. Activa OAuth y vuelve a autorizar Drive; no se han mostrado tokens.";
+    connect.textContent = "Reautorizar";
+  } else if (drive.identity_mismatch) {
+    title.textContent = "La conexión no corresponde a la cuenta autorizada";
+    detail.textContent = "El token guardado no se usará. Vuelve a conectar seleccionando la cuenta secundaria configurada.";
     connect.textContent = "Reautorizar";
   } else if (drive.authorized && drive.ready !== true) {
     title.textContent = "Conexión guardada · integración desactivada";
@@ -353,8 +368,21 @@ function renderDriveStatus(drive) {
       : "OAuth está desactivado por seguridad. No se ha contactado con Google.";
     connect.textContent = "Conectar Google Drive";
   }
+  const automatic = drive.automatic_scan || {};
+  const intervalMinutes = Math.max(1, Math.round(Number(automatic.interval_seconds || 900) / 60));
+  if (automatic.enabled) {
+    if (automatic.last_error) {
+      detail.textContent += " El último escaneo automático informó errores; se volverá a intentar en el siguiente intervalo.";
+    } else if (automatic.last_scan_at) {
+      const summary = automatic.last_summary || {};
+      detail.textContent += ` Último escaneo automático: ${summary.imported || 0} nuevo(s), ${summary.skipped || 0} omitido(s), ${summary.failed || 0} error(es).`;
+    } else {
+      detail.textContent += ` Escaneo automático cada ${intervalMinutes} min cuando la cuenta secundaria esté autorizada y el servidor activo; no inicia renders.`;
+    }
+  }
   connect.disabled = drive.ready !== true;
   scan.disabled = drive.authorized !== true || drive.ready !== true;
+  writeTest.disabled = drive.authorized !== true || drive.ready !== true || drive.identity_verified !== true;
   const healthDrive = byId("health-drive");
   if (drive.verified) {
     healthDrive.textContent = "Acceso verificado";
@@ -595,6 +623,30 @@ byId("drive-scan-button").addEventListener("click", async () => {
     displayToast(`No se pudo escanear Drive: ${error.message}`, true);
   } finally {
     button.disabled = state.drive?.authorized !== true || state.drive?.ready !== true;
+  }
+});
+byId("drive-write-test-button").addEventListener("click", async () => {
+  const button = byId("drive-write-test-button");
+  const message = byId("drive-message");
+  const confirmed = window.confirm(
+    "Se creará un MP4 temporal pequeño en 02_PROCESADOS y, si Drive confirma la creación, MATRIX MOTION borrará únicamente ese archivo. Si falla la limpieza, el panel mostrará su identificador para retirarlo manualmente. ¿Continuar?"
+  );
+  if (!confirmed) return;
+  button.disabled = true;
+  message.hidden = false;
+  message.dataset.error = "false";
+  message.textContent = "Preparando la prueba de escritura en 02_PROCESADOS…";
+  try {
+    const result = await testDriveWrite();
+    if (result?.created_and_deleted !== true) throw new Error("Drive no confirmó la creación y limpieza del MP4 temporal.");
+    message.textContent = "Prueba de escritura superada: Drive creó y MATRIX MOTION borró el MP4 temporal en 02_PROCESADOS.";
+    displayToast("Prueba de escritura completada. No se inició ningún render.");
+  } catch (error) {
+    message.dataset.error = "true";
+    message.textContent = `No se pudo completar la prueba de escritura: ${error.message}`;
+    displayToast(`Prueba de escritura fallida: ${error.message}`, true);
+  } finally {
+    button.disabled = state.drive?.authorized !== true || state.drive?.ready !== true || state.drive?.identity_verified !== true;
   }
 });
 byId("retry-drive-upload-button").addEventListener("click", async () => {

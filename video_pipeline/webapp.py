@@ -35,6 +35,7 @@ from .auth import (
 )
 from .config import INPUT_FOLDER_ID, LOGOS_FOLDER_ID, PROCESSED_FOLDER_ID, PipelineConfig
 from .drive import DriveUploadError
+from .drive_scheduler import DriveScanScheduler
 from .google_drive import (
     GOOGLE_DOC_MIME,
     VIDEO_EXTENSIONS,
@@ -249,6 +250,7 @@ class VideoPanel:
         self.drive_store = None
         self.drive_oauth = None
         self.drive_client = None
+        self.drive_auto_scanner = DriveScanScheduler(self)
         drive_config = DriveOAuthConfig.from_environment()
         try:
             self.drive_store = GoogleDriveStore(
@@ -276,7 +278,7 @@ class VideoPanel:
 
     def drive_status(self) -> dict[str, Any]:
         if not self.drive_oauth:
-            return {
+            status = {
                 "enabled": False,
                 "configured": False,
                 "ready": False,
@@ -285,10 +287,14 @@ class VideoPanel:
                 "missing_configuration": ["SESSION_SECRET"],
                 "scopes": [],
             }
+            status["automatic_scan"] = self.drive_auto_scanner.status()
+            return status
         try:
-            return self.drive_oauth.status()
+            status = self.drive_oauth.status()
+            status["automatic_scan"] = self.drive_auto_scanner.status()
+            return status
         except GoogleDriveError:
-            return {
+            status = {
                 "enabled": self.drive_oauth.config.enabled,
                 "configured": not self.drive_oauth.config.missing,
                 "ready": False,
@@ -300,6 +306,8 @@ class VideoPanel:
                 "missing_configuration": self.drive_oauth.config.missing,
                 "scopes": [],
             }
+            status["automatic_scan"] = self.drive_auto_scanner.status()
+            return status
 
     def scan_drive(self) -> dict[str, Any]:
         if not self.drive_oauth or not self.drive_client or not self.drive_store:
@@ -414,6 +422,96 @@ class VideoPanel:
             }
         except GoogleDriveError as exc:
             raise PanelError(str(exc), 502) from exc
+        finally:
+            self.drive_scan_lock.release()
+
+    def test_drive_output_write(self) -> dict[str, Any]:
+        if not self.drive_oauth or not self.drive_client:
+            raise PanelError("El almacenamiento seguro de Drive no está disponible.", 503)
+        status = self.drive_status()
+        if not status.get("ready") or not status.get("authorized") or not status.get("identity_verified"):
+            raise PanelError("La cuenta secundaria de Drive no está conectada y verificada.", 409)
+        if not self.drive_scan_lock.acquire(blocking=False):
+            raise PanelError("Espera a que termine el escaneo de Drive antes de probar la escritura.", 409)
+
+        probe_id = uuid.uuid4().hex
+        source_key = hashlib.sha256(f"write-probe:{probe_id}".encode("ascii")).hexdigest()
+        filename = f"matrix-motion-write-test-{probe_id}.mp4"
+        remote_id: str | None = None
+        try:
+            with tempfile.TemporaryDirectory(prefix="matrix-drive-write-test-") as directory:
+                video_path = Path(directory) / filename
+                try:
+                    subprocess.run(
+                        [
+                            "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+                            "-f", "lavfi", "-i", "color=c=black:s=360x640:r=24:d=1",
+                            "-an", "-c:v", "libx264", "-preset", "ultrafast",
+                            "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+                            "-y", str(video_path),
+                        ],
+                        check=True,
+                        capture_output=True,
+                        timeout=45,
+                    )
+                    probe_video(video_path)
+                except (OSError, subprocess.SubprocessError, MediaError) as exc:
+                    logger.warning("Could not create the local Drive write probe (%s)", type(exc).__name__)
+                    raise PanelError("No se pudo preparar el MP4 temporal para la prueba.", 503) from exc
+
+                try:
+                    created = self.drive_client.upload_new_file(
+                        video_path,
+                        folder_id=PROCESSED_FOLDER_ID,
+                        app_properties={"matrixMotionSource": source_key},
+                    )
+                    remote_id = str(created.get("id") or "")
+                    if not re.fullmatch(r"[A-Za-z0-9_-]{10,200}", remote_id):
+                        raise GoogleDriveError("Drive no confirmó el archivo temporal creado.")
+                    if (
+                        created.get("mimeType") != "video/mp4"
+                        or PROCESSED_FOLDER_ID not in (created.get("parents") or [])
+                    ):
+                        raise GoogleDriveError("Drive no confirmó la carpeta o el tipo del archivo temporal.")
+                    self.drive_client.delete_created_file(remote_id)
+                    remote_id = None
+                except Exception as exc:
+                    if not remote_id:
+                        try:
+                            possible_orphan = self.drive_client.find_output_by_source(
+                                source_key, PROCESSED_FOLDER_ID
+                            )
+                            remote_id = str(possible_orphan.get("id") or "") if possible_orphan else None
+                        except Exception as cleanup_lookup_error:
+                            logger.warning(
+                                "Could not locate a possibly incomplete Drive write probe (%s).",
+                                type(cleanup_lookup_error).__name__,
+                            )
+                    if remote_id:
+                        try:
+                            self.drive_client.delete_created_file(remote_id)
+                            remote_id = None
+                        except Exception:
+                            logger.error(
+                                "Could not remove the temporary Drive write-test file (id hash %s).",
+                                hashlib.sha256(remote_id.encode("utf-8")).hexdigest()[:12],
+                            )
+                            raise PanelError(
+                                "La prueba creó un MP4 temporal y no pudo borrarlo. "
+                                f"El archivo de prueba queda en 02_PROCESADOS con identificador {remote_id}.",
+                                502,
+                            ) from None
+                    if isinstance(exc, GoogleDriveError):
+                        raise PanelError(str(exc), 502) from exc
+                    if isinstance(exc, PanelError):
+                        raise
+                    logger.warning("Drive MP4 write test failed (%s)", type(exc).__name__)
+                    raise PanelError(
+                        "Google Drive no pudo completar la prueba de escritura. "
+                        f"Si el archivo temporal llegó a crearse, busca {filename} en 02_PROCESADOS.",
+                        502,
+                    ) from exc
+            return {"created_and_deleted": True, "mime_type": "video/mp4", "destination": "02_PROCESADOS"}
         finally:
             self.drive_scan_lock.release()
 
@@ -1485,6 +1583,14 @@ required minlength="16" {disabled}>
                 self._handle_google_oauth_start()
             elif self.command == "POST" and path == "/api/drive/scan":
                 self._json(self.server.panel.scan_drive(), 200)
+            elif self.command == "POST" and path == "/api/drive/test-write":
+                payload = self._read_json()
+                if not isinstance(payload, dict) or payload.get("confirm") is not True:
+                    raise PanelError(
+                        "Confirma la creación y eliminación de un MP4 temporal para probar 02_PROCESADOS.",
+                        400,
+                    )
+                self._json(self.server.panel.test_drive_output_write(), 200)
             elif self.command == "POST" and path == "/api/drive/retry-upload":
                 payload = self._read_json()
                 source_id = str(payload.get("source_id") or "") if isinstance(payload, dict) else ""
@@ -1532,6 +1638,7 @@ def serve(
 ) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     panel = VideoPanel(input_dir, output_dir, database_path, style_path)
+    panel.drive_auto_scanner.start()
     server = VideoPanelServer((host, port), VideoPanelHandler, panel)
     logger.info("Local video panel listening on %s:%s", host, port)
     try:
@@ -1540,4 +1647,5 @@ def serve(
         logger.info("Stopping local video panel")
     finally:
         server.server_close()
+        panel.drive_auto_scanner.stop()
         panel.executor.shutdown(wait=False, cancel_futures=True)
