@@ -4,4 +4,4 @@
 - [Envíos inciertos a Shotstack](shotstack-ambiguous-submissions.md) — Una respuesta sin ID puede haber encolado el render; no reintentar hasta reconciliar el estado remoto.
 - [Workspace pnpm anidado](nested-pnpm-workspace.md) — En un workspace aislado bajo la raíz Python, el filtro puede no seleccionar su único paquete; instala desde su propia raíz.
 - [Diagnóstico del proxy Remotion](remotion-proxy-cancellation.md) — El aviso genérico de disco no demuestra falta de espacio; `ECANCELED` puede ser el cliente cerrando la respuesta de fotograma.
-- [Conversión HDR HLG a SDR](hlg-sdr-color.md) — En vídeo HLG de iPhone, declara explícitamente matrices y rangos; no desatures por defecto y exige revisión humana antes de integrar.
+- [Conversión HDR HLG a SDR](hlg-sdr-color.md) — La responsable rechazó Q03E por dominante amarilla; ninguna curva probada la neutralizó sin una referencia blanca fiable.
