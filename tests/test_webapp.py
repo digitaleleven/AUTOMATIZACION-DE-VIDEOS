@@ -279,6 +279,35 @@ class VideoPanelApiTests(unittest.TestCase):
         self.assertIn(b'id="resultado-mm003"', body)
         self.assertIn(b'id="mm003-final-video"', body)
         self.assertIn(b'/media/outputs/IMG_1254-MATRIX-MOTION-MM003.mp4', body)
+        self.assertIn(b'id="resultado-mm004"', body)
+        self.assertIn(b'id="mm004-final-video"', body)
+        self.assertIn(b'/media/outputs/IMG_1254-MATRIX-MOTION-MM004.mp4', body)
+        self.assertIn(b'00:56,51', body)
+
+    def test_mm004_result_is_authenticated_range_media(self):
+        output_path = self.panel.output_dir / "IMG_1254-MATRIX-MOTION-MM004.mp4"
+        output_bytes = b"mm004-video-bytes-for-authenticated-range-test"
+        output_path.write_bytes(output_bytes)
+
+        status, headers, body = self.request(
+            "GET",
+            "/media/outputs/IMG_1254-MATRIX-MOTION-MM004.mp4",
+            headers={"Range": "bytes=0-9"},
+        )
+        self.assertEqual(status, 206)
+        self.assertEqual(body, output_bytes[:10])
+        self.assertEqual(dict(headers)["Content-Type"], "video/mp4")
+        self.assertEqual(
+            dict(headers)["Content-Range"],
+            f"bytes 0-9/{len(output_bytes)}",
+        )
+
+        status, _, body = self.request(
+            "GET",
+            "/media/outputs/IMG_1254-MATRIX-MOTION-MM004.mp4",
+            authenticated=False,
+        )
+        self.assertEqual(status, 401)
 
         status, headers, body = self.request("GET", "/premium.css")
         self.assertEqual(status, 200)
