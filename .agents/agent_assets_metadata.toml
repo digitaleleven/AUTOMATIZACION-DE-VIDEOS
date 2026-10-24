@@ -84,3 +84,31 @@ mtime_ms = 1792865907223
 storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/69dcd55f-f1c8-4102-be1f-c2a340653e2c/6d4c8a78-2a66-4647-9a33-fc2d6969a392"
 storage_version_token = "1792865986765621"
 content_type = "image/png"
+
+[[outputs]]
+id = "G0pPQ3ZhTuknPcKcfBgCo"
+uri = "file://generated-artifacts/remotion/quality-q02-2026-10-24/matrix-motion-q02-1080p.mp4"
+type = "video"
+title = "MATRIX MOTION — vídeo Q-02"
+description = "Edición local de 17,22 s con dos fundidos, audio AAC y exportación H.264 1080×1920 a 50 FPS. Lista para revisión visual."
+logical_id = "df2fda9e-814a-428e-b1de-cfa5e93f1074"
+content_hash = "sha256:c75ddf4a05559875258fa832414fe61fb1f4014528cd5c7cad4515b569b08ba6"
+size = 16513474
+mtime_ms = 1792867538675
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/df2fda9e-814a-428e-b1de-cfa5e93f1074/6d3070ef-74db-4421-be48-799db4c8e88a"
+storage_version_token = "1792867736792056"
+content_type = "video/mp4"
+
+[[outputs]]
+id = "ygUxgrKPUnX-LGsR3yYez"
+uri = "file://generated-artifacts/remotion/quality-q02-2026-10-24/q02-transition-contact-sheet.png"
+type = "image"
+title = "Q-02 — comprobación de transiciones"
+description = "Fotogramas antes, durante y después de los dos fundidos de 0,4 s."
+logical_id = "9564d5f3-bc79-4f17-97d6-1f5e6cb45626"
+content_hash = "sha256:2aeaa99f7158bb93a6eec63c82730c3fcb011a4954759719bb49c4c6de9f14d8"
+size = 797085
+mtime_ms = 1792867642932
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/9564d5f3-bc79-4f17-97d6-1f5e6cb45626/5801df10-1e5f-4bc0-be8b-eb659cd62b35"
+storage_version_token = "1792867737543614"
+content_type = "image/png"
