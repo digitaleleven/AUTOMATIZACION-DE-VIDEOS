@@ -4,6 +4,7 @@
 
 ## Implementado
 
+- Panel protegido con autenticación de una única propietaria, sesiones opacas almacenadas en SQLite, expiración por tiempo absoluto e inactividad, protección CSRF, cierre de sesión y límite de intentos de acceso.
 - Panel web en español, adaptable y accesible desde Replit Preview, con biblioteca local, reproducción original/editado, estados y errores reales, estimaciones no inventadas y controles de estilo.
 - Validación de MP4 y MOV, duración, tamaño, audio, H.264/HEVC, dimensiones, rotación y FPS mediante `ffprobe`.
 - Compatibilidad iPhone: conserva sin conversión los MP4/MOV H.264 con AAC y orientación normal; convierte HEVC a H.264 de alta calidad cuando hace falta para edición, y convierte audio no AAC a AAC. Las conversiones por códec, audio u orientación son temporales; la copia original queda intacta.
@@ -64,10 +65,11 @@ Las pruebas usan MP4/MOV sintéticos, incluido un H.265 generado localmente, moc
 
 ## Abrir el panel y cargar un vídeo local
 
-1. En Replit, abre **Preview** (el servicio escucha en `0.0.0.0:5000`).
-2. Pulsa **Cargar biblioteca** para consultar el servicio local o **Añadir vídeo** para subir `.MP4` o `.MOV`.
-3. Espera la validación de FFprobe y revisa los metadatos y el coste estimado. Si no hay tarifas configuradas, se muestra “Desconocido”.
-4. Para procesar, marca la autorización de llamadas de pago y confirma el coste desconocido si se solicita. El panel escribe el resultado en `outputs/` y no intenta conectar con Drive.
+1. En Replit Secrets, configura `PANEL_OWNER_PASSWORD` con una frase de paso única de al menos 16 caracteres. No la pongas en el código ni la compartas por chat. `SESSION_SECRET` debe existir y tener al menos 32 caracteres; no uses `PANEL_COOKIE_SECURE=false` en Preview o producción.
+2. Abre **Preview** (el servicio escucha en `0.0.0.0:5000`) y entra con la contraseña configurada. Si el navegador bloquea cookies de una vista incrustada, abre Preview en una pestaña nueva.
+3. Pulsa **Actualizar datos** para consultar la biblioteca local o **Añadir vídeo** para subir `.MP4` o `.MOV`.
+4. Espera la validación de FFprobe y revisa los metadatos y el coste estimado. Si no hay tarifas configuradas, se muestra “Desconocido”.
+5. Para procesar, marca la autorización de llamadas de pago y confirma el coste desconocido si se solicita. El panel escribe el resultado en `outputs/` y no intenta conectar con Drive.
 
 Para ejecutar el panel manualmente: `python main.py`. La biblioteca local se guarda en `data/incoming/`; los archivos originales subidos no se sobrescriben. El porcentaje de trabajo no se inventa: el panel muestra fases reales mientras el motor no disponga de una medición porcentual.
 

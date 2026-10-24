@@ -1,19 +1,34 @@
 import http.client
 import json
+import os
+import re
+import sqlite3
 import shutil
 import subprocess
 import tempfile
 import threading
 import unittest
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
+from unittest.mock import patch
 
+from video_pipeline.auth import OwnerAuth
 from video_pipeline.webapp import VideoPanel, VideoPanelHandler, VideoPanelServer
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg tools are required")
 class VideoPanelApiTests(unittest.TestCase):
     def setUp(self):
+        self.env_patcher = patch.dict(
+            os.environ,
+            {
+                "PANEL_OWNER_PASSWORD": "unit-test-owner-passphrase",
+                "SESSION_SECRET": "unit-test-session-secret-for-panel-auth-0123456789",
+                "PANEL_COOKIE_SECURE": "true",
+            },
+        )
+        self.env_patcher.start()
+        self.addCleanup(self.env_patcher.stop)
         self.temp_dir = tempfile.TemporaryDirectory()
         root = Path(self.temp_dir.name)
         self.root = root
@@ -29,6 +44,9 @@ class VideoPanelApiTests(unittest.TestCase):
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.port = self.server.server_address[1]
+        self.session_cookie = ""
+        self.csrf_token = ""
+        self.login()
 
     def tearDown(self):
         self.server.shutdown()
@@ -37,15 +55,65 @@ class VideoPanelApiTests(unittest.TestCase):
         self.panel.executor.shutdown(wait=True, cancel_futures=True)
         self.temp_dir.cleanup()
 
-    def request(self, method, path, body=None, headers=None):
+    def request(self, method, path, body=None, headers=None, *, authenticated=True):
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
-        connection.request(method, path, body=body, headers=headers or {})
+        request_headers = dict(headers or {})
+        if authenticated and self.session_cookie:
+            request_headers.setdefault("Cookie", self.session_cookie)
+            if method.upper() in {"POST", "PUT", "PATCH", "DELETE"} and self.csrf_token:
+                request_headers.setdefault("X-CSRF-Token", self.csrf_token)
+        connection.request(method, path, body=body, headers=request_headers)
         response = connection.getresponse()
         payload = response.read()
         status = response.status
         response_headers = response.getheaders()
         connection.close()
         return status, response_headers, payload
+
+    @staticmethod
+    def cookie_from_headers(headers, name):
+        for header_name, value in headers:
+            if header_name.lower() == "set-cookie" and value.startswith(f"{name}="):
+                return value.split(";", 1)[0]
+        return ""
+
+    def login(self):
+        status, headers, body = self.request("GET", "/login", authenticated=False)
+        self.assertEqual(status, 200)
+        match = re.search(rb'name="csrf_token" value="([^"]+)"', body)
+        self.assertIsNotNone(match)
+        challenge_token = match.group(1).decode("ascii")
+        challenge_cookie = self.cookie_from_headers(headers, "matrix_motion_login_csrf")
+        self.assertTrue(challenge_cookie)
+        challenge_header = next(
+            value for name, value in headers
+            if name.lower() == "set-cookie" and value.startswith("matrix_motion_login_csrf=")
+        )
+        self.assertIn("HttpOnly", challenge_header)
+        self.assertIn("Secure", challenge_header)
+        self.assertIn("SameSite=Strict", challenge_header)
+        status, response_headers, _ = self.request(
+            "POST",
+            "/login",
+            body=urlencode({"password": "unit-test-owner-passphrase", "csrf_token": challenge_token}),
+            headers={
+                "Cookie": challenge_cookie,
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            authenticated=False,
+        )
+        self.assertEqual(status, 303)
+        self.session_cookie = self.cookie_from_headers(response_headers, "matrix_motion_session")
+        self.assertTrue(self.session_cookie)
+        session_header = next(
+            value for name, value in response_headers
+            if name.lower() == "set-cookie" and value.startswith("matrix_motion_session=")
+        )
+        self.assertIn("HttpOnly", session_header)
+        self.assertIn("Secure", session_header)
+        self.assertIn("SameSite=Strict", session_header)
+        self.csrf_token = self.request("GET", "/api/session")[2]
+        self.csrf_token = json.loads(self.csrf_token.decode("utf-8"))["csrf_token"]
 
     def create_movie(self, extension=".MOV"):
         path = self.root / f"iphone{extension}"
@@ -101,6 +169,196 @@ class VideoPanelApiTests(unittest.TestCase):
         status, _, body = self.request("GET", "/api/library")
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body.decode("utf-8")), {"items": []})
+
+    def test_anonymous_requests_cannot_read_or_mutate_panel(self):
+        for path in ("/", "/app.js", "/premium.css"):
+            status, headers, _ = self.request("GET", path, authenticated=False)
+            self.assertEqual(status, 303, path)
+            self.assertEqual(dict(headers).get("Location"), "/login")
+
+        for path in ("/api/health", "/api/library", "/api/style", "/media/incoming/"):
+            status, _, body = self.request("GET", path, authenticated=False)
+            self.assertEqual(status, 401, path)
+            self.assertIn("Inicia sesión", json.loads(body.decode("utf-8"))["detail"])
+
+        status, _, body = self.request(
+            "POST",
+            "/api/upload",
+            body=b"not-a-video",
+            headers={
+                "Content-Type": "application/octet-stream",
+                "Content-Length": "11",
+                "X-Upload-Filename": "anonymous.mp4",
+            },
+            authenticated=False,
+        )
+        self.assertEqual(status, 401)
+        self.assertIn("Inicia sesión", json.loads(body.decode("utf-8"))["detail"])
+
+        status, _, body = self.request(
+            "POST",
+            "/api/jobs",
+            body=json.dumps({
+                "source_id": "a" * 32,
+                "authorize_paid_apis": True,
+                "unknown_cost_acknowledged": True,
+            }).encode(),
+            headers={"Content-Type": "application/json"},
+            authenticated=False,
+        )
+        self.assertEqual(status, 401)
+        self.assertEqual(self.panel.store.list_uploads(), [])
+        self.assertIn("Inicia sesión", json.loads(body.decode("utf-8"))["detail"])
+
+        status, _, _ = self.request(
+            "PUT",
+            "/api/style",
+            body=json.dumps({"font_size": 80}).encode(),
+            headers={"Content-Type": "application/json"},
+            authenticated=False,
+        )
+        self.assertEqual(status, 401)
+
+    def test_login_challenge_is_one_time_and_wrong_password_is_generic(self):
+        status, headers, body = self.request("GET", "/login", authenticated=False)
+        self.assertEqual(status, 200)
+        match = re.search(rb'name="csrf_token" value="([^"]+)"', body)
+        self.assertIsNotNone(match)
+        challenge = match.group(1).decode("ascii")
+        challenge_cookie = self.cookie_from_headers(headers, "matrix_motion_login_csrf")
+        self.assertTrue(challenge_cookie)
+
+        status, _, body = self.request(
+            "POST",
+            "/login",
+            body=urlencode({
+                "password": "incorrect-owner-password",
+                "csrf_token": challenge,
+            }),
+            headers={
+                "Cookie": challenge_cookie,
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            authenticated=False,
+        )
+        self.assertEqual(status, 401)
+        self.assertIn("No se pudo iniciar sesión", body.decode("utf-8"))
+
+        status, _, _ = self.request(
+            "POST",
+            "/login",
+            body=urlencode({
+                "password": "unit-test-owner-passphrase",
+                "csrf_token": challenge,
+            }),
+            headers={
+                "Cookie": challenge_cookie,
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            authenticated=False,
+        )
+        self.assertEqual(status, 403)
+
+    def test_login_rate_limit_blocks_repeated_bad_passwords(self):
+        for attempt in range(5):
+            status, headers, body = self.request("GET", "/login", authenticated=False)
+            self.assertEqual(status, 200)
+            challenge = re.search(rb'name="csrf_token" value="([^"]+)"', body).group(1).decode()
+            challenge_cookie = self.cookie_from_headers(headers, "matrix_motion_login_csrf")
+            status, _, _ = self.request(
+                "POST",
+                "/login",
+                body=urlencode({"password": "incorrect-owner-password", "csrf_token": challenge}),
+                headers={
+                    "Cookie": challenge_cookie,
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+                authenticated=False,
+            )
+            self.assertEqual(status, 401, f"failed login attempt {attempt + 1}")
+
+        status, headers, body = self.request("GET", "/login", authenticated=False)
+        challenge = re.search(rb'name="csrf_token" value="([^"]+)"', body).group(1).decode()
+        challenge_cookie = self.cookie_from_headers(headers, "matrix_motion_login_csrf")
+        status, _, body = self.request(
+            "POST",
+            "/login",
+            body=urlencode({"password": "incorrect-owner-password", "csrf_token": challenge}),
+            headers={
+                "Cookie": challenge_cookie,
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            authenticated=False,
+        )
+        self.assertEqual(status, 429)
+
+    def test_idle_and_absolute_session_expiration_are_enforced(self):
+        def expire_session(column):
+            raw_token = self.session_cookie.split("=", 1)[1]
+            token_hash = self.server.auth._hash("session", raw_token)
+            with sqlite3.connect(self.panel.store.database_path) as db:
+                db.execute(
+                    f"UPDATE panel_sessions SET {column} = 0 WHERE token_hash = ?",
+                    (token_hash,),
+                )
+
+        expire_session("last_seen_at")
+        status, _, _ = self.request(
+            "GET",
+            "/api/library",
+            headers={"Cookie": self.session_cookie},
+            authenticated=False,
+        )
+        self.assertEqual(status, 401)
+
+        self.login()
+        expire_session("expires_at")
+        status, _, _ = self.request(
+            "GET",
+            "/api/library",
+            headers={"Cookie": self.session_cookie},
+            authenticated=False,
+        )
+        self.assertEqual(status, 401)
+
+    def test_changing_owner_password_revokes_existing_sessions(self):
+        with patch.dict(os.environ, {"PANEL_OWNER_PASSWORD": "rotated-owner-passphrase-2026"}):
+            OwnerAuth(self.panel.store.database_path)
+        status, _, _ = self.request(
+            "GET",
+            "/api/library",
+            headers={"Cookie": self.session_cookie},
+            authenticated=False,
+        )
+        self.assertEqual(status, 401)
+
+    def test_csrf_is_required_and_logout_revokes_the_session(self):
+        status, _, body = self.request("GET", "/api/session")
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(body.decode("utf-8"))["csrf_token"])
+
+        style_before = self.panel.style()
+        status, _, body = self.request(
+            "PUT",
+            "/api/style",
+            body=json.dumps({**style_before, "font_size": style_before["font_size"] + 1}).encode(),
+            headers={
+                "Cookie": self.session_cookie,
+                "Content-Type": "application/json",
+            },
+            authenticated=False,
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(self.panel.style(), style_before)
+
+        status, _, _ = self.request("POST", "/logout", authenticated=True)
+        self.assertEqual(status, 204)
+        status, _, _ = self.request(
+            "GET", "/api/library",
+            headers={"Cookie": self.session_cookie},
+            authenticated=False,
+        )
+        self.assertEqual(status, 401)
 
     def test_uploads_mov_validates_metadata_and_supports_video_ranges(self):
         path = self.create_movie()

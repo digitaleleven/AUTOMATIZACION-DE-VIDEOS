@@ -9,6 +9,8 @@ from contextlib import contextmanager
 from dataclasses import asdict
 from email.utils import formatdate
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.cookies import CookieError, SimpleCookie
+import html
 import hashlib
 import json
 import logging
@@ -21,9 +23,15 @@ import subprocess
 import threading
 import time
 from typing import Any
-from urllib.parse import quote, unquote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 import uuid
 
+from .auth import (
+    LOGIN_CSRF_COOKIE,
+    SESSION_COOKIE,
+    AuthError,
+    OwnerAuth,
+)
 from .config import PipelineConfig
 from .media import MediaError, probe_video
 from .models import VideoInfo
@@ -545,6 +553,7 @@ class VideoPanelServer(ThreadingHTTPServer):
     def __init__(self, server_address, handler_class, panel: VideoPanel):
         super().__init__(server_address, handler_class)
         self.panel = panel
+        self.auth = OwnerAuth(panel.store.database_path)
 
 
 class VideoPanelHandler(BaseHTTPRequestHandler):
@@ -569,6 +578,172 @@ class VideoPanelHandler(BaseHTTPRequestHandler):
         self.end_headers()
         if not head:
             self.wfile.write(body)
+
+    def _cookies(self) -> SimpleCookie:
+        cookies = SimpleCookie()
+        try:
+            cookies.load(self.headers.get("Cookie", ""))
+        except CookieError:
+            return SimpleCookie()
+        return cookies
+
+    def _cookie_value(self, name: str) -> str | None:
+        morsel = self._cookies().get(name)
+        return morsel.value if morsel else None
+
+    def _cookie_attributes(self, max_age: int) -> str:
+        attributes = f"Path=/; Max-Age={max_age}; HttpOnly; SameSite=Strict"
+        if self.server.auth.cookie_secure:
+            attributes += "; Secure"
+        return attributes
+
+    def _send_login_page(
+        self,
+        *,
+        status: int = 200,
+        message: str = "",
+        head: bool = False,
+    ) -> None:
+        configured = self.server.auth.configured
+        challenge = self.server.auth.issue_login_challenge() if configured else ""
+        setup_message = (
+            ""
+            if configured
+            else (
+                "<p class=\"notice\">El acceso aún no está configurado. "
+                "Añade <code>PANEL_OWNER_PASSWORD</code> en Replit Secrets y "
+                "comprueba que <code>SESSION_SECRET</code> esté configurado.</p>"
+            )
+        )
+        error_message = (
+            f'<p class="error" role="alert">{html.escape(message)}</p>' if message else ""
+        )
+        disabled = "" if configured else " disabled"
+        body = f"""<!doctype html>
+<html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Acceso · MATRIX MOTION</title>
+<style>
+*{{box-sizing:border-box}} body{{margin:0;min-height:100vh;display:grid;place-items:center;
+background:#f4f7f8;color:#18303a;font:15px system-ui,sans-serif;padding:24px}}
+main{{width:min(100%,420px);background:#fff;border:1px solid #dce5e8;border-radius:20px;
+padding:34px;box-shadow:0 18px 50px #18303a12}} .brand{{font-size:18px;font-weight:800;
+letter-spacing:-.04em}} .sub{{margin:5px 0 28px;color:#6e8188;font-size:11px;
+letter-spacing:.12em}} h1{{font-size:25px;margin:0 0 8px}} p{{line-height:1.55;color:#49616a}}
+label{{display:block;margin:22px 0 8px;font-weight:700}} input{{width:100%;padding:13px;
+border:1px solid #c6d4d9;border-radius:10px;font:inherit}} button{{width:100%;margin-top:18px;
+padding:13px;border:0;border-radius:10px;background:#102d3a;color:#fff;font:inherit;
+font-weight:750}} button:disabled{{opacity:.5;cursor:not-allowed}} .error{{color:#a6464a}}
+.notice{{padding:12px;background:#edf3f5;border-radius:10px;font-size:13px}}
+code{{font-family:ui-monospace,monospace;font-size:.92em}}
+</style></head><body><main>
+<div class="brand">MATRIX MOTION</div><div class="sub">VIDEO AUTOMATION STUDIO</div>
+<h1>Acceso de propietaria</h1><p>Inicia sesión para abrir tu espacio de trabajo.</p>
+{setup_message}{error_message}
+<form method="post" action="/login" autocomplete="on">
+<input type="hidden" name="csrf_token" value="{html.escape(challenge, quote=True)}">
+<label for="password">Contraseña</label>
+<input id="password" name="password" type="password" autocomplete="current-password"
+required minlength="16" {disabled}>
+<button type="submit"{disabled}>Iniciar sesión</button>
+</form></main></body></html>""".encode("utf-8")
+        self.send_response(status)
+        self._headers("text/html; charset=utf-8", len(body))
+        if configured:
+            self.send_header(
+                "Set-Cookie",
+                f"{LOGIN_CSRF_COOKIE}={challenge}; {self._cookie_attributes(300)}",
+            )
+        self.end_headers()
+        if not head:
+            self.wfile.write(body)
+
+    def _send_redirect(self, location: str) -> None:
+        self.send_response(303)
+        self.send_header("Location", location)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _handle_login(self) -> None:
+        if self.headers.get("Origin"):
+            self._check_origin()
+        if not self.server.auth.configured:
+            self._send_login_page(status=503)
+            return
+        content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        if content_type != "application/x-www-form-urlencoded":
+            self.close_connection = True
+            self._send_login_page(status=400, message="Solicitud de acceso no válida.")
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length <= 0 or length > 8192:
+                self.close_connection = True
+                self._send_login_page(status=400, message="Solicitud de acceso no válida.")
+                return
+            form = parse_qs(
+                self.rfile.read(length).decode("utf-8"),
+                keep_blank_values=True,
+                max_num_fields=4,
+            )
+        except (ValueError, UnicodeDecodeError):
+            self._send_login_page(status=400, message="Solicitud de acceso no válida.")
+            return
+
+        try:
+            session_token = self.server.auth.login(
+                password=(form.get("password") or [""])[0],
+                challenge_cookie=self._cookie_value(LOGIN_CSRF_COOKIE) or "",
+                challenge_form=(form.get("csrf_token") or [""])[0],
+                client_id=str(self.client_address[0]),
+            )
+        except AuthError as exc:
+            self._send_login_page(status=exc.status_code, message=str(exc))
+            return
+
+        self.send_response(303)
+        self.send_header("Location", "/")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header(
+            "Set-Cookie",
+            f"{SESSION_COOKIE}={session_token}; {self._cookie_attributes(12 * 60 * 60)}",
+        )
+        self.send_header(
+            "Set-Cookie",
+            f"{LOGIN_CSRF_COOKIE}=; {self._cookie_attributes(0)}",
+        )
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _send_unauthorized(self, path: str, head: bool = False) -> None:
+        if path.startswith(("/api/", "/media/")) or self.command not in {"GET", "HEAD"}:
+            self._json({"detail": "Inicia sesión para continuar."}, 401, head)
+            if self.command in {"POST", "PUT", "PATCH", "DELETE"}:
+                self.close_connection = True
+            return
+        self._send_redirect("/login")
+
+    def _require_csrf(self, session) -> None:
+        if not self.server.auth.validate_csrf(
+            session,
+            self.headers.get("X-CSRF-Token"),
+        ):
+            raise PanelError("La solicitud no superó la comprobación de seguridad (CSRF).", 403)
+
+    def _handle_logout(self, session) -> None:
+        self._check_origin()
+        self._require_csrf(session)
+        self.server.auth.logout(self._cookie_value(SESSION_COOKIE))
+        self.send_response(204)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header(
+            "Set-Cookie",
+            f"{SESSION_COOKIE}=; {self._cookie_attributes(0)}",
+        )
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def _check_origin(self) -> None:
         origin = self.headers.get("Origin")
@@ -661,13 +836,44 @@ class VideoPanelHandler(BaseHTTPRequestHandler):
     def _dispatch(self, head: bool = False) -> None:
         try:
             path = urlsplit(self.path).path
+            if path == "/login":
+                if self.command in {"GET", "HEAD"}:
+                    session = self.server.auth.get_session(
+                        self._cookie_value(SESSION_COOKIE)
+                    )
+                    if session:
+                        self._send_redirect("/")
+                    else:
+                        self._send_login_page(head=head)
+                    return
+                if self.command == "POST":
+                    self._handle_login()
+                    return
+                raise PanelError("Método no permitido.", 405)
+
+            session = self.server.auth.get_session(self._cookie_value(SESSION_COOKIE))
+            if not session:
+                self._send_unauthorized(path, head)
+                return
+
             if self.command in {"POST", "PUT"}:
                 self._check_origin()
+                self._require_csrf(session)
+                if self.command == "POST" and path == "/logout":
+                    self._handle_logout(session)
+                    return
+                if path == "/logout":
+                    raise PanelError("Método no permitido.", 405)
+            elif path == "/logout":
+                raise PanelError("Método no permitido.", 405)
+
             if self.command in {"GET", "HEAD"}:
                 if path == "/":
                     self._send_static("index.html", head)
                 elif path in {"/app.js", "/premium.css"}:
                     self._send_static(path.lstrip("/"), head)
+                elif path == "/api/session":
+                    self._json({"csrf_token": session.csrf_token}, head=head)
                 elif path == "/api/health":
                     self._json(self.server.panel.health(), head=head)
                 elif path == "/api/library":
@@ -709,7 +915,7 @@ class VideoPanelHandler(BaseHTTPRequestHandler):
             else:
                 raise PanelError("Ruta o método no permitido.", 404)
         except PanelError as exc:
-            if self.command == "POST" and urlsplit(self.path).path == "/api/upload":
+            if self.command in {"POST", "PUT"}:
                 self.close_connection = True
             if self.command in {"GET", "HEAD"} and not urlsplit(self.path).path.startswith("/api/"):
                 self._json({"detail": str(exc)}, exc.status_code, head)

@@ -17,15 +17,26 @@ const state = {
   styleLoaded: false,
 };
 
+let csrfToken = "";
+
 const $ = (selector) => document.querySelector(selector);
 const byId = (id) => document.getElementById(id);
 
 async function requestJson(url, options = {}) {
   let response;
+  const method = String(options.method || "GET").toUpperCase();
+  const headers = new Headers(options.headers || {});
+  if (!["GET", "HEAD", "OPTIONS"].includes(method) && csrfToken) {
+    headers.set("X-CSRF-Token", csrfToken);
+  }
   try {
-    response = await fetch(url, { ...options, credentials: "same-origin" });
+    response = await fetch(url, { ...options, method, headers, credentials: "same-origin" });
   } catch (error) {
     throw new Error(`No se pudo conectar con la aplicación. ${error.message}`);
+  }
+  if (response.status === 401) {
+    window.location.replace("/login");
+    throw new Error("La sesión ha caducado. Inicia sesión de nuevo.");
   }
   const text = await response.text();
   let body = null;
@@ -564,3 +575,30 @@ byId("style-form").addEventListener("submit", async (event) => {
     button.disabled = false;
   }
 });
+
+byId("logout-button")?.addEventListener("click", async () => {
+  const button = byId("logout-button");
+  button.disabled = true;
+  try {
+    await requestJson("/logout", { method: "POST" });
+    window.location.replace("/login");
+  } catch (error) {
+    displayToast(`No se pudo cerrar la sesión: ${error.message}`, true);
+    button.disabled = false;
+  }
+});
+
+async function initializePanel() {
+  try {
+    const session = await requestJson("/api/session");
+    csrfToken = String(session?.csrf_token || "");
+    if (!csrfToken) throw new Error("No se pudo validar la sesión del panel.");
+    await refreshWorkspace();
+  } catch (error) {
+    if (!window.location.pathname.startsWith("/login")) {
+      displayToast(error.message, true);
+    }
+  }
+}
+
+initializePanel();
