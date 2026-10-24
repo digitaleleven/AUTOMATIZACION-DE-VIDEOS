@@ -832,6 +832,23 @@ class VideoPanelApiTests(unittest.TestCase):
         self.assertIn("window.location.assign(result.authorization_url);", javascript)
         self.assertIn("connect.disabled = drive.ready !== true;", javascript)
 
+    def test_write_probe_uses_server_oauth_without_picker_token_flow(self):
+        root = Path(__file__).resolve().parents[1]
+        javascript = (root / "web" / "app.js").read_text(encoding="utf-8")
+        start = javascript.index("async function testDriveWrite()")
+        end = javascript.index("async function retryDriveUpload", start)
+        helper = javascript[start:end]
+        self.assertIn("requestJson(API.driveWriteTest", helper)
+        self.assertNotIn("postDrive(", helper)
+        self.assertNotIn("getDriveAccessToken", helper)
+
+        start = javascript.index('byId("drive-write-test-button").addEventListener("click"')
+        end = javascript.index('byId("retry-drive-upload-button").addEventListener("click"', start)
+        handler = javascript[start:end]
+        self.assertIn("await testDriveWrite()", handler)
+        self.assertNotIn("startDriveOAuth", handler)
+        self.assertNotIn("openDrivePicker", handler)
+
     def test_drive_write_test_route_requires_owner_csrf_and_explicit_confirmation(self):
         with patch.object(
             self.panel,

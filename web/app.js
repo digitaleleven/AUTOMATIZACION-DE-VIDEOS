@@ -139,7 +139,11 @@ async function scanDrive() {
 }
 
 async function testDriveWrite() {
-  return postDrive(API.driveWriteTest, { confirm: true });
+  return requestJson(API.driveWriteTest, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ confirm: true }),
+  });
 }
 
 async function retryDriveUpload(sourceId) {
