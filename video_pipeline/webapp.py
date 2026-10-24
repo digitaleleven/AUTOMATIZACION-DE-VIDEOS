@@ -972,6 +972,14 @@ required minlength="16" {disabled}>
         try:
             self._check_origin()
             path = urlsplit(self.path).path
+            if path == "/favicon.ico":
+                if self.command in {"GET", "HEAD"}:
+                    self.send_response(204)
+                    self.send_header("Cache-Control", "public, max-age=86400")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                raise PanelError("Método no permitido.", 405)
             if path == "/login":
                 if self.command in {"GET", "HEAD"}:
                     session = self.server.auth.get_session(
