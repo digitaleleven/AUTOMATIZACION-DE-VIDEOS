@@ -9,6 +9,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from video_pipeline.config import INPUT_FOLDER_ID
 from video_pipeline.google_drive import (
+    DRIVE_ACCESS_SCOPES,
     DRIVE_SCOPES,
     DriveOAuthConfig,
     GoogleDriveClient,
@@ -20,6 +21,15 @@ from video_pipeline.google_drive import (
 
 
 SESSION_SECRET = "test-session-secret-long-enough-for-token-store-0123456789"
+
+
+class DriveScopeTests(unittest.TestCase):
+    def test_drive_access_scope_remains_limited_to_picker_files(self):
+        self.assertEqual(
+            DRIVE_ACCESS_SCOPES,
+            ("https://www.googleapis.com/auth/drive.file",),
+        )
+        self.assertNotIn("https://www.googleapis.com/auth/drive.readonly", DRIVE_SCOPES)
 
 
 class FakeResponse:

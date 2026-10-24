@@ -492,7 +492,11 @@ class LocalMediaTests(unittest.TestCase):
                     openai_client=Mock(),
                     shotstack_client=renderer,
                     drive_uploader=drive_uploader,
-                    config=PipelineConfig(shotstack_environment="stage"),
+                    drive_access_token="test-google",
+                    config=PipelineConfig(
+                        shotstack_environment="stage",
+                        processed_folder_id="processed-folder",
+                    ),
                     state_db_path=state_path,
                 )
                 transcription.assert_called_once()
@@ -517,7 +521,11 @@ class LocalMediaTests(unittest.TestCase):
                     openai_client=Mock(),
                     shotstack_client=renderer,
                     drive_uploader=drive_uploader,
-                    config=PipelineConfig(shotstack_environment="stage"),
+                    drive_access_token="test-google",
+                    config=PipelineConfig(
+                        shotstack_environment="stage",
+                        processed_folder_id="processed-folder",
+                    ),
                     state_db_path=state_path,
                 )
             self.assertEqual(source_path.read_bytes(), original_bytes)
@@ -673,6 +681,7 @@ class ExplicitLivePipelineTests(unittest.TestCase):
                             paid_api_authorized=True,
                             openai_client=Mock(),
                             shotstack_client=Mock(),
+                        config=PipelineConfig(processed_folder_id="processed-folder"),
                         )
         probe.assert_called_once()
         transcribe.assert_not_called()
@@ -726,7 +735,7 @@ class ExplicitLivePipelineTests(unittest.TestCase):
             self.assertEqual(source.read_bytes(), b"original-video")
             drive_upload.assert_not_called()
 
-    def test_new_render_is_uploaded_only_after_verified_render_and_source_is_untouched(self):
+    def test_new_render_upload_accepts_token_from_replit_secret(self):
         source_info = VideoInfo(
             "source.mp4", 2.0, 360, 640, True, video_codec="h264", audio_codec="aac"
         )
@@ -798,7 +807,81 @@ class ExplicitLivePipelineTests(unittest.TestCase):
         self.assertTrue(result["render_status_verified"])
         self.assertFalse(result["source_modified"])
 
-    def test_failed_render_never_uploads_to_drive(self):
+    def test_new_render_is_uploaded_only_after_verified_render_and_source_is_untouched(self):
+        source_info = VideoInfo(
+            "source.mp4", 2.0, 360, 640, True,
+            video_codec="h264", audio_codec="aac",
+        )
+        words = [WordTiming("Hola", 0.0, 0.5), WordTiming("mundo.", 0.5, 1.0)]
+        renderer = Mock()
+        renderer.upload_local_video.return_value = "https://ingest.example/video.mp4"
+        renderer.upload_local_asset.return_value = "https://ingest.example/captions.srt"
+        renderer.submit_render.return_value = "render-id"
+        renderer.wait_for_render.return_value = "https://renders.example/render.mp4"
+
+        def save_render(_url, destination):
+            Path(destination).write_bytes(b"new-render")
+            return Path(destination)
+
+        renderer.download_render.side_effect = save_render
+        drive_uploader = Mock(
+            return_value={
+                "id": "created-file-id",
+                "name": "source_vertical_subtitled.mp4",
+                "parents": ["processed-folder"],
+            }
+        )
+        environment = {
+            "OPENAI_API_KEY": "test-openai",
+            "SHOTSTACK_API_KEY": "test-shotstack",
+            "GOOGLE_OAUTH_TOKEN": "test-google",
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.mp4"
+            source.write_bytes(b"original-video")
+            original_before = source.read_bytes()
+            output_dir = root / "outputs"
+            state_path = root / "processing.sqlite3"
+            with patch.dict("os.environ", environment, clear=True), patch(
+                "video_pipeline.pipeline.probe_video", return_value=source_info
+            ), patch(
+                "video_pipeline.pipeline.transcribe_video", return_value=words
+            ), patch(
+                "video_pipeline.pipeline.validate_rendered_output",
+                return_value=Mock(
+                    width=1080,
+                    height=1920,
+                    video_codec="h264",
+                    audio_codec="aac",
+                    fps=30,
+                ),
+            ):
+                result = process_local_video(
+                    source,
+                    output_dir,
+                    paid_api_authorized=True,
+                    openai_client=Mock(),
+                    shotstack_client=renderer,
+                    drive_uploader=drive_uploader,
+                    drive_access_token="test-google",
+                    config=PipelineConfig(processed_folder_id="processed-folder"),
+                    state_db_path=state_path,
+                )
+
+            self.assertEqual(source.read_bytes(), original_before)
+            self.assertEqual(Path(result["output"]).read_bytes(), b"new-render")
+
+        renderer.wait_for_render.assert_called_once_with("render-id")
+        drive_uploader.assert_called_once()
+        self.assertEqual(drive_uploader.call_args.args[0], Path(result["output"]))
+        self.assertEqual(drive_uploader.call_args.kwargs["folder_id"], "processed-folder")
+        self.assertEqual(drive_uploader.call_args.kwargs["access_token"], "test-google")
+        self.assertEqual(result["drive_output"]["id"], "created-file-id")
+        self.assertTrue(result["render_status_verified"])
+        self.assertFalse(result["source_modified"])
+
+    def test_failed_render_never_uploads_to_drive_with_secret_token(self):
         source_info = VideoInfo(
             "source.mp4", 2.0, 360, 640, True, video_codec="h264", audio_codec="aac"
         )
@@ -833,6 +916,51 @@ class ExplicitLivePipelineTests(unittest.TestCase):
                         openai_client=Mock(),
                         shotstack_client=renderer,
                         drive_uploader=drive_uploader,
+                        config=PipelineConfig(processed_folder_id="processed-folder"),
+                        state_db_path=Path(temp_dir) / "processing.sqlite3",
+                    )
+            self.assertEqual(source.read_bytes(), b"original-video")
+
+        drive_uploader.assert_not_called()
+
+    def test_failed_render_never_uploads_to_drive(self):
+        source_info = VideoInfo(
+            "source.mp4", 2.0, 360, 640, True,
+            video_codec="h264", audio_codec="aac",
+        )
+        renderer = Mock()
+        renderer.upload_local_video.return_value = "https://ingest.example/video.mp4"
+        renderer.upload_local_asset.return_value = "https://ingest.example/captions.srt"
+        renderer.submit_render.return_value = "render-id"
+        renderer.wait_for_render.side_effect = ShotstackError("render failed")
+        drive_uploader = Mock()
+        environment = {
+            "OPENAI_API_KEY": "test-openai",
+            "SHOTSTACK_API_KEY": "test-shotstack",
+            "GOOGLE_OAUTH_TOKEN": "test-google",
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "source.mp4"
+            source.write_bytes(b"original-video")
+            with patch.dict("os.environ", environment, clear=True), patch(
+                "video_pipeline.pipeline.probe_video", return_value=source_info
+            ), patch(
+                "video_pipeline.pipeline.transcribe_video",
+                return_value=[
+                    WordTiming("Hola", 0.0, 0.5),
+                    WordTiming("mundo.", 0.5, 1.0),
+                ],
+            ):
+                with self.assertRaisesRegex(ShotstackError, "render failed"):
+                    process_local_video(
+                        source,
+                        Path(temp_dir) / "outputs",
+                        paid_api_authorized=True,
+                        openai_client=Mock(),
+                        shotstack_client=renderer,
+                        drive_uploader=drive_uploader,
+                        drive_access_token="test-google",
+                        config=PipelineConfig(processed_folder_id="processed-folder"),
                         state_db_path=Path(temp_dir) / "processing.sqlite3",
                     )
             self.assertEqual(source.read_bytes(), b"original-video")

@@ -878,7 +878,16 @@ class VideoPanelApiTests(unittest.TestCase):
             }
         )
         self.panel.drive_client = fake
-        result = self.panel.test_drive_output_write()
+        with patch(
+            "video_pipeline.webapp.load_folder_selections",
+            return_value={
+                "procesados": {
+                    "id": "1J6Z0bsWb2dQNKY4hyq4xl7tigtm_pQKN",
+                    "name": "Procesados",
+                }
+            },
+        ):
+            result = self.panel.test_drive_output_write()
         self.assertTrue(result["created_and_deleted"])
         self.assertEqual(result["mime_type"], "video/mp4")
         self.assertEqual(result["destination"], "02_PROCESADOS")
@@ -953,6 +962,21 @@ class VideoPanelApiTests(unittest.TestCase):
             patch.object(self.panel.store.ledger, "get", return_value={"output_path": str(output_path)}),
             patch.object(self.panel.store.ledger, "mark_completed") as mark_completed,
             patch("video_pipeline.webapp.process_local_video") as process_local_video,
+            patch(
+                "video_pipeline.webapp.PipelineConfig.from_environment",
+                return_value=SimpleNamespace(
+                    processed_folder_id="1J6Z0bsWb2dQNKY4hyq4xl7tigtm_pQKN"
+                ),
+            ),
+            patch(
+                "video_pipeline.webapp.load_folder_selections",
+                return_value={
+                    "procesados": {
+                        "id": "1J6Z0bsWb2dQNKY4hyq4xl7tigtm_pQKN",
+                        "name": "Procesados",
+                    }
+                },
+            ),
         ):
             result = self.panel.retry_drive_upload(source_id)
 
@@ -988,23 +1012,26 @@ class VideoPanelApiTests(unittest.TestCase):
         class FakeDriveClient:
             def __init__(self):
                 self.downloads = 0
+                self.requested_ids = []
 
-            def list_children(self, folder_id):
-                if folder_id.endswith("DTW"):
-                    return []
-                return [
-                    {
+            def get_file(self, file_id):
+                self.requested_ids.append(file_id)
+                item = {
+                    video_remote_id: {
                         "id": video_remote_id,
                         "name": "clip.mp4",
                         "mimeType": "video/mp4",
                         "size": str(original.stat().st_size),
+                        "parents": ["selected-input"],
                     },
-                    {
+                    doc_remote_id: {
                         "id": doc_remote_id,
                         "name": "clip",
                         "mimeType": "application/vnd.google-apps.document",
+                        "parents": ["selected-input"],
                     },
-                ]
+                }
+                return item[file_id]
 
             def export_document_text(self, file_id):
                 self.assert_doc_id = file_id
@@ -1017,8 +1044,25 @@ class VideoPanelApiTests(unittest.TestCase):
 
         fake_drive = FakeDriveClient()
         self.panel.drive_client = fake_drive
-        with patch.object(
-            self.panel, "drive_status", return_value={"ready": True, "authorized": True}
+        with (
+            patch.object(
+                self.panel, "drive_status", return_value={"ready": True, "authorized": True}
+            ),
+            patch(
+                "video_pipeline.webapp.load_folder_selections",
+                return_value={
+                    "entrada": {"id": "selected-input", "name": "Entrada"},
+                    "logos": {"id": "selected-logos", "name": "Logos"},
+                },
+            ),
+            patch(
+                "video_pipeline.webapp.load_file_selections",
+                return_value={
+                    "entrada": [{"id": video_remote_id, "name": "clip.mp4"}],
+                    "instrucciones": [{"id": doc_remote_id, "name": "clip"}],
+                    "logos": [],
+                },
+            ),
         ):
             first = self.panel.scan_drive()
             self.assertEqual(len(first["imported"]), 1)
@@ -1031,6 +1075,7 @@ class VideoPanelApiTests(unittest.TestCase):
         self.assertEqual(second["imported"], [])
         self.assertEqual(second["skipped"], 1)
         self.assertEqual(fake_drive.downloads, 1)
+        self.assertEqual(set(fake_drive.requested_ids), {video_remote_id, doc_remote_id})
         self.assertEqual(fake_drive.assert_doc_id, doc_remote_id)
         self.assertEqual(original.read_bytes(), original_bytes)
         self.assertEqual(second["items"][0]["source"], "google_drive")

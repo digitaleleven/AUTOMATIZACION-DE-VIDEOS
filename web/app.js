@@ -4,9 +4,14 @@ const API = {
   upload: "/api/upload",
   jobs: "/api/jobs",
   style: "/api/style",
+  driveConfig: "/api/drive/config",
+  driveFolders: "/api/drive/folders",
+  driveList: "/api/drive/list",
   driveStatus: "/api/drive/status",
   driveOauthStart: "/api/drive/oauth/start",
   driveScan: "/api/drive/scan",
+  driveSync: "/api/drive/sync",
+  driveTestFile: "/api/drive/test-file",
   driveWriteTest: "/api/drive/test-write",
   driveRetryUpload: "/api/drive/retry-upload",
 };
@@ -21,6 +26,10 @@ const state = {
   pollTimer: null,
   styleLoaded: false,
   drive: null,
+  driveStatus: null,
+  driveToken: null,
+  driveTokenExpiresAt: 0,
+  googleTokenClient: null,
 };
 
 let csrfToken = "";
@@ -88,6 +97,13 @@ async function startProcessing(sourceId, authorizePaidApis, unknownCostAcknowled
   });
 }
 
+async function postDrive(url, payload = {}) {
+  return requestJson(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...payload, access_token: await getDriveAccessToken() }),
+  });
+}
 async function loadJob(jobId) {
   return requestJson(`${API.jobs}/${encodeURIComponent(jobId)}`);
 }
@@ -314,15 +330,17 @@ function renderHealth(health) {
   const env = health?.shotstack_environment;
   byId("health-environment").textContent = env == null || env === "" ? "No disponible" : String(env);
   const drive = health?.drive_connected;
+  const driveReady = health?.drive_picker_configured;
   byId("health-drive").textContent = drive === true ? "Conectado" : drive === false ? "No conectado" : "No disponible";
-  byId("health-drive").className = drive === true ? "health-ok" : drive === false ? "health-muted" : "health-unknown";
+  if (drive !== true && driveReady) byId("health-drive").textContent = "Picker listo";
+  byId("health-drive").className = drive === true || driveReady ? "health-ok" : "health-muted";
   const connected = Boolean(health);
   byId("connection-label").textContent = connected ? "Servicio disponible" : "Sin conexión";
   $(".local-indicator").classList.toggle("connected", connected);
 }
 
 function renderDriveStatus(drive) {
-  state.drive = drive || null;
+  state.driveStatus = drive || null;
   const title = byId("drive-panel-title");
   const detail = byId("drive-status-detail");
   const connect = byId("drive-connect-button");
@@ -578,7 +596,7 @@ byId("connect-button").addEventListener("click", refreshWorkspace);
 byId("refresh-button").addEventListener("click", refreshWorkspace);
 byId("drive-connect-button").addEventListener("click", async () => {
   const button = byId("drive-connect-button");
-  const message = byId("drive-message");
+  const message = byId("drive-oauth-message");
   button.disabled = true;
   message.hidden = false;
   message.dataset.error = "false";
@@ -590,16 +608,16 @@ byId("drive-connect-button").addEventListener("click", async () => {
   } catch (error) {
     message.dataset.error = "true";
     message.textContent = `No se inició la conexión: ${error.message}`;
-    button.disabled = state.drive?.ready !== true;
+    button.disabled = state.driveStatus?.ready !== true;
   }
 });
 byId("drive-scan-button").addEventListener("click", async () => {
   const button = byId("drive-scan-button");
-  const message = byId("drive-message");
+  const message = byId("drive-oauth-message");
   button.disabled = true;
   message.hidden = false;
   message.dataset.error = "false";
-  message.textContent = "Consultando 01_ENTRADA y descargando los vídeos nuevos. No se iniciará ningún render.";
+  message.textContent = "Consultando únicamente los archivos elegidos en Google Picker. No se iniciará ningún render.";
   try {
     const result = await scanDrive();
     state.library = Array.isArray(result?.items) ? result.items : await loadLibrary();
@@ -622,12 +640,12 @@ byId("drive-scan-button").addEventListener("click", async () => {
     message.textContent = `No se pudo escanear Drive: ${error.message}`;
     displayToast(`No se pudo escanear Drive: ${error.message}`, true);
   } finally {
-    button.disabled = state.drive?.authorized !== true || state.drive?.ready !== true;
+    button.disabled = state.driveStatus?.authorized !== true || state.driveStatus?.ready !== true;
   }
 });
 byId("drive-write-test-button").addEventListener("click", async () => {
   const button = byId("drive-write-test-button");
-  const message = byId("drive-message");
+  const message = byId("drive-oauth-message");
   const confirmed = window.confirm(
     "Se creará un MP4 temporal pequeño en 02_PROCESADOS y, si Drive confirma la creación, MATRIX MOTION borrará únicamente ese archivo. Si falla la limpieza, el panel mostrará su identificador para retirarlo manualmente. ¿Continuar?"
   );
@@ -646,7 +664,7 @@ byId("drive-write-test-button").addEventListener("click", async () => {
     message.textContent = `No se pudo completar la prueba de escritura: ${error.message}`;
     displayToast(`Prueba de escritura fallida: ${error.message}`, true);
   } finally {
-    button.disabled = state.drive?.authorized !== true || state.drive?.ready !== true || state.drive?.identity_verified !== true;
+    button.disabled = state.driveStatus?.authorized !== true || state.driveStatus?.ready !== true || state.driveStatus?.identity_verified !== true;
   }
 });
 byId("retry-drive-upload-button").addEventListener("click", async () => {
@@ -807,11 +825,313 @@ async function initializePanel() {
     csrfToken = String(session?.csrf_token || "");
     if (!csrfToken) throw new Error("No se pudo validar la sesión del panel.");
     await refreshWorkspace();
+    await loadDriveConfig();
   } catch (error) {
     if (!window.location.pathname.startsWith("/login")) {
       displayToast(error.message, true);
     }
   }
 }
+
+async function listDriveFiles(role, token = null) {
+  const result = await requestJson(API.driveList, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ role, access_token: token || await getDriveAccessToken() }),
+  });
+  renderDriveFiles(role, result.files || []);
+  return result.files || [];
+}
+
+async function getDriveAccessToken() {
+  if (state.driveToken && Date.now() < state.driveTokenExpiresAt - 60_000) return state.driveToken;
+    const clientId = state.drive?.picker?.client_id;
+  if (!clientId) throw new Error("Falta configurar GOOGLE_DRIVE_CLIENT_ID en Replit Secrets.");
+  await loadScript("https://accounts.google.com/gsi/client");
+  return new Promise((resolve, reject) => {
+    state.googleTokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: clientId,
+      scope: "https://www.googleapis.com/auth/drive.file",
+      callback: (response) => {
+        if (response.error || !response.access_token) {
+          state.driveToken = null;
+          reject(new Error(response.error_description || "Google no concedió el acceso solicitado."));
+          return;
+        }
+        state.driveToken = response.access_token;
+        state.driveTokenExpiresAt = Date.now() + Number(response.expires_in || 3600) * 1000;
+        resolve(state.driveToken);
+      },
+    });
+    state.googleTokenClient.requestAccessToken({ prompt: "" });
+  });
+}
+
+function renderDriveFiles(role, files) {
+  const container = byId(`drive-files-${role}`);
+  container.innerHTML = files.length
+    ? `<ul>${files.map((file) => `<li><span>${escapeHtml(file.name)}</span><small>${escapeHtml(file.size ? formatBytes(file.size) : file.mimeType || "")}</small></li>`).join("")}</ul>`
+    : "<small>Sin archivos autorizados. Usa «Autorizar» para elegirlos en Picker.</small>";
+  byId(`drive-count-${role}`).textContent = `${files.length} archivo(s) autorizado(s)`;
+}
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const existing = [...document.scripts].find((script) => script.src === src);
+    if (existing?.dataset.loaded === "true") return resolve();
+    if (existing) {
+      existing.addEventListener("load", resolve, { once: true });
+      existing.addEventListener("error", reject, { once: true });
+      return;
+    }
+    const script = document.createElement("script");
+    script.src = src;
+    script.async = true;
+    script.onload = () => { script.dataset.loaded = "true"; resolve(); };
+    script.onerror = () => reject(new Error("No se pudieron cargar las bibliotecas de Google Picker."));
+    document.head.append(script);
+  });
+}
+
+async function openDrivePicker(role, selectFiles = false) {
+  const pickerSettings = state.drive?.picker;
+  if (!pickerSettings?.client_id || !pickerSettings?.api_key || !pickerSettings?.app_id) {
+    throw new Error("Configura primero las credenciales de Google Picker en Replit Secrets.");
+  }
+  const accessToken = await getDriveAccessToken();
+  await loadScript("https://apis.google.com/js/api.js");
+  await new Promise((resolve, reject) => {
+    gapi.load("picker", { callback: resolve, onerror: () => reject(new Error("No se pudo iniciar Google Picker.")) });
+  });
+  let view;
+  if (selectFiles) {
+    const folderRole = role === "instrucciones" ? "entrada" : role;
+    const folder = state.drive?.folders?.[folderRole];
+    if (!folder) throw new Error("Selecciona primero la carpeta correspondiente.");
+    view = new google.picker.DocsView(google.picker.ViewId.DOCS)
+      .setParent(folder.id)
+      .setIncludeFolders(false)
+      .setMimeTypes(role === "entrada"
+        ? "video/mp4"
+        : role === "instrucciones"
+          ? "application/vnd.google-apps.document"
+          : "image/png,image/jpeg,image/webp");
+  } else {
+    view = new google.picker.DocsView(google.picker.ViewId.FOLDERS)
+      .setIncludeFolders(true)
+      .setSelectFolderEnabled(true);
+  }
+  let builder = new google.picker.PickerBuilder()
+    .setAppId(pickerSettings.app_id)
+    .setDeveloperKey(pickerSettings.api_key)
+    .setOAuthToken(accessToken)
+    .setTitle(selectFiles
+      ? `Autoriza ${role === "entrada" ? "MP4" : role === "instrucciones" ? "instrucciones" : "logos"} de ${state.drive.folders[role === "instrucciones" ? "entrada" : role].name}`
+      : `Selecciona la carpeta ${role.toUpperCase()}`)
+    .addView(view)
+    .setCallback(async (data) => {
+      if (data.action !== google.picker.Action.PICKED) return;
+      const selectedDocs = data.docs || [];
+      const selected = selectedDocs[0];
+      if (!selected?.id) {
+        byId("drive-message").textContent = "Picker no devolvió una selección válida.";
+        return;
+      }
+      if (selectFiles) {
+        byId("drive-message").textContent = `Validando ${selectedDocs.length} archivo(s) seleccionados…`;
+        try {
+          const result = await requestJson("/api/drive/files/select", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              role,
+              files: selectedDocs.map((file) => ({ id: file.id })),
+              access_token: accessToken,
+            }),
+          });
+          state.drive.files[role] = result.files || [];
+          renderDriveFiles(role, state.drive.files[role]);
+          await loadDriveConfig();
+          byId("drive-message").textContent = `${result.files.length} archivo(s) autorizados explícitamente. Los archivos nuevos deben seleccionarse después.`;
+        } catch (error) {
+          byId("drive-message").textContent = `No se pudo autorizar la selección: ${error.message}`;
+          byId("drive-message").classList.add("error");
+        }
+        return;
+      }
+      byId("drive-message").textContent = `Comprobando acceso a ${selected.name}…`;
+      try {
+        const result = await requestJson(API.driveFolders, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ role, folder_id: selected.id, access_token: accessToken }),
+        });
+        state.drive.folders = result.folders;
+        await loadDriveConfig();
+        byId(`drive-count-${role}`).textContent = role === "procesados"
+          ? "Carpeta accesible. La escritura se prueba por separado."
+          : "Carpeta accesible. Elige los archivos que autorizarás.";
+        byId("drive-message").textContent = `Carpeta ${selected.name} seleccionada y acceso verificado.`;
+      } catch (error) {
+        byId("drive-message").textContent = `No se pudo verificar la carpeta: ${error.message}`;
+        byId("drive-message").classList.add("error");
+      }
+    })
+  builder.enableFeature(google.picker.Feature.SUPPORT_DRIVES);
+  if (selectFiles) builder.enableFeature(google.picker.Feature.MULTISELECT_ENABLED);
+  const picker = builder.build();
+  picker.setVisible(true);
+}
+
+async function loadDriveConfig() {
+  try {
+    state.drive = await requestJson(API.driveConfig);
+    const picker = state.drive?.picker || {};
+    const configured = Boolean(picker.client_id && picker.api_key && picker.app_id);
+    for (const role of ["entrada", "logos", "procesados"]) {
+      const folder = state.drive.folders?.[role];
+      byId(`drive-folder-${role}`).textContent = folder?.name || "Sin seleccionar";
+      byId(`drive-count-${role}`).textContent = folder
+        ? `Carpeta seleccionada · ID ${folder.id}`
+        : role === "procesados" ? "Solo se crean archivos nuevos aquí." : "Elige una carpeta para consultar archivos.";
+    }
+    for (const role of ["entrada", "logos", "instrucciones"]) {
+      const folderRole = role === "instrucciones" ? "entrada" : role;
+      if (state.drive.folders?.[folderRole]) {
+        renderDriveFiles(role, state.drive.files?.[role] || []);
+      } else {
+        byId(`drive-files-${role}`).innerHTML = "";
+      }
+    }
+    document.querySelectorAll(".drive-pick-button").forEach((button) => {
+      button.disabled = !configured;
+    });
+    document.querySelectorAll(".drive-authorize-button").forEach((button) => {
+      const role = button.dataset.driveAuthorize;
+      const folderRole = role === "instrucciones" ? "entrada" : role;
+      button.disabled = !configured || !state.drive.folders?.[folderRole];
+    });
+    document.querySelectorAll(".drive-list-button").forEach((button) => {
+      const role = button.dataset.driveList;
+      const folderRole = role === "instrucciones" ? "entrada" : role;
+      button.disabled = !configured || !state.drive.folders?.[folderRole] || !(state.drive.files?.[role]?.length);
+    });
+    byId("drive-test-file-button").disabled = !configured || !state.drive.folders?.procesados;
+    byId("drive-sync-button").disabled = !configured || !state.drive.folders?.entrada || !state.drive.folders?.logos;
+    byId("drive-message").classList.remove("error");
+    byId("drive-message").textContent = configured
+      ? "Picker listo. Al autorizar se solicitará únicamente drive.file."
+      : "Falta configurar GOOGLE_OAUTH_CLIENT_ID, GOOGLE_DRIVE_API_KEY y GOOGLE_DRIVE_APP_ID en Replit Secrets.";
+  } catch (error) {
+    byId("drive-message").textContent = `No se pudo consultar la configuración de Drive: ${error.message}`;
+    byId("drive-message").classList.add("error");
+  }
+}
+
+document.querySelectorAll(".drive-pick-button").forEach((button) => {
+  button.addEventListener("click", async () => {
+    const role = button.dataset.drivePick;
+    button.disabled = true;
+    try {
+      await openDrivePicker(role);
+    } catch (error) {
+      byId("drive-message").textContent = `No se pudo abrir Google Picker: ${error.message}`;
+      byId("drive-message").classList.add("error");
+    } finally {
+      button.disabled = !state.drive?.picker?.client_id
+        || !state.drive?.picker?.api_key
+        || !state.drive?.picker?.app_id;
+    }
+  });
+});
+
+document.querySelectorAll(".drive-authorize-button").forEach((button) => {
+  button.addEventListener("click", async () => {
+    const role = button.dataset.driveAuthorize;
+    button.disabled = true;
+    try {
+      await openDrivePicker(role, true);
+    } catch (error) {
+      byId("drive-message").textContent = `No se pudo seleccionar archivos: ${error.message}`;
+      byId("drive-message").classList.add("error");
+    } finally {
+      button.disabled = !state.drive?.picker?.client_id
+        || !state.drive?.picker?.api_key
+        || !state.drive?.picker?.app_id
+        || !state.drive?.folders?.[role === "instrucciones" ? "entrada" : role];
+    }
+  });
+});
+
+document.querySelectorAll(".drive-list-button").forEach((button) => {
+  button.addEventListener("click", async () => {
+    const role = button.dataset.driveList;
+    button.disabled = true;
+    try {
+      const files = await listDriveFiles(role);
+      byId("drive-message").textContent = `${files.length} archivo(s) seleccionados y accesibles en ${role}.`;
+      byId("drive-message").classList.remove("error");
+    } catch (error) {
+      byId("drive-message").textContent = `No se pudo consultar la selección: ${error.message}`;
+      byId("drive-message").classList.add("error");
+    } finally {
+      button.disabled = !state.drive?.picker?.client_id
+        || !state.drive?.picker?.api_key
+        || !state.drive?.picker?.app_id
+        || !state.drive?.folders?.[role === "instrucciones" ? "entrada" : role]
+        || !(state.drive?.files?.[role]?.length);
+    }
+  });
+});
+
+byId("drive-sync-button").addEventListener("click", async () => {
+  const button = byId("drive-sync-button");
+  button.disabled = true;
+  byId("drive-message").classList.remove("error");
+  byId("drive-message").textContent = "Descargando solo los archivos elegidos en Picker…";
+  try {
+    const result = await postDrive(API.driveSync);
+    state.library = await loadLibrary();
+    state.libraryLoaded = true;
+    if (!state.library.some((item) => String(item.id) === String(state.selectedId))) {
+      state.selectedId = state.library[0]?.id ?? null;
+    }
+    renderLibrary();
+    renderSelectedItem();
+    const items = [...(result.videos || []), ...(result.logos || [])];
+    const downloaded = items.filter((item) => item.status === "downloaded").length;
+    const unchanged = items.filter((item) => item.status === "already_downloaded").length;
+    const invalid = (result.videos || []).filter((item) => item.library_error).length;
+    byId("drive-message").textContent = `Sincronización completada: ${downloaded} descargado(s), ${unchanged} ya sincronizado(s), ${invalid} error(es) de biblioteca.`;
+  } catch (error) {
+    byId("drive-message").textContent = `No se pudieron descargar los archivos elegidos: ${error.message}`;
+    byId("drive-message").classList.add("error");
+  } finally {
+    button.disabled = !state.drive?.picker?.client_id
+      || !state.drive?.picker?.api_key
+      || !state.drive?.picker?.app_id
+      || !state.drive?.folders?.entrada
+      || !state.drive?.folders?.logos;
+  }
+});
+
+byId("drive-test-file-button").addEventListener("click", async () => {
+  const button = byId("drive-test-file-button");
+  button.disabled = true;
+  byId("drive-message").classList.remove("error");
+  byId("drive-message").textContent = "Creando un archivo nuevo de prueba en Procesados…";
+  try {
+    const result = await postDrive(API.driveTestFile);
+    byId("drive-message").textContent = `Archivo nuevo creado: ${result.name || result.id}. No se modificó ningún original.`;
+  } catch (error) {
+    byId("drive-message").textContent = `No se pudo crear el archivo de prueba: ${error.message}`;
+    byId("drive-message").classList.add("error");
+  } finally {
+    button.disabled = !state.drive?.picker?.client_id
+      || !state.drive?.picker?.api_key
+      || !state.drive?.picker?.app_id
+      || !state.drive?.folders?.procesados;
+  }
+});
 
 initializePanel();

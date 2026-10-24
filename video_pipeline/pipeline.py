@@ -9,6 +9,8 @@ import hashlib
 import json
 import math
 import mimetypes
+import re
+from uuid import uuid4
 from collections.abc import Callable
 
 from .config import PipelineConfig
@@ -26,7 +28,14 @@ from .subtitles import build_subtitle_segments, captions_to_srt
 from .transcription import transcribe_video
 
 logger = logging.getLogger(__name__)
-from .drive import upload_new_file
+from .drive import (
+    DriveAccessError,
+    download_drive_file,
+    get_drive_file,
+    load_file_selections,
+    load_folder_selections,
+    upload_new_file,
+)
 
 @dataclass(frozen=True)
 class LocalVideo:
@@ -35,7 +44,7 @@ class LocalVideo:
     size_bytes: int
 
 
-def find_local_videos(directory: str | Path) -> list[LocalVideo]:
+def find_local_mp4s(directory: str | Path) -> list[LocalVideo]:
     """List supported MP4 and MOV files without changing their contents."""
     root = Path(directory)
     if not root.exists():
@@ -50,9 +59,9 @@ def find_local_videos(directory: str | Path) -> list[LocalVideo]:
     ]
 
 
-def find_local_mp4s(directory: str | Path) -> list[LocalVideo]:
-    """Backward-compatible name for listing all supported local videos."""
-    return find_local_videos(directory)
+def find_local_videos(directory: str | Path) -> list[LocalVideo]:
+    """Return every supported local video; retained as the primary scan API."""
+    return find_local_mp4s(directory)
 
 
 def build_dry_run_plan(
@@ -95,7 +104,7 @@ def build_dry_run_plan(
         "processed_folder_id": config.processed_folder_id,
         "logos_folder_id": config.logos_folder_id,
         "discovered_local_video_count": len(videos),
-        "discovered_local_mp4_count": sum(Path(item.path).suffix.lower() == ".mp4" for item in videos),
+        "discovered_local_mp4_count": len(videos),
         "discovered_local_mov_count": sum(Path(item.path).suffix.lower() == ".mov" for item in videos),
         "videos": inspections,
         "shotstack_environment": "stage",
@@ -115,11 +124,138 @@ def build_dry_run_plan(
             "download the verified render and create a new file in the processed Drive folder",
         ],
         "live_integrations_ready": {
-            "google_drive": bool(os.getenv("GOOGLE_OAUTH_TOKEN")),
+            "google_drive": bool(
+                config.google_picker_configured
+                and config.input_folder_id
+                and config.processed_folder_id
+            ),
             "openai": config.openai_api_key_present,
             "shotstack": config.shotstack_api_key_present,
         },
     }
+
+
+def sync_drive_media(
+    config: PipelineConfig,
+    access_token: str,
+    *,
+    input_dir: str | Path | None = None,
+    logo_dir: str | Path = "data/logos",
+    manifest_path: str | Path = "data/drive_downloads.json",
+    session: Any | None = None,
+) -> dict[str, Any]:
+    """Download selected MP4s and logos; skip known files and never overwrite."""
+    selections = load_folder_selections()
+    input_folder = config.input_folder_id or selections.get("entrada", {}).get("id")
+    logos_folder = config.logos_folder_id or selections.get("logos", {}).get("id")
+    if not input_folder or not logos_folder:
+        raise DriveAccessError("Selecciona y valida las carpetas Entrada y Logos con Google Picker.")
+    if not access_token:
+        raise DriveAccessError("Autoriza Google Drive en esta sesión para descargar archivos.")
+
+    incoming = Path(input_dir or config.local_input_dir).expanduser().resolve()
+    logos = Path(logo_dir).expanduser().resolve()
+    manifest_file = Path(manifest_path)
+    try:
+        manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        manifest = {}
+    if not isinstance(manifest, dict):
+        manifest = {}
+
+    report: dict[str, Any] = {"videos": [], "logos": []}
+    for role, folder_id, kind, directory, label in (
+        ("videos", input_folder, "video", incoming, "entrada"),
+        ("logos", logos_folder, "logo", logos, "logos"),
+    ):
+        selection_role = "entrada" if role == "videos" else "logos"
+        files = load_file_selections().get(selection_role, [])
+        directory.mkdir(parents=True, exist_ok=True)
+        for selected in files:
+            item = get_drive_file(
+                selected["id"],
+                access_token=access_token,
+                session=session,
+            )
+            if folder_id not in item.get("parents", []):
+                raise DriveAccessError(
+                    f"El archivo {item.get('name', selected['id'])} ya no pertenece a la carpeta seleccionada."
+                )
+            suffix = Path(item["name"]).suffix.lower()
+            mime = item.get("mimeType", "")
+            if kind == "video" and suffix != ".mp4" and mime != "video/mp4":
+                raise DriveAccessError("La selección de Entrada contiene un archivo que no es MP4.")
+            if kind == "logo" and suffix not in {".png", ".jpg", ".jpeg", ".webp"} and mime not in {
+                "image/png", "image/jpeg", "image/webp"
+            }:
+                raise DriveAccessError("La selección de Logos contiene una imagen no compatible.")
+            file_id = item["id"]
+            previous = manifest.get(file_id)
+            if (
+                isinstance(previous, dict)
+                and previous.get("modifiedTime") == item.get("modifiedTime")
+                and previous.get("size") == item.get("size")
+                and Path(str(previous.get("path", ""))).is_file()
+            ):
+                report[role].append(
+                    {
+                        "id": file_id,
+                        "name": item["name"],
+                        "status": "already_downloaded",
+                        "local_path": str(previous["path"]),
+                    }
+                )
+                continue
+            safe_name = "".join(
+                char for char in Path(item["name"]).name
+                if char.isalnum() or char in {"-", "_", ".", " "}
+            ).strip(" .")
+            if not safe_name:
+                safe_name = f"{label}-{file_id}"
+            suffix = Path(safe_name).suffix.lower()
+            if kind == "video" and suffix != ".mp4":
+                safe_name = f"{Path(safe_name).stem}.mp4"
+            version = hashlib.sha256(
+                f"{item.get('modifiedTime', '')}:{item.get('size', '')}".encode("utf-8")
+            ).hexdigest()[:8]
+            safe_id = re.sub(r"[^A-Za-z0-9_-]", "", file_id)[:10] or "drive-file"
+            name = f"{Path(safe_name).stem}_{safe_id}_{version}{Path(safe_name).suffix}"
+            destination = directory / name
+            downloaded = download_drive_file(
+                file_id,
+                destination,
+                access_token=access_token,
+                session=session,
+            )
+            manifest[file_id] = {
+                "name": item["name"],
+                "modifiedTime": item.get("modifiedTime"),
+                "size": item.get("size"),
+                "path": str(downloaded),
+            }
+            report[role].append(
+                {
+                    "id": file_id,
+                    "name": item["name"],
+                    "status": "downloaded",
+                    "local_path": str(downloaded),
+                }
+            )
+            _write_drive_manifest(manifest_file, manifest)
+
+    report["input_dir"] = str(incoming)
+    report["logo_dir"] = str(logos)
+    return report
+
+
+def _write_drive_manifest(path: Path, manifest: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        temporary.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _new_output_path(directory: Path, source: Path) -> tuple[Path, Path]:
@@ -152,6 +288,7 @@ def process_local_video(
     shotstack_client: ShotstackClient | None = None,
     drive_uploader: Any | None = None,
     upload_to_drive: bool = True,
+    drive_access_token: str | None = None,
     config: PipelineConfig | None = None,
     style: VideoStyle | None = None,
     state_db_path: str | Path = "data/processing.sqlite3",
@@ -162,7 +299,8 @@ def process_local_video(
 
     Paid provider calls are blocked unless the caller explicitly opts in.
     Required credentials are checked before the first API request. Drive
-    receives a new file only when upload_to_drive is enabled, after validation.
+    receives a new file only when upload_to_drive is enabled and the render
+    completes and validates.
     """
     if not paid_api_authorized:
         raise PermissionError(
@@ -193,7 +331,7 @@ def process_local_video(
             f"{appearance.max_video_duration_seconds} seconds."
         )
     if not video.has_audio:
-        raise ValueError("Input video has no audio stream to transcribe.")
+        raise ValueError("Input MP4 has no audio stream to transcribe.")
     transcription_chunks = math.ceil(video.duration / 900)
     if transcription_chunks > appearance.max_transcription_chunks:
         raise ValueError(
@@ -229,11 +367,15 @@ def process_local_video(
         raise RuntimeError(
             "SHOTSTACK_API_KEY is not set in Replit Secrets. No Shotstack credential was created or assumed."
         )
-    drive_token = os.getenv("GOOGLE_OAUTH_TOKEN")
-    if upload_to_drive and drive_uploader is None and not drive_token:
+    drive_token = drive_access_token or os.getenv("GOOGLE_OAUTH_TOKEN")
+    if upload_to_drive and not settings.processed_folder_id:
         raise RuntimeError(
-            "GOOGLE_OAUTH_TOKEN is required to create a new file in Drive. "
-            "No provider calls were made."
+            "Selecciona la carpeta Procesados con Google Picker antes de iniciar el procesamiento."
+        )
+    if upload_to_drive and not drive_token and drive_uploader is None:
+        raise RuntimeError(
+            "Autoriza Google Drive en esta sesión con drive.file o configura GOOGLE_OAUTH_TOKEN en Replit Secrets. "
+            "No se guardan tokens de acceso en el historial de trabajos."
         )
     renderer = shotstack_client or ShotstackClient(
         environment=settings.shotstack_environment,
@@ -351,7 +493,7 @@ def process_local_video(
                 progress_callback("validating_output")
             validated_output = validate_rendered_output(video, output, appearance)
             if _sha256_file(source) != source_hash:
-                raise RuntimeError("The source video changed during processing; it remains unmodified by this pipeline.")
+                raise RuntimeError("The source MP4 changed during processing; it remains unmodified by this pipeline.")
 
         drive_file = None
         if upload_to_drive:

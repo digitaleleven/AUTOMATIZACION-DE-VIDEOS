@@ -35,12 +35,11 @@ TOKEN_URL = "https://oauth2.googleapis.com/token"
 REVOKE_URL = "https://oauth2.googleapis.com/revoke"
 USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"
 DRIVE_API = "https://www.googleapis.com/drive/v3"
-SCOPE_DRIVE_READONLY = "https://www.googleapis.com/auth/drive.readonly"
 SCOPE_DRIVE_FILE = "https://www.googleapis.com/auth/drive.file"
 SCOPE_OPENID = "openid"
 SCOPE_EMAIL = "email"
-DRIVE_SCOPES = (SCOPE_DRIVE_READONLY, SCOPE_DRIVE_FILE, SCOPE_OPENID, SCOPE_EMAIL)
-DRIVE_ACCESS_SCOPES = (SCOPE_DRIVE_READONLY, SCOPE_DRIVE_FILE)
+DRIVE_SCOPES = (SCOPE_DRIVE_FILE, SCOPE_OPENID, SCOPE_EMAIL)
+DRIVE_ACCESS_SCOPES = (SCOPE_DRIVE_FILE,)
 GOOGLE_DOC_MIME = "application/vnd.google-apps.document"
 VIDEO_EXTENSIONS = {".mp4", ".mov"}
 MAX_DRIVE_VIDEO_BYTES = 2 * 1024 * 1024 * 1024
@@ -601,6 +600,29 @@ class GoogleDriveClient:
             if not page_token:
                 return files
         raise GoogleDriveError("La carpeta contiene demasiadas páginas para un único escaneo.")
+
+    def get_file(self, file_id: str) -> dict[str, Any]:
+        if not _DRIVE_ID.fullmatch(file_id):
+            raise GoogleDriveError("El identificador de archivo de Drive no es válido.")
+        response = self._request(
+            "GET",
+            f"{DRIVE_API}/files/{quote(file_id, safe='')}",
+            params={
+                "fields": "id,name,mimeType,size,modifiedTime,md5Checksum,parents,trashed",
+                "supportsAllDrives": "true",
+            },
+        )
+        try:
+            item = response.json()
+        except Exception as exc:
+            raise GoogleDriveError("Google Drive devolvió metadatos no válidos.") from exc
+        if (
+            not isinstance(item, dict)
+            or item.get("id") != file_id
+            or item.get("trashed")
+        ):
+            raise GoogleDriveError("El archivo elegido no está disponible en Google Drive.")
+        return item
 
     def download_file(self, file_id: str, destination: str | Path) -> Path:
         if not _DRIVE_ID.fullmatch(file_id):

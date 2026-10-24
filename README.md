@@ -30,45 +30,25 @@ La transcripción y el render de Shotstack siguen detrás de una autorización e
 
 Antes de procesar, la aplicación comprueba la presencia de las claves de OpenAI y Shotstack y bloquea Shotstack a Stage. Para una entrada de Drive necesita además una autorización Drive válida. Si Drive rechaza el destino, el render local se conserva y puede reintentarse solo la subida, sin volver a renderizar.
 
-## Google Drive: automatización preparada, todavía desconectada
+## Google Drive: selección explícita, scope sin ampliar
 
-No se ha iniciado el consentimiento OAuth ni se ha hecho ninguna llamada real a Google Drive. El escaneo y la autorización están desactivados por defecto. Los IDs configurados son:
+Google Picker solicita únicamente `https://www.googleapis.com/auth/drive.file` para Drive, además de `openid` y `email` para verificar la cuenta OAuth del servicio. No se solicita `drive.readonly` ni otro scope de acceso general. La cuenta propietaria elige Entrada, Logos y Procesados en Picker, y después autoriza individualmente los MP4 y logos que la aplicación puede consultar y descargar. También se pueden seleccionar Google Docs de Entrada para instrucciones; se validan y leen solo los elegidos explícitamente. Seleccionar una carpeta no concede acceso recursivo: los archivos nuevos deben seleccionarse explícitamente.
 
-| Uso | ID |
-| --- | --- |
-| `01_ENTRADA` | `13xrMgSYEOkGANxrUYbmYw1t6TdvXWRYg` |
-| `02_PROCESADOS` | `1J6Z0bsWb2dQNKY4hyq4xl7tigtm_pQKN` |
-| `RECURSOS/LOGOS` | `1t46UE2Mog9JRDSe9TzoPxfs96nE9qDTW` |
+El flujo de OAuth del panel está protegido con `state`, PKCE S256, cookie `HttpOnly; SameSite=Lax` y refresh token cifrado en SQLite. Sus rutas requieren sesión de propietaria; el callback exige estado de un solo uso y valida el correo permitido. El escaneo manual y periódico se limita a los archivos ya seleccionados en Picker, no inicia renders y conserva intactos los originales. El panel también ofrece una prueba Picker que crea un `.txt` nuevo en Procesados y una prueba avanzada que crea y elimina únicamente su MP4 temporal. Ninguna prueba real se ha ejecutado.
 
-El código del panel ahora incluye el flujo web OAuth con `state`, PKCE S256, cookie de estado `HttpOnly; SameSite=Lax` y refresh token cifrado en SQLite con una clave derivada de `SESSION_SECRET`. Las rutas de inicio, estado, escaneo y reintento requieren la sesión propietaria; el callback requiere el estado aleatorio de un solo uso y su cookie. No se persisten ni se devuelven tokens en la interfaz.
+Para Google Picker, configura en Replit Secrets `GOOGLE_DRIVE_API_KEY` y `GOOGLE_DRIVE_APP_ID`. El ID de cliente se lee de `GOOGLE_OAUTH_CLIENT_ID` (o `GOOGLE_DRIVE_CLIENT_ID`). Restringe la API key al origen del panel y a las APIs de Google necesarias. El flujo OAuth de servidor usa `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REDIRECT_URI`, `GOOGLE_OAUTH_ALLOWED_EMAIL` y el interruptor `GOOGLE_DRIVE_OAUTH_ENABLED`; no lo habilites hasta autorizar ese consentimiento. No pegues credenciales en el chat.
 
-Para habilitarlo posteriormente, habrá que configurar en el sistema de Secrets/entorno, sin pegarlos en el chat:
+Los tokens de Picker se mantienen en la pestaña y se envían solo para la operación solicitada. El OAuth de servidor, cuando se habilita por separado, cifra el refresh token en SQLite. Se guardan localmente los IDs seleccionados y el manifiesto de descargas, nunca los tokens de Picker. Las escrituras crean archivos nuevos; no mueven, borran, renombran ni sobrescriben archivos originales. No se han cambiado permisos ni comparticiones de carpetas.
 
-- `GOOGLE_OAUTH_CLIENT_ID`
-- `GOOGLE_OAUTH_CLIENT_SECRET`
-- `GOOGLE_OAUTH_REDIRECT_URI` (HTTPS exacto registrado en el cliente web de Google, con ruta `/oauth/google/callback`)
-- `GOOGLE_OAUTH_ALLOWED_EMAIL` (correo exacto de la cuenta secundaria; es una variable de configuración, no una credencial)
-- `GOOGLE_DRIVE_OAUTH_ENABLED=true` solo cuando se autorice explícitamente iniciar el consentimiento
-
-Los scopes declarados son:
-
-- `https://www.googleapis.com/auth/drive.readonly`: permite listar y descargar archivos que la cuenta secundaria puede ver; no se limita técnicamente a los tres IDs configurados. La cuenta secundaria debe tener acceso solo a las carpetas que MATRIX MOTION necesita.
-- `https://www.googleapis.com/auth/drive.file`: permite crear/modificar los archivos a los que la aplicación tiene acceso. Que la cuenta secundaria tenga rol Editor en `02_PROCESADOS` no garantiza por sí solo que la aplicación pueda usar una carpeta existente con este scope; el permiso efectivo debe probarse. No se ha ampliado el scope ni se ha ejecutado una escritura real.
-- `openid` y `email`: permiten consultar la identidad autenticada. El callback compara el correo verificado con `GOOGLE_OAUTH_ALLOWED_EMAIL` antes de guardar tokens; tokens antiguos sin identidad verificada se rechazan y los tokens recién emitidos para una cuenta no aceptada se revocan de forma segura. La URL de Google pide seleccionar cuenta, pero la comprobación del servidor es la barrera real.
-
-El panel ofrece escaneo manual de `01_ENTRADA` y, al iniciarse el servicio, un sondeo automático cada 15 minutos (configurable con `GOOGLE_DRIVE_SCAN_INTERVAL_SECONDS`, mínimo 5 minutos). El sondeo solo se ejecuta si OAuth está habilitado y la identidad secundaria coincide; importa MP4/MOV una sola vez por ID de Drive, mantiene el original intacto, busca un Google Doc y un logo con el mismo nombre base y nunca inicia renders. Reintenta en el siguiente intervalo si hay errores. Solo opera mientras el proceso Python está activo; Preview no garantiza ejecución continua.
-
-La prueba protegida «Probar escritura MP4» está preparada, pero no se ha ejecutado: tras confirmación explícita crea un MP4 sintético temporal en `02_PROCESADOS` y borra únicamente el archivo que acaba de crear. Si la limpieza falla, informa del ID para retirarlo manualmente. Es la verificación pendiente del permiso efectivo de subida; la prueba local simulada no demuestra permisos reales de Drive.
-
-Los Docs aceptan por ahora solo JSON o líneas `clave: valor`/`clave=valor` para parámetros visuales permitidos; el texto libre no se envía a un modelo ni se interpreta como órdenes. Si no hay instrucciones compatibles, se usa el estilo guardado del panel. Los vídeos Drive solo se procesan con la casilla de autorización de OpenAI/Shotstack Stage y la subida de resultados es una operación aparte; el archivo lleva una clave de idempotencia para no crear resultados repetidos al reintentar.
-
-`video_pipeline/drive.py` conserva la subida reanudable existente de archivos nuevos. El CLI todavía puede usar `GOOGLE_OAUTH_TOKEN` en su ruta anterior; el panel usa el nuevo almacenamiento OAuth cifrado y no necesita ese token manual.
+La sincronización descarga los MP4 seleccionados a `data/incoming/` y los logos seleccionados a `data/logos/`. La selección Picker puede crear un archivo nuevo de prueba en Procesados; la prueba no implica que el acceso de escritura de una cuenta real haya sido validado.
 
 ## Estado de verificación
 
-- Probado localmente con respuestas HTTP simuladas: OAuth state/PKCE, comprobación de identidad secundaria y rechazo de otra cuenta, cifrado y renovación de tokens, paginación/listado, descarga/exportación, importación idempotente, sondeo condicionado y creación/eliminación simulada del MP4 de prueba.
-- No probado con una cuenta Google real: OAuth, scopes concedidos, permisos efectivos sobre las carpetas, descarga real, exportación real de Docs ni subida a `02_PROCESADOS`.
-- No se han realizado llamadas reales a Google, OpenAI o Shotstack, ni se han consumido créditos o cambiado permisos.
+- Probado localmente con respuestas HTTP simuladas: OAuth state/PKCE, verificación de cuenta, cifrado y renovación de tokens, selección de carpetas/archivos, descargas sin sobrescritura, importación idempotente y creación simulada de archivos nuevos.
+- No probado con una cuenta Google real: OAuth, permisos efectivos, descarga real ni creación real en Procesados.
+- No se han realizado llamadas reales a Google, OpenAI o Shotstack ni se han cambiado permisos.
+
+`video_pipeline/drive.py` conserva la subida reanudable de archivos nuevos. El CLI puede seguir usando `GOOGLE_OAUTH_TOKEN` en su ruta anterior.
 
 Referencias oficiales: [flujo OAuth web](https://developers.google.com/identity/protocols/oauth2/web-server), [scopes de Drive](https://developers.google.com/workspace/drive/api/guides/api-specific-auth), [listar archivos](https://developers.google.com/workspace/drive/api/reference/rest/v3/files/list) y [descargas/exportación](https://developers.google.com/workspace/drive/api/guides/manage-downloads).
 

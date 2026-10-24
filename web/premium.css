@@ -867,3 +867,43 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .drive-panel { grid-template-columns: 1fr; }
   .drive-panel-actions { justify-content: flex-start; }
 }
+
+.drive-section {
+  margin: 0 0 28px;
+  padding: 20px;
+  border: 1px solid var(--line);
+  background: var(--surface-soft);
+}
+.drive-heading { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+.drive-heading h2 { margin: 0; font-size: 22px; letter-spacing: -.04em; }
+.drive-heading .eyebrow { margin-bottom: 7px; }
+.drive-copy { max-width: 900px; margin: 12px 0 17px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.drive-copy code { padding: 2px 4px; color: var(--forest-deep); background: var(--surface-strong); font-family: var(--mono-font); }
+.drive-folder-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.drive-folder { min-width: 0; display: grid; grid-template-columns: 1fr auto; align-items: center; align-content: start; gap: 9px; padding: 14px; border: 1px solid var(--line); background: var(--surface); }
+.drive-folder > div:first-child { grid-column: 1 / -1; display: flex; min-width: 0; flex-direction: column; gap: 6px; }
+.drive-role { color: var(--forest); font-family: var(--mono-font); font-size: 10px; letter-spacing: .08em; }
+.drive-folder strong, .drive-folder small { overflow-wrap: anywhere; }
+.drive-folder small { color: var(--muted); font-size: 11px; }
+.drive-folder button { padding: 8px 9px; font-size: 11px; }
+.drive-test-button { grid-column: 1 / -1; }
+.drive-list-button { justify-self: end; }
+.drive-files { grid-column: 1 / -1; max-height: 130px; overflow: auto; }
+.drive-files ul { margin: 0; padding: 0; border-top: 1px solid var(--line); list-style: none; }
+.drive-files li { display: flex; justify-content: space-between; gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--line); }
+.drive-files li span { overflow-wrap: anywhere; font-size: 11px; }
+.drive-files li small { flex: 0 0 auto; font-family: var(--mono-font); font-size: 10px; }
+.drive-message { margin: 13px 0 0; color: var(--forest-deep); font-size: 12px; line-height: 1.5; }
+.drive-message.error { color: var(--danger); }
+.drive-section button:disabled { cursor: not-allowed; opacity: .5; }
+@media (max-width: 1100px) {
+  .drive-folder-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .drive-folder:last-child { grid-column: 1 / -1; }
+}
+@media (max-width: 570px) {
+  .drive-section { padding: 14px; }
+  .drive-heading { align-items: flex-start; flex-direction: column; }
+  .drive-heading .outline-button { width: 100%; }
+  .drive-folder-grid { grid-template-columns: 1fr; }
+  .drive-folder:last-child { grid-column: auto; }
+}
