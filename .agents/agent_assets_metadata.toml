@@ -182,3 +182,31 @@ mtime_ms = 1792869961737
 storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/81b17fd5-672c-42ce-8e7e-4666c430de92/aa215110-3e93-495c-b2b7-fd26eaff8bf0"
 storage_version_token = "1792870203586297"
 content_type = "audio/wav"
+
+[[outputs]]
+id = "oyRfDPsAiOF5pzBsIvmjS"
+uri = "file://generated-artifacts/drive-inspection/q03c/IMG_1254-Q03C-dynamic-viral-sample.mp4"
+type = "video"
+title = "MATRIX MOTION — muestra Q-03C"
+description = "Muestra local vertical de 10,28 s con subtítulos dinámicos y audio AAC. El color está marcado como pendiente de revisión; no es un render completo."
+logical_id = "f00b3ad5-1272-4d30-982f-eb1ee9a8a294"
+content_hash = "sha256:9a7195f2b79621206c1702cc9ede2889fb81fb367606d6915e54ae944f7d2c4c"
+size = 15236245
+mtime_ms = 1792870811477
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/f00b3ad5-1272-4d30-982f-eb1ee9a8a294/e9e3fc73-e1c4-439f-b6b1-650692f9bcaa"
+storage_version_token = "1792871126196046"
+content_type = "video/mp4"
+
+[[outputs]]
+id = "MuYUHf3HyKUnhOUD1ald2"
+uri = "file://generated-artifacts/drive-inspection/q03c/original-vs-q03c-frame.png"
+type = "image"
+title = "Q-03C — comparación visual HLG/BT.709"
+description = "Mismo instante de la fuente y del MP4 de prueba. La conversión final Hable todavía se ve demasiado pálida/desaturada y no está aprobada."
+logical_id = "01558196-8221-4f27-a66b-63b860a50750"
+content_hash = "sha256:e3cde043b829e2ec497441c94bc85d2bf09bdc40d6a4bdb1051834b26a612cc2"
+size = 753399
+mtime_ms = 1792871059396
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/01558196-8221-4f27-a66b-63b860a50750/54381c11-b75d-4a79-a947-66fc5116deec"
+storage_version_token = "1792871126926948"
+content_type = "image/png"

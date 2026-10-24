@@ -716,6 +716,20 @@ h2 { color: #102326; font-size: 24px; }
 .download-link { min-height: 40px; align-items: center; color: #075f5d; font-size: 12px; }
 .job-error { font-size: 12px; }
 
+.q03c-layout { display: grid; grid-template-columns: minmax(260px, .72fr) minmax(0, 1.28fr); gap: 16px; align-items: start; }
+.q03c-video-card { display: flex; flex-direction: column; align-items: center; }
+.q03c-video-card .preview-head { width: 100%; }
+.q03c-video { display: block; width: min(100%, 300px); max-height: 560px; aspect-ratio: 9 / 16; object-fit: contain; background: #102326; }
+.q03c-video-note, .q03c-comparison-note { margin: 12px 0 0; color: #52696b; font-size: 12px; line-height: 1.55; }
+.q03c-comparison { display: block; width: 100%; height: auto; border: 1px solid #d2dfdd; border-radius: 10px; background: #102326; }
+.q03c-color-warning { margin: 12px 0 0; padding: 12px 14px; border-left: 3px solid #bd7044; border-radius: 0 8px 8px 0; background: #fff4eb; color: #68402b; font-size: 12px; line-height: 1.55; }
+.q03c-color-warning strong { color: #65351e; }
+.q03c-pending { color: #8a4c2a; }
+@media (max-width: 850px) {
+  .q03c-layout { grid-template-columns: 1fr; }
+  .q03c-video { max-height: 520px; }
+}
+
 .process-layout { grid-template-columns: minmax(0, 1fr) minmax(320px, 360px); }
 .job-content { padding: 24px; }
 .job-empty { min-height: 105px; }

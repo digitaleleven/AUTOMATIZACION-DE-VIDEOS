@@ -22,6 +22,7 @@
           <button class="rail-link active" type="button" data-scroll="inicio"><span class="nav-symbol">⌂</span>Inicio</button>
           <button class="rail-link" type="button" data-scroll="biblioteca"><span class="nav-symbol">▤</span>Biblioteca</button>
           <button class="rail-link" type="button" data-scroll="estudio"><span class="nav-symbol">▣</span>Estudio de edición</button>
+          <button class="rail-link" type="button" data-scroll="muestra-q03c"><span class="nav-symbol">▶</span>Muestra Q-03C</button>
           <button class="rail-link" type="button" data-scroll="procesamiento"><span class="nav-symbol">⌁</span>Procesamiento</button>
           <button class="rail-link" type="button" data-scroll="configuracion"><span class="nav-symbol">☷</span>Configuración</button>
         </nav>
@@ -174,6 +175,29 @@
                   <video id="output-video" controls playsinline preload="metadata" aria-label="Vídeo editado"></video>
                   <a id="output-link" class="download-link" href="#" download>Descargar resultado <span>↓</span></a>
                 </div>
+              </article>
+            </div>
+          </section>
+
+          <section class="section-block q03c-section" id="muestra-q03c" aria-labelledby="q03c-title">
+            <div class="section-head">
+              <div><p class="eyebrow">Q-03C / EVALUACIÓN LOCAL</p><h2 id="q03c-title">Muestra dinámica · 10,28 s</h2></div>
+              <span class="preview-status q03c-pending">COLOR PENDIENTE DE REVISIÓN</span>
+            </div>
+            <div class="q03c-layout">
+              <article class="preview-card q03c-video-card">
+                <div class="preview-head"><span>REPRODUCCIÓN LOCAL</span><span>H.264 · 1080 × 1920 · 30 FPS</span></div>
+                <video id="q03c-sample-video" class="q03c-video" controls playsinline preload="metadata" aria-describedby="q03c-video-note">
+                  <source src="/media/q03c-sample" type="video/mp4">
+                  Tu navegador no puede reproducir esta muestra MP4.
+                </video>
+                <p class="q03c-video-note" id="q03c-video-note">Audio AAC estéreo de la pista principal. Muestra local con subtítulos dinámicos y un zoom sutil; no es un render completo.</p>
+              </article>
+              <article class="preview-card q03c-review-card">
+                <div class="preview-head"><span>COMPARACIÓN VISUAL</span><span>24,12 s de la fuente</span></div>
+                <img class="q03c-comparison" src="/media/q03c-comparison" alt="Comparación del fotograma original convertido directamente desde HLG y el fotograma de la muestra Q-03C con tone mapping Hable">
+                <p class="q03c-comparison-note">Izquierda: conversión directa HLG a BT.709, sin tone mapping; es una referencia técnica, no una reproducción HDR calibrada. Derecha: fotograma real de la muestra.</p>
+                <p class="q03c-color-warning" role="note"><strong>Color no aprobado:</strong> Hable controla mejor las altas luces visibles, pero la muestra queda demasiado pálida/desaturada en este plano. Hace falta revisar la conversión de color antes de aplicar el estilo al vídeo completo.</p>
               </article>
             </div>
           </section>

@@ -453,6 +453,14 @@ class VideoPanel:
         self.output_dir = Path(output_dir).resolve()
         self.thumbnail_dir = self.input_dir.parent / "thumbnails"
         self.style_path = Path(style_path).resolve()
+        project_root = Path(__file__).resolve().parents[1]
+        self.q03c_sample_path = (
+            project_root
+            / "generated-artifacts/drive-inspection/q03c/IMG_1254-Q03C-dynamic-viral-sample.mp4"
+        )
+        self.q03c_comparison_path = (
+            project_root / "generated-artifacts/drive-inspection/q03c/original-vs-q03c-frame.png"
+        )
         self.input_dir.mkdir(parents=True, exist_ok=True)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.thumbnail_dir.mkdir(parents=True, exist_ok=True)
@@ -2606,6 +2614,16 @@ required minlength="16" {disabled}>
                 elif path.startswith("/api/jobs/"):
                     job_id = path.rsplit("/", 1)[-1]
                     self._json(self.server.panel.get_job(job_id), head=head)
+                elif path == "/media/q03c-sample":
+                    media = self.server.panel.q03c_sample_path
+                    if not media.is_file():
+                        raise PanelError("No se encontró la muestra Q-03C.", 404)
+                    self._send_media(media, media.name, head)
+                elif path == "/media/q03c-comparison":
+                    media = self.server.panel.q03c_comparison_path
+                    if not media.is_file():
+                        raise PanelError("No se encontró la comparación visual Q-03C.", 404)
+                    self._send_media(media, media.name, head)
                 elif path.startswith("/media/incoming/"):
                     file_id = path.rsplit("/", 1)[-1]
                     media, name = self.server.panel.source_path(file_id)
