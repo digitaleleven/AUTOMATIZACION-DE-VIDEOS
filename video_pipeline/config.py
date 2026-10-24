@@ -1,35 +1,14 @@
 """Configuration for local processing and explicitly selected Drive folders."""
 
 from dataclasses import dataclass
-import json
 import os
-from pathlib import Path
+from urllib.parse import urlsplit
 
 
-# Legacy folder IDs remain available for CLI and compatibility tests only.
-# The web panel uses Picker-selected IDs and never assumes these grant access.
+# Server-side OAuth automation is deliberately bounded to these three folders.
 INPUT_FOLDER_ID = "13xrMgSYEOkGANxrUYbmYw1t6TdvXWRYg"
 PROCESSED_FOLDER_ID = "1J6Z0bsWb2dQNKY4hyq4xl7tigtm_pQKN"
 LOGOS_FOLDER_ID = "1t46UE2Mog9JRDSe9TzoPxfs96nE9qDTW"
-DRIVE_SELECTION_PATH = Path("data/drive_folders.json")
-
-
-def _selected_drive_folders() -> dict[str, dict[str, str]]:
-    """Read only user-selected folder IDs; never assume access from known IDs."""
-    try:
-        selection = json.loads(DRIVE_SELECTION_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    if not isinstance(selection, dict):
-        return {}
-    return {
-        key: value
-        for key, value in selection.items()
-        if key in {"entrada", "procesados", "logos"}
-        and isinstance(value, dict)
-        and isinstance(value.get("id"), str)
-        and value["id"].strip()
-    }
 
 
 @dataclass(frozen=True)
@@ -51,11 +30,10 @@ class PipelineConfig:
         environment = os.getenv("SHOTSTACK_ENVIRONMENT", "stage").strip().lower()
         if environment != "stage":
             raise ValueError("This project is locked to Shotstack Stage; production is disabled.")
-        selected = _selected_drive_folders()
         return cls(
-            input_folder_id=selected.get("entrada", {}).get("id"),
-            processed_folder_id=selected.get("procesados", {}).get("id"),
-            logos_folder_id=selected.get("logos", {}).get("id"),
+            input_folder_id=INPUT_FOLDER_ID,
+            processed_folder_id=PROCESSED_FOLDER_ID,
+            logos_folder_id=LOGOS_FOLDER_ID,
             shotstack_environment=environment,
             shotstack_poll_seconds=float(os.getenv("SHOTSTACK_POLL_SECONDS", "5")),
             shotstack_timeout_seconds=float(os.getenv("SHOTSTACK_TIMEOUT_SECONDS", "900")),
@@ -81,4 +59,26 @@ class PipelineConfig:
             for name in ("GOOGLE_DRIVE_API_KEY", "GOOGLE_DRIVE_APP_ID")
         ) and bool(
             os.getenv("GOOGLE_DRIVE_CLIENT_ID") or os.getenv("GOOGLE_OAUTH_CLIENT_ID")
+        )
+
+    @property
+    def google_oauth_configured(self) -> bool:
+        redirect_uri = os.getenv("GOOGLE_OAUTH_REDIRECT_URI", "")
+        try:
+            redirect_path = urlsplit(redirect_uri).path
+        except ValueError:
+            redirect_path = ""
+        return (
+            os.getenv("GOOGLE_DRIVE_OAUTH_ENABLED", "").strip().lower()
+            in {"1", "true", "yes", "on"}
+            and redirect_path == "/oauth/google/callback"
+            and all(
+                os.getenv(name)
+                for name in (
+                    "GOOGLE_OAUTH_CLIENT_ID",
+                    "GOOGLE_OAUTH_CLIENT_SECRET",
+                    "GOOGLE_OAUTH_ALLOWED_EMAIL",
+                    "SESSION_SECRET",
+                )
+            )
         )

@@ -44,6 +44,7 @@ from .google_drive import (
     GoogleDriveError,
     GoogleDriveOAuth,
     GoogleDriveStore,
+    configured_drive_folders,
     parse_style_instructions,
 )
 from .media import MediaError, probe_video
@@ -340,40 +341,33 @@ class VideoPanel:
         if not self.drive_oauth or not self.drive_client or not self.drive_store:
             raise PanelError("El almacenamiento seguro de Drive no está disponible.", 503)
         status = self.drive_status()
+        if status.get("needs_reauthorization"):
+            raise PanelError(
+                "La conexión guardada no incluye los permisos nuevos. Reautoriza Google Drive antes de escanear.",
+                409,
+            )
         if not status.get("ready") or not status.get("authorized"):
             raise PanelError("Google Drive no está conectado. No se consultó ninguna carpeta.", 409)
+        if not status.get("identity_verified"):
+            raise PanelError("La identidad de la cuenta secundaria no está verificada.", 403)
         if not self.drive_scan_lock.acquire(blocking=False):
             raise PanelError("Ya hay un escaneo de Drive en curso.", 409)
         imported: list[dict[str, Any]] = []
         skipped = 0
         failures: list[dict[str, str]] = []
         try:
-            folders = load_folder_selections()
-            selected_files = load_file_selections()
-            input_folder = folders.get("entrada", {})
-            logos_folder = folders.get("logos", {})
-            if not input_folder.get("id") or not logos_folder.get("id"):
-                raise PanelError("Selecciona Entrada y Logos con Google Picker antes de escanear.")
-            input_items = [
-                self.drive_client.get_file(str(item["id"]))
-                for item in [
-                    *selected_files.get("entrada", []),
-                    *selected_files.get("instrucciones", []),
-                ]
-                if item.get("id")
-            ]
-            logo_items = [
-                self.drive_client.get_file(str(item["id"]))
-                for item in selected_files.get("logos", [])
-                if item.get("id")
-            ]
+            folders = configured_drive_folders()
+            input_folder_id = folders["input"]
+            logos_folder_id = folders["logos"]
+            input_items = self.drive_client.list_children(input_folder_id)
+            logo_items = self.drive_client.list_children(logos_folder_id)
             input_items = [
                 item for item in input_items
-                if input_folder["id"] in item.get("parents", [])
+                if input_folder_id in item.get("parents", [])
             ]
             logo_items = [
                 item for item in logo_items
-                if logos_folder["id"] in item.get("parents", [])
+                if logos_folder_id in item.get("parents", [])
             ]
             videos = [
                 item
@@ -484,6 +478,13 @@ class VideoPanel:
         folder_id = str(payload.get("folder_id") or "")
         if role not in {"entrada", "logos", "procesados"}:
             raise PanelError("Selecciona Entrada, Procesados o Logos.")
+        expected_folder_id = {
+            "entrada": configured_drive_folders()["input"],
+            "procesados": configured_drive_folders()["processed"],
+            "logos": configured_drive_folders()["logos"],
+        }[role]
+        if folder_id != expected_folder_id:
+            raise PanelError("MATRIX MOTION solo admite sus tres carpetas configuradas.", 403)
         access_token = self._verified_picker_access_token(payload)
         try:
             folder = get_folder(folder_id, access_token=access_token)
@@ -533,6 +534,11 @@ class VideoPanel:
         folder = load_folder_selections().get(folder_role)
         if not folder:
             raise PanelError(f"Selecciona primero la carpeta {folder_role.title()} con Google Picker.")
+        expected_folder_id = configured_drive_folders()[
+            {"entrada": "input", "logos": "logos"}[folder_role]
+        ]
+        if folder.get("id") != expected_folder_id:
+            raise PanelError("La carpeta guardada no es una carpeta autorizada para MATRIX MOTION.", 403)
         authorized = []
         expected_kind = {
             "entrada": "video",
@@ -573,6 +579,11 @@ class VideoPanel:
         folder = load_folder_selections().get(folder_role)
         if not folder:
             raise PanelError(f"Selecciona primero la carpeta {role.title()} con Google Picker.")
+        expected_folder_id = configured_drive_folders()[
+            {"entrada": "input", "logos": "logos"}[folder_role]
+        ]
+        if folder.get("id") != expected_folder_id:
+            raise PanelError("La carpeta guardada no es una carpeta autorizada para MATRIX MOTION.", 403)
         files = [
             item
             for item in load_file_selections().get(role, [])
@@ -645,7 +656,7 @@ class VideoPanel:
         if not isinstance(payload, dict):
             raise PanelError("La solicitud de prueba de Drive no es válida.")
         folder = load_folder_selections().get("procesados")
-        if not folder:
+        if not folder or folder.get("id") != configured_drive_folders()["processed"]:
             raise PanelError("Selecciona primero la carpeta Procesados con Google Picker.")
         access_token = self._verified_picker_access_token(payload)
         try:
@@ -661,10 +672,12 @@ class VideoPanel:
             )
         if not self.drive_oauth or not self.drive_client:
             raise PanelError("El almacenamiento seguro de Drive no está disponible.", 503)
-        processed_folder_id = load_folder_selections().get("procesados", {}).get("id")
-        if not processed_folder_id:
-            raise PanelError("Selecciona la carpeta Procesados con Google Picker antes de probar la escritura.", 409)
-        access_token = self._verified_picker_access_token(payload)
+        status = self.drive_status()
+        if status.get("needs_reauthorization"):
+            raise PanelError("Reautoriza Google Drive con los permisos nuevos antes de probar la escritura.", 409)
+        if not status.get("ready") or not status.get("authorized") or not status.get("identity_verified"):
+            raise PanelError("Conecta la cuenta secundaria autorizada antes de probar la escritura.", 409)
+        processed_folder_id = configured_drive_folders()["processed"]
         if not self.drive_scan_lock.acquire(blocking=False):
             raise PanelError("Espera a que termine el escaneo de Drive antes de probar la escritura.", 409)
 
@@ -698,7 +711,6 @@ class VideoPanel:
                         video_path,
                         folder_id=processed_folder_id,
                         app_properties={"matrixMotionSource": source_key},
-                        access_token=access_token,
                     )
                     remote_id = str(created.get("id") or "")
                     if not re.fullmatch(r"[A-Za-z0-9_-]{10,200}", remote_id):
@@ -708,9 +720,7 @@ class VideoPanel:
                         or processed_folder_id not in (created.get("parents") or [])
                     ):
                         raise GoogleDriveError("Drive no confirmó la carpeta o el tipo del archivo temporal.")
-                    self.drive_client.delete_created_file(
-                        remote_id, access_token=access_token
-                    )
+                    self.drive_client.delete_created_file(remote_id)
                     remote_id = None
                 except Exception as exc:
                     if not remote_id:
@@ -718,7 +728,6 @@ class VideoPanel:
                             possible_orphan = self.drive_client.find_output_by_source(
                                 source_key,
                                 processed_folder_id,
-                                access_token=access_token,
                             )
                             remote_id = str(possible_orphan.get("id") or "") if possible_orphan else None
                         except Exception as cleanup_lookup_error:
@@ -728,9 +737,7 @@ class VideoPanel:
                             )
                     if remote_id:
                         try:
-                            self.drive_client.delete_created_file(
-                                remote_id, access_token=access_token
-                            )
+                            self.drive_client.delete_created_file(remote_id)
                             remote_id = None
                         except Exception:
                             logger.error(

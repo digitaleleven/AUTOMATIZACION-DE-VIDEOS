@@ -360,6 +360,10 @@ function renderDriveStatus(drive) {
     title.textContent = "No se pudo abrir la conexión guardada";
     detail.textContent = "La clave de cifrado no coincide con la guardada. Activa OAuth y vuelve a autorizar Drive; no se han mostrado tokens.";
     connect.textContent = "Reautorizar OAuth";
+  } else if (drive.needs_reauthorization) {
+    title.textContent = "Se necesitan permisos nuevos";
+    detail.textContent = "La conexión guardada no incluye drive.readonly. Pulsa «Reautorizar OAuth» para que la cuenta secundaria conceda los permisos solicitados.";
+    connect.textContent = "Reautorizar OAuth";
   } else if (drive.identity_mismatch) {
     title.textContent = "La conexión no corresponde a la cuenta autorizada";
     detail.textContent = "El token guardado no se usará. Vuelve a conectar seleccionando la cuenta secundaria configurada.";
@@ -402,7 +406,7 @@ function renderDriveStatus(drive) {
   }
   connect.disabled = drive.ready !== true;
   scan.disabled = drive.authorized !== true || drive.ready !== true;
-   writeTest.disabled = !canWriteDriveProbe();
+  writeTest.disabled = !canWriteDriveProbe();
   const healthDrive = byId("health-drive");
   if (drive.verified) {
     healthDrive.textContent = "Acceso verificado";
@@ -417,12 +421,12 @@ function renderDriveStatus(drive) {
 }
 
 function canWriteDriveProbe() {
-  const picker = state.drive?.picker || {};
+  const drive = state.driveStatus || {};
   return Boolean(
-    picker.client_id
-    && picker.api_key
-    && picker.app_id
-    && state.drive?.folders?.procesados
+    drive.ready === true
+    && drive.authorized === true
+    && drive.identity_verified === true
+    && drive.needs_reauthorization !== true
   );
 }
 
@@ -629,7 +633,7 @@ byId("drive-scan-button").addEventListener("click", async () => {
   button.disabled = true;
   message.hidden = false;
   message.dataset.error = "false";
-  message.textContent = "Consultando únicamente los archivos elegidos en Google Picker. No se iniciará ningún render.";
+  message.textContent = "Consultando únicamente 01_ENTRADA y RECURSOS/LOGOS configuradas. No se iniciará ningún render.";
   try {
     const result = await scanDrive();
     state.library = Array.isArray(result?.items) ? result.items : await loadLibrary();
@@ -1033,7 +1037,7 @@ async function loadDriveConfig() {
     byId("drive-sync-button").disabled = !configured || !state.drive.folders?.entrada || !state.drive.folders?.logos;
     byId("drive-message").classList.remove("error");
     byId("drive-message").textContent = configured
-      ? "Picker listo. Al autorizar se solicitará únicamente drive.file."
+      ? "Picker opcional para seleccionar archivos. El escaneo automático usa OAuth de servidor y los IDs fijos de las carpetas."
       : "Falta configurar GOOGLE_OAUTH_CLIENT_ID, GOOGLE_DRIVE_API_KEY y GOOGLE_DRIVE_APP_ID en Replit Secrets.";
   } catch (error) {
     byId("drive-message").textContent = `No se pudo consultar la configuración de Drive: ${error.message}`;

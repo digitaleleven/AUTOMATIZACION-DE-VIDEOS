@@ -36,10 +36,16 @@ REVOKE_URL = "https://oauth2.googleapis.com/revoke"
 USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"
 DRIVE_API = "https://www.googleapis.com/drive/v3"
 SCOPE_DRIVE_FILE = "https://www.googleapis.com/auth/drive.file"
+SCOPE_DRIVE_READONLY = "https://www.googleapis.com/auth/drive.readonly"
 SCOPE_OPENID = "openid"
 SCOPE_EMAIL = "email"
-DRIVE_SCOPES = (SCOPE_DRIVE_FILE, SCOPE_OPENID, SCOPE_EMAIL)
-DRIVE_ACCESS_SCOPES = (SCOPE_DRIVE_FILE,)
+DRIVE_SCOPES = (
+    SCOPE_DRIVE_READONLY,
+    SCOPE_DRIVE_FILE,
+    SCOPE_OPENID,
+    SCOPE_EMAIL,
+)
+DRIVE_ACCESS_SCOPES = (SCOPE_DRIVE_READONLY, SCOPE_DRIVE_FILE)
 GOOGLE_DOC_MIME = "application/vnd.google-apps.document"
 VIDEO_EXTENSIONS = {".mp4", ".mov"}
 MAX_DRIVE_VIDEO_BYTES = 2 * 1024 * 1024 * 1024
@@ -321,13 +327,26 @@ class GoogleDriveOAuth:
         bundle = self.store.token_bundle()
         stored_email = str(bundle.get("account_email") or "").strip().casefold() if bundle else ""
         allowed_email = self.config.allowed_email.strip().casefold()
+        granted_scopes = set(bundle.get("scopes") or []) if bundle else set()
+        missing_scopes = sorted(set(DRIVE_ACCESS_SCOPES) - granted_scopes)
         identity_verified = bool(
             stored_email
             and allowed_email
             and hmac.compare_digest(stored_email, allowed_email)
             and bundle.get("identity_verified_at")
         )
-        authorized = bool(bundle and bundle.get("refresh_token") and identity_verified)
+        authorized = bool(
+            bundle
+            and bundle.get("refresh_token")
+            and identity_verified
+            and not missing_scopes
+        )
+        needs_reauthorization = bool(
+            bundle
+            and bundle.get("refresh_token")
+            and identity_verified
+            and missing_scopes
+        )
         verified_at = bundle.get("last_verified_at") if authorized and bundle else None
         return {
             "enabled": self.config.enabled,
@@ -335,6 +354,8 @@ class GoogleDriveOAuth:
             "ready": self.config.ready,
             "authorized": authorized,
             "identity_verified": identity_verified,
+            "needs_reauthorization": needs_reauthorization,
+            "missing_scopes": missing_scopes,
             "identity_mismatch": bool(
                 bundle
                 and bundle.get("refresh_token")
@@ -465,13 +486,12 @@ class GoogleDriveOAuth:
         if not isinstance(payload, dict) or not payload.get("access_token"):
             raise GoogleDriveError("Google no devolvió un token de acceso válido.")
         granted_scopes = payload.get("scope")
-        if granted_scopes:
-            actual = set(str(granted_scopes).split())
-            if not set(DRIVE_ACCESS_SCOPES).issubset(actual):
-                self._revoke_unaccepted_grant(payload)
-                raise GoogleDriveError(
-                    "Google no concedió los permisos de Drive configurados; no se guardó la conexión."
-                )
+        actual = set(str(granted_scopes or "").split())
+        if not set(DRIVE_ACCESS_SCOPES).issubset(actual):
+            self._revoke_unaccepted_grant(payload)
+            raise GoogleDriveError(
+                "Google no concedió los permisos de Drive configurados; no se guardó la conexión."
+            )
         try:
             account_email = self.verify_access_token_identity(
                 payload["access_token"],
@@ -631,8 +651,8 @@ class GoogleDriveClient:
         return response
 
     def list_children(self, folder_id: str) -> list[dict[str, Any]]:
-        if not _DRIVE_ID.fullmatch(folder_id):
-            raise GoogleDriveError("El identificador de carpeta configurado no es válido.")
+        if not _DRIVE_ID.fullmatch(folder_id) or folder_id not in configured_drive_folders().values():
+            raise GoogleDriveError("Solo se pueden consultar las carpetas configuradas de MATRIX MOTION.")
         query = f"'{folder_id}' in parents and trashed = false"
         files: list[dict[str, Any]] = []
         page_token = None
@@ -640,7 +660,7 @@ class GoogleDriveClient:
             params: dict[str, Any] = {
                 "q": query,
                 "pageSize": 1000,
-                "fields": "nextPageToken,files(id,name,mimeType,modifiedTime,md5Checksum,size)",
+                "fields": "nextPageToken,files(id,name,mimeType,modifiedTime,md5Checksum,size,parents)",
                 "supportsAllDrives": "true",
                 "includeItemsFromAllDrives": "true",
             }
@@ -654,7 +674,13 @@ class GoogleDriveClient:
             batch = payload.get("files", []) if isinstance(payload, dict) else []
             if not isinstance(batch, list):
                 raise GoogleDriveError("Google Drive devolvió una lista no válida.")
-            files.extend(item for item in batch if isinstance(item, dict))
+            files.extend(
+                item
+                for item in batch
+                if isinstance(item, dict)
+                and isinstance(item.get("parents"), list)
+                and folder_id in item["parents"]
+            )
             page_token = payload.get("nextPageToken")
             if not page_token:
                 return files
@@ -763,8 +789,8 @@ class GoogleDriveClient:
         app_properties: dict[str, str] | None = None,
         access_token: str | None = None,
     ) -> dict[str, Any]:
-        if not _DRIVE_ID.fullmatch(folder_id):
-            raise GoogleDriveError("El identificador de destino de Drive no es válido.")
+        if folder_id != configured_drive_folders()["processed"]:
+            raise GoogleDriveError("Solo se pueden crear resultados en 02_PROCESADOS.")
         source_key = (app_properties or {}).get("matrixMotionSource")
         if source_key:
             existing = self.find_output_by_source(
@@ -806,8 +832,8 @@ class GoogleDriveClient:
     ) -> dict[str, Any] | None:
         if not re.fullmatch(r"[a-f0-9]{64}", source_key):
             raise GoogleDriveError("La clave de idempotencia del vídeo no es válida.")
-        if not _DRIVE_ID.fullmatch(folder_id):
-            raise GoogleDriveError("El identificador de destino de Drive no es válido.")
+        if folder_id != configured_drive_folders()["processed"]:
+            raise GoogleDriveError("Solo se pueden buscar resultados en 02_PROCESADOS.")
         query = (
             "appProperties has { key='matrixMotionSource' and "
             f"value='{source_key}' }} and '{folder_id}' in parents and trashed = false"

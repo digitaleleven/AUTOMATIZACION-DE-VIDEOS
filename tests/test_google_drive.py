@@ -26,12 +26,16 @@ SESSION_SECRET = "test-session-secret-long-enough-for-token-store-0123456789"
 
 
 class DriveScopeTests(unittest.TestCase):
-    def test_drive_access_scope_remains_limited_to_picker_files(self):
+    def test_oauth_requests_read_only_discovery_and_file_creation_scopes(self):
         self.assertEqual(
             DRIVE_ACCESS_SCOPES,
-            ("https://www.googleapis.com/auth/drive.file",),
+            (
+                "https://www.googleapis.com/auth/drive.readonly",
+                "https://www.googleapis.com/auth/drive.file",
+            ),
         )
-        self.assertNotIn("https://www.googleapis.com/auth/drive.readonly", DRIVE_SCOPES)
+        self.assertIn("https://www.googleapis.com/auth/drive.readonly", DRIVE_SCOPES)
+        self.assertNotIn("https://www.googleapis.com/auth/drive", DRIVE_SCOPES)
 
     def test_server_oauth_configuration_does_not_require_picker_keys(self):
         env = {
@@ -141,6 +145,29 @@ class GoogleDriveOAuthTests(unittest.TestCase):
         )
         self.assertFalse(config.ready)
         self.assertEqual(config.missing, ["GOOGLE_OAUTH_ALLOWED_EMAIL"])
+
+    def test_old_drive_file_grant_requires_reauthorization_for_new_scopes(self):
+        self.store.save_token_bundle(
+            {
+                "access_token": "old-access-token",
+                "refresh_token": "old-refresh-token",
+                "expires_at": time.time() + 3600,
+                "scopes": [
+                    "https://www.googleapis.com/auth/drive.file",
+                    "openid",
+                    "email",
+                ],
+                "account_email": "automation@gmail.com",
+                "identity_verified_at": time.time(),
+            }
+        )
+        status = GoogleDriveOAuth(self.config, self.store).status()
+        self.assertFalse(status["authorized"])
+        self.assertTrue(status["needs_reauthorization"])
+        self.assertEqual(
+            status["missing_scopes"],
+            ["https://www.googleapis.com/auth/drive.readonly"],
+        )
 
     def test_pkce_state_one_time_callback_and_encrypted_refresh_token(self):
         http = FakeOAuthHttp(

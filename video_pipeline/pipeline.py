@@ -125,7 +125,7 @@ def build_dry_run_plan(
         ],
         "live_integrations_ready": {
             "google_drive": bool(
-                config.google_picker_configured
+                config.google_oauth_configured
                 and config.input_folder_id
                 and config.processed_folder_id
             ),
@@ -370,7 +370,7 @@ def process_local_video(
     drive_token = drive_access_token or os.getenv("GOOGLE_OAUTH_TOKEN")
     if upload_to_drive and not settings.processed_folder_id:
         raise RuntimeError(
-            "Selecciona la carpeta Procesados con Google Picker antes de iniciar el procesamiento."
+            "No hay una carpeta 02_PROCESADOS configurada para guardar el resultado."
         )
     if upload_to_drive and not drive_token and drive_uploader is None:
         raise RuntimeError(
