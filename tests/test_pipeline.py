@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 import shutil
 import subprocess
+import requests
 from unittest.mock import Mock
 from unittest.mock import patch
 
@@ -260,6 +261,31 @@ class ShotstackPayloadTests(unittest.TestCase):
                     "duration_seconds": 1,
                 }],
             )
+
+    def test_shotstack_http_error_keeps_structured_detail_and_redacts_credentials(self):
+        response = Mock()
+        response.status_code = 400
+        response.raise_for_status.side_effect = requests.HTTPError("HTTP 400")
+        response.json.return_value = {
+            "errors": [{
+                "code": "INVALID_EDIT",
+                "title": "Bad edit",
+                "detail": (
+                    "Invalid source https://private.example/asset?sig=secret "
+                    "token=private-token-value"
+                ),
+                "source": {"pointer": "/timeline/tracks/1/clips/0/effect"},
+            }],
+        }
+        with self.assertLogs("video_pipeline.shotstack", level="ERROR") as captured:
+            with self.assertRaises(ShotstackError) as raised:
+                ShotstackClient._json_response(response, "render submission")
+        diagnostic = str(raised.exception) + "\n" + "\n".join(captured.output)
+        self.assertIn("INVALID_EDIT", diagnostic)
+        self.assertIn("/timeline/tracks/1/clips/0/effect", diagnostic)
+        self.assertIn("[URL redacted]", diagnostic)
+        self.assertNotIn("secret", diagnostic)
+        self.assertNotIn("private-token-value", diagnostic)
 
     def test_subtitles_shift_with_cuts_and_do_not_extend_into_removed_ranges(self):
         cuts = [{"start_seconds": 4, "end_seconds": 5}]

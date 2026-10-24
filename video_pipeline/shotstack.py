@@ -7,6 +7,7 @@ The caller must explicitly authorize paid API calls before using the client.
 import logging
 import os
 from pathlib import Path
+import re
 import time
 from typing import Any
 from urllib.parse import urlsplit
@@ -29,6 +30,62 @@ logger = logging.getLogger(__name__)
 
 class ShotstackError(RuntimeError):
     """Raised for Shotstack API, ingestion, render, or download failures."""
+
+
+def _redact_provider_text(value: Any, limit: int = 300) -> str:
+    text = re.sub(r"[\x00-\x1f\x7f]+", " ", str(value))
+    text = re.sub(r"https?://[^\s\"'<>]+", "[URL redacted]", text, flags=re.IGNORECASE)
+    text = re.sub(
+        r"(?i)\b(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|token|secret|authorization)"
+        r"\s*[:=]\s*[^\s,;]+",
+        r"\1=[REDACTED]",
+        text,
+    )
+    text = re.sub(r"\bBearer\s+\S+", "Bearer [REDACTED]", text, flags=re.IGNORECASE)
+    return text.strip()[:limit]
+
+
+def _provider_error_summary(response: requests.Response) -> str | None:
+    """Extract only safe, structured error fields; never log the raw body."""
+    try:
+        payload = response.json()
+    except (ValueError, TypeError):
+        return None
+
+    candidates: list[dict[str, Any]] = []
+    if isinstance(payload, dict):
+        errors = payload.get("errors")
+        if isinstance(errors, list):
+            candidates.extend(item for item in errors if isinstance(item, dict))
+        for key in ("error", "response", "data"):
+            nested = payload.get(key)
+            if isinstance(nested, dict):
+                candidates.append(nested)
+        candidates.append(payload)
+    elif isinstance(payload, list):
+        candidates.extend(item for item in payload if isinstance(item, dict))
+    elif isinstance(payload, str):
+        value = _redact_provider_text(payload)
+        return value or None
+
+    parts: list[str] = []
+    for item in candidates:
+        for field in ("code", "title", "message", "detail", "error", "response"):
+            value = item.get(field)
+            if isinstance(value, (str, int, float)) and str(value).strip():
+                safe = _redact_provider_text(value, 220)
+                if safe and safe not in parts:
+                    parts.append(safe)
+        source = item.get("source")
+        pointer = source.get("pointer") if isinstance(source, dict) else None
+        if isinstance(pointer, str) and re.fullmatch(r"/[A-Za-z0-9_./~\-]{1,180}", pointer):
+            marker = f"field={pointer}"
+            if marker not in parts:
+                parts.append(marker)
+        if parts:
+            break
+    summary = " | ".join(parts)
+    return summary[:700] or None
 
 
 def build_edit_payload(
@@ -255,7 +312,23 @@ class ShotstackClient:
             status = getattr(response, "status_code", "unknown")
             # Don't chain HTTP errors: their URL can contain a one-time signed
             # upload URL, which must not end up in logs or terminal output.
-            raise ShotstackError(f"Shotstack {operation} failed (HTTP {status}).") from None
+            detail = _provider_error_summary(response)
+            if detail:
+                logger.error(
+                    "Shotstack %s failed (HTTP %s); provider detail: %s",
+                    operation,
+                    status,
+                    detail,
+                )
+                message = f"Shotstack {operation} failed (HTTP {status}): {detail}"
+            else:
+                logger.error(
+                    "Shotstack %s failed (HTTP %s); response had no safe structured detail.",
+                    operation,
+                    status,
+                )
+                message = f"Shotstack {operation} failed (HTTP {status})."
+            raise ShotstackError(message) from None
         try:
             payload = response.json()
         except ValueError as exc:
