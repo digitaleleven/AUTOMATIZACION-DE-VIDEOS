@@ -210,3 +210,59 @@ mtime_ms = 1792871059396
 storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/01558196-8221-4f27-a66b-63b860a50750/54381c11-b75d-4a79-a947-66fc5116deec"
 storage_version_token = "1792871126926948"
 content_type = "image/png"
+
+[[outputs]]
+id = "6D8HQCpw0XvxkOyB7AvDm"
+uri = "file://generated-artifacts/drive-inspection/q03d/q03d-summary-25s.png"
+type = "image"
+title = "Q03D · Comparación Q03B/Q03C/Q03D"
+description = "Fotograma de 25 s a la misma resolución de visualización; el candidato Hable desat=0 conserva más color. Pendiente de revisión humana."
+logical_id = "0d6135fa-8fbf-4a9f-9bd4-807f6c13f1f0"
+content_hash = "sha256:51757d994b4b19bf6a442d055a70e4bffaa478d4f2be3dc8be3951539ef72fe8"
+size = 1232490
+mtime_ms = 1792872239038
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/0d6135fa-8fbf-4a9f-9bd4-807f6c13f1f0/ae1dbd17-5a32-4772-a761-ccb4ab7d54e3"
+storage_version_token = "1792873027027639"
+content_type = "image/png"
+
+[[outputs]]
+id = "9qLCjRuSL-3WXPqOt1HD0"
+uri = "file://generated-artifacts/drive-inspection/q03d/candidate-grid-8s.png"
+type = "image"
+title = "Q03D · Variantes HDR a 8 s"
+description = "Comparación de Hable con distintos valores desat y Mobius, convertidos desde el HLG del original."
+logical_id = "4f302bd2-7f2e-4121-9de8-d4f5949eeb6d"
+content_hash = "sha256:17417834c198007a3e67d9f1dd7a608c884d943b173a2f7e9c1d0961ae337136"
+size = 1109347
+mtime_ms = 1792872234690
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/4f302bd2-7f2e-4121-9de8-d4f5949eeb6d/02d4d107-f549-4f3b-aaf9-a2d1e8df5072"
+storage_version_token = "1792873027757816"
+content_type = "image/png"
+
+[[outputs]]
+id = "l49IVBRqf3qXVXkX60LKS"
+uri = "file://generated-artifacts/drive-inspection/q03d/candidate-grid-25s.png"
+type = "image"
+title = "Q03D · Variantes HDR a 25 s"
+description = "Comparación de tone mapping y saturación en un fotograma representativo."
+logical_id = "b2ff3f89-7fce-47f7-adac-326456814552"
+content_hash = "sha256:b93c83f90b9ae4e2e46df4d6f82d987010f8027f8348eb743a383df46c0f9451"
+size = 1130972
+mtime_ms = 1792872236125
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/b2ff3f89-7fce-47f7-adac-326456814552/85a9d53a-a04e-4a32-9649-a1615601824c"
+storage_version_token = "1792873028464045"
+content_type = "image/png"
+
+[[outputs]]
+id = "xG0HQJphtKbYqNMV-C_Sm"
+uri = "file://generated-artifacts/drive-inspection/q03d/candidate-grid-49s.png"
+type = "image"
+title = "Q03D · Variantes HDR a 49 s"
+description = "Comparación de altas luces, piel y detalle en el último fotograma representativo."
+logical_id = "9a36d67b-75f2-48eb-8f8d-36c9cb203b21"
+content_hash = "sha256:8a450350cacf1ce88a94008a788757472ae9915a83fa637f29625bbd60344da8"
+size = 1184046
+mtime_ms = 1792872237601
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/9a36d67b-75f2-48eb-8f8d-36c9cb203b21/fd2b6ac1-d7c3-4eb3-baf7-81e8224eb218"
+storage_version_token = "1792873029134487"
+content_type = "image/png"

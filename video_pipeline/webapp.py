@@ -461,6 +461,11 @@ class VideoPanel:
         self.q03c_comparison_path = (
             project_root / "generated-artifacts/drive-inspection/q03c/original-vs-q03c-frame.png"
         )
+        q03d_dir = project_root / "generated-artifacts/drive-inspection/q03d"
+        self.q03d_summary_path = q03d_dir / "q03d-summary-25s.png"
+        self.q03d_candidates_8s_path = q03d_dir / "candidate-grid-8s.png"
+        self.q03d_candidates_25s_path = q03d_dir / "candidate-grid-25s.png"
+        self.q03d_candidates_49s_path = q03d_dir / "candidate-grid-49s.png"
         self.input_dir.mkdir(parents=True, exist_ok=True)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.thumbnail_dir.mkdir(parents=True, exist_ok=True)
@@ -2623,6 +2628,17 @@ required minlength="16" {disabled}>
                     media = self.server.panel.q03c_comparison_path
                     if not media.is_file():
                         raise PanelError("No se encontró la comparación visual Q-03C.", 404)
+                    self._send_media(media, media.name, head)
+                elif path.startswith("/media/q03d/"):
+                    media_files = {
+                        "/media/q03d/summary": self.server.panel.q03d_summary_path,
+                        "/media/q03d/candidates-8s": self.server.panel.q03d_candidates_8s_path,
+                        "/media/q03d/candidates-25s": self.server.panel.q03d_candidates_25s_path,
+                        "/media/q03d/candidates-49s": self.server.panel.q03d_candidates_49s_path,
+                    }
+                    media = media_files.get(path)
+                    if media is None or not media.is_file():
+                        raise PanelError("No se encontró la comparación visual Q-03D.", 404)
                     self._send_media(media, media.name, head)
                 elif path.startswith("/media/incoming/"):
                     file_id = path.rsplit("/", 1)[-1]

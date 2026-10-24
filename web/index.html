@@ -202,6 +202,38 @@
             </div>
           </section>
 
+          <section class="section-block q03d-section" id="muestra-q03d" aria-labelledby="q03d-title">
+            <div class="section-head">
+              <div><p class="eyebrow">Q-03D / DIAGNÓSTICO LOCAL</p><h2 id="q03d-title">Comparativas HDR → SDR</h2></div>
+              <span class="preview-status q03d-pending">REVISIÓN HUMANA PENDIENTE</span>
+            </div>
+            <p class="q03d-intro">
+              Fotogramas del mismo original HLG, convertidos a BT.709 con etiquetas de color explícitas. No son un render de vídeo ni una aprobación de color.
+              La capa Dolby Vision RPU no se pudo evaluar en este entorno porque FFmpeg no encontró un dispositivo Vulkan.
+            </p>
+            <div class="q03d-grid">
+              <figure class="preview-card q03d-figure">
+                <figcaption>Comparación del fotograma de 25 s: Q03B, MP4 real Q03C y candidatos Q03D</figcaption>
+                <img class="q03d-image" src="/media/q03d/summary" loading="lazy" alt="Comparación a 25 segundos de Q03B, el fotograma real Q03C, Hable sin desaturación, Hable con desaturación baja y Mobius sin desaturación">
+              </figure>
+              <figure class="preview-card q03d-figure">
+                <figcaption>Variantes de tone mapping a los 8 s</figcaption>
+                <img class="q03d-image" src="/media/q03d/candidates-8s" loading="lazy" alt="Fotograma de 8 segundos comparando Hable con desat 0, 0.01, 0.05 y 0.2, y Mobius con desat 0">
+              </figure>
+              <figure class="preview-card q03d-figure">
+                <figcaption>Variantes de tone mapping a los 25 s</figcaption>
+                <img class="q03d-image" src="/media/q03d/candidates-25s" loading="lazy" alt="Fotograma de 25 segundos comparando Hable con desat 0, 0.01, 0.05 y 0.2, y Mobius con desat 0">
+              </figure>
+              <figure class="preview-card q03d-figure">
+                <figcaption>Variantes de tone mapping a los 49 s</figcaption>
+                <img class="q03d-image" src="/media/q03d/candidates-49s" loading="lazy" alt="Fotograma de 49 segundos comparando Hable con desat 0, 0.01, 0.05 y 0.2, y Mobius con desat 0">
+              </figure>
+            </div>
+            <p class="q03d-warning" role="note">
+              <strong>No integrar todavía:</strong> Hable con <code>desat=0</code> es el candidato que mejor conserva piel y altas luces en estas tres muestras, pero necesita aprobación visual humana. Las comparativas usan la capa base HLG; no reproducen el RPU Dolby Vision completo.
+            </p>
+          </section>
+
           <section class="section-block" id="procesamiento">
             <div class="section-head">
               <div><p class="eyebrow">03 / PROCESO</p><h2>Estado y costes</h2></div>
