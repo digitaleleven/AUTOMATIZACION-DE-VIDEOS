@@ -780,6 +780,10 @@ required minlength="16" {disabled}>
         request_host = hostname(self.headers.get("Host", ""))
         forwarded_header = self.headers.get("X-Forwarded-Host", "")
         forwarded_host = hostname(forwarded_header) if forwarded_header else None
+        forwarded_proto_header = self.headers.get("X-Forwarded-Proto", "")
+        forwarded_proto = forwarded_proto_header.strip().lower()
+        if forwarded_proto and ("," in forwarded_proto or forwarded_proto not in {"http", "https"}):
+            raise PanelError("Solicitud rechazada: origen no permitido.", 403)
         if (
             not request_host
             or request_host not in allowed_hosts
@@ -803,8 +807,22 @@ required minlength="16" {disabled}>
             origin_port = parsed_origin.port
         except ValueError:
             raise PanelError("Solicitud rechazada: origen no permitido.", 403) from None
+        origin_scheme = parsed_origin.scheme.lower()
+        if origin_host == "replit.com":
+            # The editor's embedded Preview is cross-origin. Trust that exact
+            # editor origin only when Replit forwards this app's configured
+            # development hostname over HTTPS from the local proxy.
+            if (
+                origin_scheme == "https"
+                and origin_port in {None, 443}
+                and request_host in local_hosts
+                and forwarded_host in allowed_hosts - local_hosts
+                and forwarded_proto == "https"
+            ):
+                return
+            raise PanelError("Solicitud rechazada: origen no permitido.", 403)
         if (
-            parsed_origin.scheme.lower() not in {"http", "https"}
+            origin_scheme not in {"http", "https"}
             or parsed_origin.username
             or parsed_origin.password
             or parsed_origin.path
@@ -813,7 +831,7 @@ required minlength="16" {disabled}>
             or not origin_host
             or origin_host not in allowed_hosts
             or origin_host != effective_host
-            or (origin_host not in local_hosts and parsed_origin.scheme.lower() != "https")
+            or (origin_host not in local_hosts and origin_scheme != "https")
             or (origin_host not in local_hosts and origin_port not in {None, 443})
         ):
             raise PanelError("Solicitud rechazada: origen no permitido.", 403)

@@ -301,6 +301,21 @@ class VideoPanelApiTests(unittest.TestCase):
                 "REPLIT_DOMAINS": f"{preview_host},custom.example",
             },
         ):
+            status, headers, body = self.request(
+                "GET",
+                "/login",
+                headers={
+                    "Host": f"127.0.0.1:{self.port}",
+                    "Origin": "https://replit.com",
+                    "X-Forwarded-Host": preview_host,
+                    "X-Forwarded-Proto": "https",
+                },
+                authenticated=False,
+            )
+            self.assertEqual(status, 200)
+            self.assertIn("text/html", dict(headers)["Content-Type"])
+            self.assertIn(b'<form method="post" action="/login"', body)
+
             status, _, _ = self.request(
                 "POST",
                 "/login",
@@ -313,6 +328,36 @@ class VideoPanelApiTests(unittest.TestCase):
                 authenticated=False,
             )
             self.assertEqual(status, 400)
+
+            internal_preview_headers = {
+                "Host": f"127.0.0.1:{self.port}",
+                "Origin": "https://replit.com",
+                "X-Forwarded-Host": preview_host,
+                "X-Forwarded-Proto": "https",
+                "Content-Type": "text/plain",
+            }
+            status, _, _ = self.request(
+                "POST",
+                "/login",
+                body=b"probe",
+                headers=internal_preview_headers,
+                authenticated=False,
+            )
+            self.assertEqual(status, 400)
+
+            for invalid_headers in (
+                {**internal_preview_headers, "X-Forwarded-Host": "attacker.example"},
+                {**internal_preview_headers, "X-Forwarded-Proto": "http"},
+                {key: value for key, value in internal_preview_headers.items() if key != "X-Forwarded-Host"},
+            ):
+                status, _, _ = self.request(
+                    "POST",
+                    "/login",
+                    body=b"probe",
+                    headers=invalid_headers,
+                    authenticated=False,
+                )
+                self.assertEqual(status, 403)
 
             status, _, _ = self.request(
                 "POST",
