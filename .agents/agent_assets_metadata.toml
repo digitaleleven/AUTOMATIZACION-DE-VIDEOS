@@ -14,3 +14,31 @@ mtime_ms = 1792864486132
 storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/3880a99f-4a68-4523-b927-204dce934c5b/b8199ca8-475f-40c3-b482-958a456fe8c3"
 storage_version_token = "1792864547611420"
 content_type = "video/mp4"
+
+[[outputs]]
+id = "4YRw3PAtREqz05TlGA1q6"
+uri = "file://generated-artifacts/remotion/viability-smoke-2026-10-24/frame-comparison-1.5s.png"
+type = "image"
+title = "Comparativa de fotogramas a 1,5 s"
+description = "De izquierda a derecha: MOV original reducido con Lanczos, copia optimizada, MP4 de Remotion; cada vista normalizada a 1080×1920 antes de formar la lámina."
+logical_id = "c7dbba1b-9a3d-49e2-81cc-cc506ebfadcb"
+content_hash = "sha256:ea44320fd82781d2282cbd0382f1051a3f350790730b2604a18f9842d7a85794"
+size = 1151405
+mtime_ms = 1792864884567
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/c7dbba1b-9a3d-49e2-81cc-cc506ebfadcb/d79f23c2-7679-424c-9e44-13b3339b3366"
+storage_version_token = "1792865057397645"
+content_type = "image/png"
+
+[[outputs]]
+id = "dQEPyVHYJOd61hKZ8sLns"
+uri = "file://generated-artifacts/remotion/viability-smoke-2026-10-24/frame-detail-comparison-1.5s.png"
+type = "image"
+title = "Detalle de nitidez a 1,5 s"
+description = "Recorte idéntico de 480×480 px del cabello y rostro en las tres etapas; orden de izquierda a derecha igual que la comparativa completa."
+logical_id = "29efec59-80a7-4ce4-9bf7-f62e290714f8"
+content_hash = "sha256:9025398ed12d84d3032506641bd9629c9dd58cf408f6750c22c2ffa5fc4984ed"
+size = 545975
+mtime_ms = 1792864972795
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/29efec59-80a7-4ce4-9bf7-f62e290714f8/dfdb1970-ca64-4117-bee7-5ec9cbea151b"
+storage_version_token = "1792865058138070"
+content_type = "image/png"
