@@ -349,6 +349,18 @@ class VideoPanelApiTests(unittest.TestCase):
                 challenge_headers,
                 "matrix_motion_login_csrf",
             )
+            status, favicon_headers, _ = self.request(
+                "GET",
+                "/favicon.ico",
+                headers={
+                    "Host": preview_host,
+                    "X-Forwarded-Proto": "https",
+                },
+                authenticated=False,
+            )
+            self.assertEqual(status, 204)
+            self.assertNotIn("Set-Cookie", dict(favicon_headers))
+
             status, _, body = self.request(
                 "POST",
                 "/login",
@@ -397,6 +409,69 @@ class VideoPanelApiTests(unittest.TestCase):
                 authenticated=False,
             )
             self.assertEqual(status, 403)
+
+            status, challenge_headers, login_page = self.request(
+                "GET",
+                "/login",
+                headers={
+                    "Host": preview_host,
+                    "X-Forwarded-Proto": "https",
+                },
+                authenticated=False,
+            )
+            self.assertEqual(status, 200)
+            challenge = re.search(
+                rb'name="csrf_token" value="([^"]+)"',
+                login_page,
+            ).group(1).decode("ascii")
+            challenge_cookie = self.cookie_from_headers(
+                challenge_headers,
+                "matrix_motion_login_csrf",
+            )
+            status, _, _ = self.request(
+                "GET",
+                "/favicon.ico",
+                headers={
+                    "Host": preview_host,
+                    "X-Forwarded-Proto": "https",
+                },
+                authenticated=False,
+            )
+            self.assertEqual(status, 204)
+            status, session_headers, _ = self.request(
+                "POST",
+                "/login",
+                body=urlencode({
+                    "password": "unit-test-owner-passphrase",
+                    "csrf_token": challenge,
+                }),
+                headers={
+                    "Host": preview_host,
+                    "Origin": "null",
+                    "X-Forwarded-Proto": "https",
+                    "Cookie": challenge_cookie,
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+                authenticated=False,
+            )
+            self.assertEqual(status, 303)
+            session_cookie = self.cookie_from_headers(
+                session_headers,
+                "matrix_motion_session",
+            )
+            self.assertTrue(session_cookie)
+            status, _, body = self.request(
+                "GET",
+                "/api/library",
+                headers={
+                    "Host": preview_host,
+                    "X-Forwarded-Proto": "https",
+                    "Cookie": session_cookie,
+                },
+                authenticated=False,
+            )
+            self.assertEqual(status, 200)
+            self.assertIn("items", json.loads(body.decode("utf-8")))
 
             status, _, _ = self.request(
                 "POST",
