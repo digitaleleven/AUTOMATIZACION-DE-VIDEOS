@@ -235,13 +235,50 @@ class ShotstackPayloadTests(unittest.TestCase):
         self.assertEqual([clip["asset"]["type"] for clip in tracks[0]["clips"]], ["svg", "svg"])
         self.assertTrue(all(clip["effect"] == "zoomIn" for clip in tracks[0]["clips"]))
         video_clips = tracks[-1]["clips"]
-        self.assertEqual([clip["trim"] for clip in video_clips], [0, 2, 5])
+        self.assertEqual([clip["asset"]["trim"] for clip in video_clips], [0, 2, 5])
+        self.assertTrue(all("trim" not in clip for clip in video_clips))
         self.assertEqual([clip["start"] for clip in video_clips], [0, 2, 4])
         self.assertEqual([clip.get("effect") for clip in video_clips], [None, "zoomIn", None])
         self.assertNotIn("rich-caption", [
             clip["asset"]["type"] for track in tracks for clip in track["clips"]
         ])
         self.assertIn("<svg", tracks[0]["clips"][0]["asset"]["src"])
+
+    def test_0415_video_trims_follow_shotstack_video_asset_schema(self):
+        payload = build_edit_payload(
+            "https://redacted.invalid/source.mov",
+            18.82,
+            [],
+            None,
+            style=VideoStyle(
+                output_width=1080,
+                output_height=1920,
+                output_fps=50,
+                output_quality="high",
+            ),
+            source_width=2160,
+            source_height=3840,
+            subtitle_mode="none",
+            zooms=[{"start_seconds": 10, "end_seconds": 13, "effect": "zoomIn"}],
+            stickers=[{
+                "sticker": "sparkle",
+                "start_seconds": 4,
+                "duration_seconds": 1.5,
+                "position": "topRight",
+                "effect": "zoomIn",
+                "color": "#FFD84D",
+            }],
+        )
+        self.assertEqual(payload["output"], {
+            "format": "mp4",
+            "size": {"width": 1080, "height": 1920},
+            "fps": 50,
+            "quality": "high",
+        })
+        video_clips = payload["timeline"]["tracks"][-1]["clips"]
+        self.assertEqual(len(video_clips), 3)
+        self.assertEqual([clip["asset"]["trim"] for clip in video_clips], [0, 10, 13])
+        self.assertTrue(all("trim" not in clip for clip in video_clips))
 
     def test_edit_plan_rejects_overlapping_cuts_and_unknown_stickers(self):
         with self.assertRaises(ValueError):

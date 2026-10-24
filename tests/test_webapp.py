@@ -895,6 +895,15 @@ class VideoPanelApiTests(unittest.TestCase):
         status, _, job_body = self.request("GET", f"/api/jobs/{retry['id']}")
         self.assertEqual(status, 200)
         self.assertIn("INVALID_EDIT", json.loads(job_body.decode())["error"])
+        with self.assertRaises(PanelError) as third_attempt:
+            self.panel.retry_job(retry["id"], {
+                "authorize_paid_apis": True,
+                "confirm_single_retry": True,
+                "confirm_no_render_id": True,
+                "unknown_cost_acknowledged": True,
+                "confirm_drive_output_write": True,
+            })
+        self.assertEqual(third_attempt.exception.status_code, 409)
 
     def test_retry_is_locked_to_stage(self):
         _, job_id, _, _ = self.create_failed_0415_attempt()

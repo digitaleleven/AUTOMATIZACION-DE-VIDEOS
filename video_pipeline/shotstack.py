@@ -240,11 +240,12 @@ def build_edit_payload(
         midpoint = (source_start + source_end) / 2
         if any(cut["start_seconds"] <= midpoint < cut["end_seconds"] for cut in cuts):
             continue
+        asset = dict(video_asset)
+        asset["trim"] = round(source_start, 3)
         clip = {
-            "asset": dict(video_asset),
+            "asset": asset,
             "start": round(output_start, 3),
             "length": round(length, 3),
-            "trim": round(source_start, 3),
             "fit": video_fit,
             "position": "center",
         }
