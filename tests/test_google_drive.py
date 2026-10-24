@@ -1,11 +1,13 @@
 import hashlib
 import json
+import os
 import sqlite3
 import tempfile
 import time
 import unittest
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
+from unittest.mock import patch
 
 from video_pipeline.config import INPUT_FOLDER_ID, PROCESSED_FOLDER_ID
 from video_pipeline.google_drive import (
@@ -30,6 +32,20 @@ class DriveScopeTests(unittest.TestCase):
             ("https://www.googleapis.com/auth/drive.file",),
         )
         self.assertNotIn("https://www.googleapis.com/auth/drive.readonly", DRIVE_SCOPES)
+
+    def test_server_oauth_configuration_does_not_require_picker_keys(self):
+        env = {
+            "GOOGLE_DRIVE_OAUTH_ENABLED": "true",
+            "GOOGLE_OAUTH_CLIENT_ID": "client.apps.googleusercontent.com",
+            "GOOGLE_OAUTH_CLIENT_SECRET": "test-client-secret",
+            "GOOGLE_OAUTH_REDIRECT_URI": "https://matrix.example.test/oauth/google/callback",
+            "SESSION_SECRET": SESSION_SECRET,
+            "GOOGLE_OAUTH_ALLOWED_EMAIL": "automation@gmail.com",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            config = DriveOAuthConfig.from_environment()
+        self.assertTrue(config.ready)
+        self.assertEqual(config.missing, [])
 
 
 class FakeResponse:

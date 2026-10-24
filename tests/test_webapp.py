@@ -787,6 +787,10 @@ class VideoPanelApiTests(unittest.TestCase):
         authorization_url = json.loads(body.decode("utf-8"))["authorization_url"]
         params = parse_qs(urlsplit(authorization_url).query)
         self.assertEqual(params["code_challenge_method"], ["S256"])
+        self.assertEqual(
+            params["scope"],
+            ["https://www.googleapis.com/auth/drive.file openid email"],
+        )
         state_cookie = self.cookie_from_headers(
             headers, "matrix_motion_google_oauth_state"
         )
@@ -808,6 +812,22 @@ class VideoPanelApiTests(unittest.TestCase):
         )
         self.assertEqual(status, 400)
         self.assertNotIn("unused", body.decode("utf-8"))
+
+    def test_oauth_connect_button_is_wired_without_picker_configuration(self):
+        root = Path(__file__).resolve().parents[1]
+        html = (root / "web" / "index.html").read_text(encoding="utf-8")
+        javascript = (root / "web" / "app.js").read_text(encoding="utf-8")
+        self.assertIn(
+            'id="drive-connect-button" type="button" disabled>Conectar Google Drive (OAuth)',
+            html,
+        )
+        self.assertIn(
+            'byId("drive-connect-button").addEventListener("click"',
+            javascript,
+        )
+        self.assertIn("const result = await startDriveOAuth();", javascript)
+        self.assertIn("window.location.assign(result.authorization_url);", javascript)
+        self.assertIn("connect.disabled = drive.ready !== true;", javascript)
 
     def test_drive_write_test_route_requires_owner_csrf_and_explicit_confirmation(self):
         with patch.object(

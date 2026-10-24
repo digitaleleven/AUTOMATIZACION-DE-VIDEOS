@@ -359,34 +359,34 @@ function renderDriveStatus(drive) {
   if (drive.storage_error) {
     title.textContent = "No se pudo abrir la conexión guardada";
     detail.textContent = "La clave de cifrado no coincide con la guardada. Activa OAuth y vuelve a autorizar Drive; no se han mostrado tokens.";
-    connect.textContent = "Reautorizar";
+    connect.textContent = "Reautorizar OAuth";
   } else if (drive.identity_mismatch) {
     title.textContent = "La conexión no corresponde a la cuenta autorizada";
     detail.textContent = "El token guardado no se usará. Vuelve a conectar seleccionando la cuenta secundaria configurada.";
-    connect.textContent = "Reautorizar";
+    connect.textContent = "Reautorizar OAuth";
   } else if (drive.authorized && drive.ready !== true) {
     title.textContent = "Conexión guardada · integración desactivada";
     detail.textContent = "El token cifrado se conserva, pero OAuth está desactivado y no se harán llamadas a Drive.";
-    connect.textContent = "Conectar Google Drive";
+    connect.textContent = "Conectar Google Drive (OAuth)";
   } else if (drive.verified) {
     title.textContent = "Acceso a Google Drive verificado";
     detail.textContent = "La última consulta de Drive respondió correctamente. Escanea 01_ENTRADA para buscar archivos nuevos.";
-    connect.textContent = "Reautorizar";
+    connect.textContent = "Reautorizar OAuth";
   } else if (drive.authorized) {
     title.textContent = "Autorización guardada · sin verificar";
     detail.textContent = "El token cifrado está guardado. Escanea 01_ENTRADA para comprobar permisos y descargar vídeos nuevos.";
-    connect.textContent = "Reautorizar";
+    connect.textContent = "Reautorizar OAuth";
   } else if (drive.ready) {
     title.textContent = "Autorización pendiente";
     detail.textContent = "La configuración está lista, pero todavía no se ha conectado ninguna cuenta.";
-    connect.textContent = "Conectar Google Drive";
+    connect.textContent = "Conectar Google Drive (OAuth)";
   } else {
     title.textContent = drive.enabled ? "Configuración incompleta" : "Conexión desactivada";
     const missing = Array.isArray(drive.missing_configuration) ? drive.missing_configuration : [];
     detail.textContent = missing.length
       ? `Pendiente de configuración: ${missing.join(", ")}. No se ha iniciado OAuth.`
       : "OAuth está desactivado por seguridad. No se ha contactado con Google.";
-    connect.textContent = "Conectar Google Drive";
+    connect.textContent = "Conectar Google Drive (OAuth)";
   }
   const automatic = drive.automatic_scan || {};
   const intervalMinutes = Math.max(1, Math.round(Number(automatic.interval_seconds || 900) / 60));

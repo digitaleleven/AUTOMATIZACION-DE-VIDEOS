@@ -20,3 +20,9 @@ La usuaria decidió conectar una segunda cuenta Gmail existente y no la cuenta p
 **Why:** separar la identidad de automatización evita que una selección accidental de la cuenta principal autorice el panel.
 
 **How to apply:** verificar server-side callbacks OAuth y tokens temporales de Picker; fallar cerrado, no registrar ni mostrar correo o tokens, y no ampliar ni revocar permisos por el flujo Picker sin autorización.
+
+El scope `drive.file` permite trabajar con archivos creados por la app o compartidos con ella expresamente mediante Picker; compartir una carpeta con la cuenta Google secundaria no equivale a compartirla con la app ni habilita por sí solo el descubrimiento automático.
+
+**Why:** Google limita este scope por archivo para evitar acceso general a Drive.
+
+**How to apply:** si se requiere detectar archivos nuevos en carpetas sin Picker, detenerse y solicitar autorización antes de pedir un scope más amplio; no dar por validado el escaneo automático con `drive.file`.
