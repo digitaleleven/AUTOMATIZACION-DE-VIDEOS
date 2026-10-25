@@ -142,15 +142,15 @@ function partitionSentence(words, maxWords) {
   return groups;
 }
 
-export function groupTimedWords(words, minWords = 1, maxWords = 2) {
+export function groupTimedWords(words, minWords = 1, maxWords = 3) {
   if (
     !Number.isInteger(minWords) ||
     !Number.isInteger(maxWords) ||
     minWords < 1 ||
     maxWords < minWords ||
-    maxWords > 2
+    maxWords > 3
   ) {
-    throw new Error("Cada subtítulo debe contener como máximo dos palabras.");
+    throw new Error("Cada subtítulo debe contener como máximo tres palabras.");
   }
 
   const sentences = [];

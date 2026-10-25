@@ -62,7 +62,7 @@ export const WordSubtitles: FC<{
   captionStyle = DEFAULT_CAPTION_STYLE,
 }) => {
   const frame = useCurrentFrame();
-  const groups = useMemo(() => groupTimedWords(words, 1, 2), [words]);
+  const groups = useMemo(() => groupTimedWords(words, 1, 3), [words]);
   const seconds = frame / fps;
   const group = activeCaptionGroup(groups, seconds);
   if (!showSubtitles || !group) return null;

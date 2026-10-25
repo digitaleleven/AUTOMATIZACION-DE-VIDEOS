@@ -36,6 +36,49 @@ export type SoundEffectCue = {
   durationFrames: number;
 };
 
+export type OverlayPosition =
+  | "topLeft"
+  | "topRight"
+  | "left"
+  | "right"
+  | "bottomLeft"
+  | "bottomRight";
+
+export type TimedImageOverlay = {
+  id: string;
+  asset: string;
+  label: string;
+  position: OverlayPosition;
+  startFrame: number;
+  durationFrames: number;
+};
+
+export type TimedCardOverlay = {
+  id: string;
+  text: string;
+  position: OverlayPosition;
+  startFrame: number;
+  durationFrames: number;
+};
+
+export type TimedTitleOverlay = {
+  text: string;
+  durationFrames: number;
+};
+
+type FullEditProps = {
+  durationInFrames: number;
+  effects: TimedVectorEffect[];
+  wordTimings: TimedWord[];
+  showSubtitles: boolean;
+  soundEffects: SoundEffectCue[];
+  captionStyle: CaptionStyle;
+  titleOverlay: TimedTitleOverlay | null;
+  promoText: string | null;
+  imageOverlays: TimedImageOverlay[];
+  cardOverlays: TimedCardOverlay[];
+};
+
 const SOUND_EFFECT_FILES: Record<SoundEffectCue["kind"], string> = {
   swoosh: "swoosh.wav",
   pop: "pop.wav",
@@ -55,6 +98,156 @@ const SoundEffect: FC<{ cue: SoundEffectCue }> = ({ cue }) => (
     />
   </Sequence>
 );
+
+const OVERLAY_POSITION_STYLE: Record<OverlayPosition, CSSProperties> = {
+  topLeft: { top: "27%", left: "5%" },
+  topRight: { top: "27%", right: "5%" },
+  left: { top: "44%", left: "5%" },
+  right: { top: "44%", right: "5%" },
+  bottomLeft: { bottom: "22%", left: "5%" },
+  bottomRight: { bottom: "22%", right: "5%" },
+};
+
+const overlayOpacity = (frame: number, durationFrames: number) =>
+  interpolate(frame, [0, Math.min(10, durationFrames)], [0, 1], {
+    easing: Easing.out(Easing.quad),
+    extrapolateLeft: "clamp",
+    extrapolateRight: "clamp",
+  });
+
+const overlayScale = (frame: number) =>
+  interpolate(frame, [0, 12], [0.88, 1], {
+    easing: Easing.out(Easing.back(1.4)),
+    extrapolateLeft: "clamp",
+    extrapolateRight: "clamp",
+  });
+
+const TitleOverlay: FC<{ title: TimedTitleOverlay }> = ({ title }) => {
+  const frame = useCurrentFrame();
+  return (
+    <AbsoluteFill style={{ pointerEvents: "none" }} aria-hidden="true">
+      <div
+        style={{
+          position: "absolute",
+          top: "8%",
+          left: "8%",
+          right: "8%",
+          color: "#FFFDF8",
+          fontFamily: 'Georgia, "Times New Roman", serif',
+          fontSize: 70,
+          fontWeight: 700,
+          letterSpacing: "-0.02em",
+          textAlign: "center",
+          lineHeight: 1.06,
+          opacity: overlayOpacity(frame, title.durationFrames),
+          transform: `scale(${overlayScale(frame)})`,
+          textShadow: "0 3px 12px rgba(20,16,12,0.48)",
+        }}
+      >
+        {title.text}
+      </div>
+    </AbsoluteFill>
+  );
+};
+
+const PromoOverlay: FC<{ text: string }> = ({ text }) => (
+  <AbsoluteFill style={{ pointerEvents: "none" }} aria-hidden="true">
+    <div
+      style={{
+        position: "absolute",
+        top: "18%",
+        left: "5%",
+        maxWidth: "58%",
+        padding: "12px 18px",
+        borderRadius: 14,
+        backgroundColor: "rgba(24,27,27,0.74)",
+        color: "#FFFDF8",
+        fontFamily: '"Montserrat", Arial, sans-serif',
+        fontSize: 30,
+        fontWeight: 750,
+        lineHeight: 1.15,
+        boxShadow: "0 5px 18px rgba(0,0,0,0.24)",
+        overflowWrap: "anywhere",
+      }}
+    >
+      {text}
+    </div>
+  </AbsoluteFill>
+);
+
+const PictureInPictureOverlay: FC<{ cue: TimedImageOverlay }> = ({ cue }) => {
+  const frame = useCurrentFrame();
+  return (
+    <AbsoluteFill style={{ pointerEvents: "none" }} aria-hidden="true">
+      <div
+        style={{
+          position: "absolute",
+          ...OVERLAY_POSITION_STYLE[cue.position],
+          width: 300,
+          maxWidth: "31%",
+          opacity: overlayOpacity(frame, cue.durationFrames),
+          transform: `scale(${overlayScale(frame)})`,
+          transformOrigin: "center",
+          borderRadius: 16,
+          overflow: "hidden",
+          backgroundColor: "rgba(255,253,248,0.96)",
+          boxShadow: "0 8px 26px rgba(0,0,0,0.30)",
+        }}
+      >
+        <Img
+          src={staticFile(`overlays/${cue.asset}`)}
+          style={{ display: "block", width: "100%", maxHeight: 360, objectFit: "contain" }}
+        />
+        {cue.label && (
+          <div
+            style={{
+              padding: "9px 12px",
+              color: "#272522",
+              fontFamily: '"Montserrat", Arial, sans-serif',
+              fontSize: 20,
+              fontWeight: 700,
+              textAlign: "center",
+            }}
+          >
+            {cue.label}
+          </div>
+        )}
+      </div>
+    </AbsoluteFill>
+  );
+};
+
+const ProductCardOverlay: FC<{ cue: TimedCardOverlay }> = ({ cue }) => {
+  const frame = useCurrentFrame();
+  return (
+    <AbsoluteFill style={{ pointerEvents: "none" }} aria-hidden="true">
+      <div
+        style={{
+          position: "absolute",
+          ...OVERLAY_POSITION_STYLE[cue.position],
+          width: 330,
+          maxWidth: "34%",
+          padding: "20px 22px",
+          borderRadius: 16,
+          backgroundColor: "rgba(255,253,248,0.94)",
+          color: "#2D2825",
+          fontFamily: 'Georgia, "Times New Roman", serif',
+          fontSize: 30,
+          fontWeight: 700,
+          lineHeight: 1.18,
+          textAlign: "center",
+          opacity: overlayOpacity(frame, cue.durationFrames),
+          transform: `scale(${overlayScale(frame)})`,
+          transformOrigin: "center",
+          boxShadow: "0 8px 26px rgba(0,0,0,0.28)",
+          overflowWrap: "anywhere",
+        }}
+      >
+        {cue.text}
+      </div>
+    </AbsoluteFill>
+  );
+};
 
 const VectorOverlay: FC<{ effect: TimedVectorEffect }> = ({ effect }) => {
   const frame = useCurrentFrame();

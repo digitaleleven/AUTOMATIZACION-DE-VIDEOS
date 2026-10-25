@@ -67,7 +67,7 @@ test("Remotion source clips use frame-based trim and duration props", () => {
   assert.throws(() => getSourceClipWindow(300, 100, 360), /Invalid source clip frame range/);
 });
 
-test("caption groups stay within one to two words and highlight one timed word", () => {
+test("caption groups stay within one to three words and highlight one timed word", () => {
   const words = [
     { text: "Una", start: 0, end: 0.2 },
     { text: "prueba", start: 0.2, end: 0.5 },
@@ -78,14 +78,14 @@ test("caption groups stay within one to two words and highlight one timed word",
   ];
   const groups = groupTimedWords(words);
 
-  assert.deepEqual(groups.map((group) => group.words.length), [2, 2, 2]);
-  assert.ok(groups.every((group) => group.words.length >= 1 && group.words.length <= 2));
+  assert.deepEqual(groups.map((group) => group.words.length), [3, 3]);
+  assert.ok(groups.every((group) => group.words.length >= 1 && group.words.length <= 3));
   const group = activeCaptionGroup(groups, 0.82);
   assert.ok(group);
-  assert.equal(activeWordIndex(group, 0.82), 1);
-  assert.equal(activeWordIndex(activeCaptionGroup(groups, 1.0), 1.0), 0);
+  assert.equal(activeWordIndex(group, 0.82), 0);
+  assert.equal(activeWordIndex(activeCaptionGroup(groups, 1.0), 1.0), 1);
   assert.equal(activeCaptionGroup(groups, 2), null);
-  assert.throws(() => groupTimedWords(words, 1, 3), /como máximo dos palabras/u);
+  assert.throws(() => groupTimedWords(words, 1, 4), /como máximo tres palabras/u);
 });
 
 test("overlapping transitions choose only the most recently started group and word", () => {
