@@ -337,22 +337,24 @@
 
           <section class="section-block q03e-section" id="resultado-remotion" aria-labelledby="remotion-final-title">
             <div class="section-head">
-              <div><p class="eyebrow">REMOTION / PERFIL HLG → SDR</p><h2 id="remotion-final-title">IMG_1254.MOV · edición final de revisión</h2></div>
+              <div><p class="eyebrow">REMOTION + FFMPEG / HLG → SDR</p><h2 id="remotion-final-title">IMG_1254.MOV · máster local de revisión</h2></div>
               <span class="preview-status q03e-pending">PENDIENTE DE REVISIÓN HUMANA</span>
             </div>
             <p class="q03e-intro">
-              MP4 completo de 58,24 s, 1080 × 1920 a 30 FPS. Incluye 134 marcas de palabras, resaltado dinámico, zooms de énfasis y tres apariciones vectoriales sincronizadas.
-              Se generó desde un proxy SDR derivado del MOV 4K; el original y los resultados previos permanecen intactos. La duración queda un fotograma por debajo del plan porque el proxy contiene 1.799 fotogramas reales.
+              Remotion genera solo la capa gráfica transparente a 1080 × 1920; FFmpeg procesa el MOV 4K original, aplica cortes y color, y compone el resultado. El zoom progresivo de cámara está desactivado.
             </p>
             <div class="q03c-layout">
               <article class="preview-card q03c-video-card">
-                <div class="preview-head"><span>REPRODUCCIÓN AUTENTICADA</span><span>H.264 · CRF 17 · AAC estéreo · BT.709</span></div>
-                <video id="remotion-final-video" class="q03c-video" controls playsinline preload="metadata" aria-describedby="remotion-final-video-note">
-                  <source src="/media/outputs/IMG_1254-MATRIX-MOTION-Remotion-final.mp4" type="video/mp4">
+                <div class="preview-head"><span>REPRODUCCIÓN AUTENTICADA</span><span>H.264 High · CRF 15 · AAC · BT.709</span></div>
+                <video id="remotion-final-video" class="q03c-video" controls playsinline preload="metadata" hidden aria-describedby="remotion-final-video-note">
+                  <source data-src="/media/outputs/IMG_1254-MATRIX-MOTION-v3-PRO-MASTER.mp4" type="video/mp4">
                   Tu navegador no puede reproducir este vídeo MP4.
                 </video>
+                <p class="q03c-video-note" id="remotion-final-video-status" role="status" aria-live="polite">
+                  Comprobando si el máster local está disponible…
+                </p>
                 <p class="q03c-video-note" id="remotion-final-video-note">
-                  La ruta requiere una sesión de propietaria y admite solicitudes parciales para reproducción y búsqueda. La conversión HLG → BT.709, la piel y las altas luces siguen pendientes de aprobación visual humana.
+                  La ruta requiere sesión de propietaria y admite solicitudes parciales. El color final sigue pendiente de revisión humana; el bitrate real se mide en el informe del render.
                 </p>
               </article>
             </div>
@@ -465,6 +467,8 @@
                     <div class="field-pair"><label>Color del texto<input name="font_color" type="color"></label><label>Color del contorno<input name="stroke_color" type="color"></label></div>
                     <label>Color de resaltado<input name="highlight_color" type="color"></label>
                     <label>Animación de subtítulos<select name="animation_style"><option value="highlight">Resaltar palabra</option><option value="karaoke">Karaoke</option></select></label>
+                    <label class="toggle-line"><input name="show_subtitles" type="checkbox"><span>Mostrar subtítulos en nuevas salidas locales de Remotion</span></label>
+                    <small class="field-help">Se aplica a los siguientes renders locales; no modifica vídeos ya generados ni los renders de Shotstack.</small>
                     <label>Emojis asociados a subtítulos<textarea name="emoji_by_keyword" rows="3" placeholder='{"palabra":"carácter Unicode"}' aria-describedby="emoji-help"></textarea></label>
                     <small class="field-help" id="emoji-help">Solo se aplica al texto de los subtítulos. No crea stickers ni emojis independientes.</small>
                   </div>

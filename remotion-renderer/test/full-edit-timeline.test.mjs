@@ -15,9 +15,9 @@ const cuts = [
   { start_seconds: 36.54, end_seconds: 37.07 },
 ];
 
-test("master composition uses native 4K vertical resolution and no camera zoom", () => {
-  assert.equal(FULL_WIDTH, 2160);
-  assert.equal(FULL_HEIGHT, 3840);
+test("master graphics composition uses vertical HD and disables progressive camera zoom", () => {
+  assert.equal(FULL_WIDTH, 1080);
+  assert.equal(FULL_HEIGHT, 1920);
   for (const frame of [0, 1, 30, 908, 1496, 1746]) {
     assert.equal(cameraScaleAtFrame(frame), 1);
   }

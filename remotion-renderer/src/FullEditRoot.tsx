@@ -1,10 +1,10 @@
+import "@fontsource/montserrat/800.css";
 import {
   AbsoluteFill,
   Audio,
   Composition,
   Easing,
   Img,
-  OffthreadVideo,
   Sequence,
   interpolate,
   staticFile,
@@ -13,71 +13,43 @@ import {
 import type { CSSProperties, FC } from "react";
 import { WordSubtitles } from "./WordSubtitles";
 import type { TimedWord } from "./caption-timing.mjs";
-import type { KeepSegment, TimedVectorEffect } from "./full-edit-timeline.mjs";
-import { getSourceClipWindow } from "./edit-timeline.mjs";
+import type { TimedVectorEffect } from "./full-edit-timeline.mjs";
 import {
-  cameraScaleAtFrame,
   FULL_DURATION_IN_FRAMES,
   FULL_FPS,
   FULL_HEIGHT,
   FULL_WIDTH,
 } from "./full-edit-timeline.mjs";
 
-const OVERLAY_BASE_WIDTH = 1080;
-const OVERLAY_BASE_HEIGHT = 1920;
-const OVERLAY_SCALE = FULL_WIDTH / OVERLAY_BASE_WIDTH;
-
 type FullEditProps = {
-  sourceFile: string;
-  audioFile: string;
-  sourceDurationInFrames: number;
   durationInFrames: number;
-  clips: KeepSegment[];
   effects: TimedVectorEffect[];
   wordTimings: TimedWord[];
+  showSubtitles: boolean;
+  soundEffects: SoundEffectCue[];
 };
 
-const VideoClip: FC<{
-  sourceFile: string;
-  sourceDurationInFrames: number;
-  clip: KeepSegment;
-}> = ({ sourceFile, sourceDurationInFrames, clip }) => {
-  const frame = useCurrentFrame();
-  const sourceWindow = getSourceClipWindow(
-    clip.sourceStart,
-    clip.frames,
-    sourceDurationInFrames,
-  );
-  const scale = cameraScaleAtFrame(frame);
-
-  return (
-    <AbsoluteFill style={{ overflow: "hidden", backgroundColor: "#08090b" }}>
-      <OffthreadVideo
-        src={staticFile(sourceFile)}
-        trimBefore={sourceWindow.trimBefore}
-        durationInFrames={sourceWindow.durationInFrames}
-        muted
-        style={{
-          width: "100%",
-          height: "100%",
-          objectFit: "cover",
-          transform: `scale(${scale})`,
-        }}
-      />
-    </AbsoluteFill>
-  );
+export type SoundEffectCue = {
+  kind: "swoosh" | "pop" | "ding";
+  startFrame: number;
+  durationFrames: number;
 };
 
-const AudioClip: FC<{
-  audioFile: string;
-  clip: KeepSegment;
-}> = ({ audioFile, clip }) => (
-  <Sequence from={clip.outputStart} durationInFrames={clip.frames} layout="none">
+const SOUND_EFFECT_FILES: Record<SoundEffectCue["kind"], string> = {
+  swoosh: "swoosh.wav",
+  pop: "pop.wav",
+  ding: "ding.wav",
+};
+
+const SoundEffect: FC<{ cue: SoundEffectCue }> = ({ cue }) => (
+  <Sequence
+    from={cue.startFrame}
+    durationInFrames={cue.durationFrames}
+    layout="none"
+  >
     <Audio
-      src={staticFile(audioFile)}
-      trimBefore={clip.sourceStart}
-      durationInFrames={clip.frames}
-      volume={1}
+      src={staticFile(`sfx/${SOUND_EFFECT_FILES[cue.kind]}`)}
+      volume={0.45}
     />
   </Sequence>
 );
@@ -143,74 +115,47 @@ const VectorOverlay: FC<{ effect: TimedVectorEffect }> = ({ effect }) => {
 };
 
 const FullEdit: FC<FullEditProps> = ({
-  sourceFile,
-  audioFile,
-  sourceDurationInFrames,
-  clips,
   effects,
   wordTimings,
+  showSubtitles,
+  soundEffects,
 }) => (
-  <AbsoluteFill style={{ backgroundColor: "#08090b" }}>
-    {clips.map((clip) => (
+  <AbsoluteFill style={{ backgroundColor: "transparent" }}>
+    {effects.map((effect) => (
       <Sequence
-        key={`video-${clip.sourceStart}`}
-        from={clip.outputStart}
-        durationInFrames={clip.frames}
+        key={effect.id}
+        from={effect.startFrame}
+        durationInFrames={effect.durationFrames}
         layout="none"
       >
-        <VideoClip
-          sourceFile={sourceFile}
-          sourceDurationInFrames={sourceDurationInFrames}
-          clip={clip}
-        />
+        <VectorOverlay effect={effect} />
       </Sequence>
     ))}
-    {clips.map((clip) => (
-      <AudioClip key={`audio-${clip.sourceStart}`} audioFile={audioFile} clip={clip} />
+    <WordSubtitles
+      words={wordTimings}
+      fps={FULL_FPS}
+      showSubtitles={showSubtitles}
+    />
+    {soundEffects.map((cue, index) => (
+      <SoundEffect key={`${cue.kind}-${cue.startFrame}-${index}`} cue={cue} />
     ))}
-    <div
-      style={{
-        position: "absolute",
-        left: 0,
-        top: 0,
-        width: OVERLAY_BASE_WIDTH,
-        height: OVERLAY_BASE_HEIGHT,
-        transform: `scale(${OVERLAY_SCALE})`,
-        transformOrigin: "top left",
-        pointerEvents: "none",
-      }}
-    >
-      {effects.map((effect) => (
-        <Sequence
-          key={effect.id}
-          from={effect.startFrame}
-          durationInFrames={effect.durationFrames}
-          layout="none"
-        >
-          <VectorOverlay effect={effect} />
-        </Sequence>
-      ))}
-      <WordSubtitles words={wordTimings} fps={FULL_FPS} />
-    </div>
   </AbsoluteFill>
 );
 
 export const FullRemotionRoot: FC = () => (
   <Composition
-    id="MATRIX-MOTION-Remotion-Full"
+    id="MATRIX-MOTION-Master-Overlay"
     component={FullEdit}
     width={FULL_WIDTH}
     height={FULL_HEIGHT}
     fps={FULL_FPS}
     durationInFrames={FULL_DURATION_IN_FRAMES}
     defaultProps={{
-      sourceFile: "source-proxy.mp4",
-      audioFile: "source-audio.wav",
-      sourceDurationInFrames: 1800,
       durationInFrames: FULL_DURATION_IN_FRAMES,
-      clips: [],
       effects: [],
       wordTimings: [],
+      showSubtitles: true,
+      soundEffects: [],
     }}
   />
 );

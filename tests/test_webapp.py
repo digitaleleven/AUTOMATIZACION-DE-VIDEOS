@@ -284,7 +284,8 @@ class VideoPanelApiTests(unittest.TestCase):
         self.assertIn(b'/media/outputs/IMG_1254-MATRIX-MOTION-MM004.mp4', body)
         self.assertIn(b'id="resultado-remotion"', body)
         self.assertIn(b'id="remotion-final-video"', body)
-        self.assertIn(b'/media/outputs/IMG_1254-MATRIX-MOTION-Remotion-final.mp4', body)
+        self.assertIn(b'data-src="/media/outputs/IMG_1254-MATRIX-MOTION-v3-PRO-MASTER.mp4"', body)
+        self.assertIn(b'name="show_subtitles" type="checkbox"', body)
         self.assertIn(b'00:56,51', body)
 
     def test_mm004_result_is_authenticated_range_media(self):
@@ -1478,6 +1479,7 @@ class VideoPanelApiTests(unittest.TestCase):
         style = self.panel.style()
         style["font_size"] = 72
         style["emoji_by_keyword"] = {"viaje": "✈️"}
+        style["show_subtitles"] = False
         style["logo_position"] = "bottomLeft"
         style["logo_scale"] = 0.18
         style["logo_offset_x"] = 0.1
@@ -1492,6 +1494,7 @@ class VideoPanelApiTests(unittest.TestCase):
         saved = json.loads(body.decode("utf-8"))
         self.assertEqual(saved["font_size"], 72)
         self.assertEqual(saved["emoji_by_keyword"], {"viaje": "✈️"})
+        self.assertFalse(saved["show_subtitles"])
         self.assertEqual(saved["logo_position"], "bottomLeft")
         self.assertEqual(saved["logo_scale"], 0.18)
 
@@ -1500,6 +1503,7 @@ class VideoPanelApiTests(unittest.TestCase):
         saved = json.loads(body.decode("utf-8"))
         self.assertEqual(saved["font_size"], 72)
         self.assertEqual(saved["emoji_by_keyword"], {"viaje": "✈️"})
+        self.assertFalse(saved["show_subtitles"])
 
     def test_drive_routes_require_owner_and_oauth_is_disabled_without_consent(self):
         status, _, body = self.request(

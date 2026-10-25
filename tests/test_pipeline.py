@@ -1314,9 +1314,13 @@ class StateAndStyleTests(unittest.TestCase):
             style = load_video_style(path)
             self.assertEqual(style.animation_style, "karaoke")
             self.assertEqual(style.font_size, 72)
+            self.assertTrue(style.show_subtitles)
             self.assertIsNone(style.max_input_size_mb)
             path.write_text('{"animation_style":"made-up"}', encoding="utf-8")
             with self.assertRaises(StyleConfigError):
+                load_video_style(path)
+            path.write_text('{"show_subtitles":"false"}', encoding="utf-8")
+            with self.assertRaisesRegex(StyleConfigError, "show_subtitles"):
                 load_video_style(path)
 
 

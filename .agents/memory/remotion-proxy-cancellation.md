@@ -28,3 +28,11 @@ En una prueba local posterior, el proxy All-Intra 4K volvió a fallar al entrega
 **Why:** la prueba 4K registró cancelación del cuerpo HTTP con 248 GB libres; la prueba 1080p terminó con 150 fotogramas decodificables y sin fotogramas negros detectados.
 
 **How to apply:** emparejar resolución del proxy con la composición de salida y validar imagen y audio; atribuir fallos a memoria solo con métricas de memoria u OOM, no por el aviso genérico de Chrome.
+
+### Rutas temporales y socket de Chromium
+
+Cuando Remotion necesita guardar bundles grandes en el disco del workspace, no asignes `TMPDIR` directamente a una ruta larga del proyecto: Chromium puede detenerse antes de renderizar con `Socket path too long` al crear `SingletonSocket`. Un enlace simbólico de nombre corto bajo `/tmp` puede apuntar al directorio de trabajo del workspace, manteniendo los datos grandes en disco y el nombre que Chromium usa para el perfil temporal corto.
+
+**Why:** un intento real trasladó el bundle al workspace para evitar el tmpfs, pero Chromium rechazó la ruta larga del perfil antes de producir fotogramas. El directorio temporal fallido llegó a 1.1 GB; el espacio libre seguía amplio.
+
+**How to apply:** usar un enlace temporal corto bajo `/tmp` como `TMPDIR`, apuntado al directorio temporal del workspace; eliminarlo al salir y conservar el registro del fallo. Verificar con la ruta exacta del error antes de atribuirlo a memoria o a espacio.

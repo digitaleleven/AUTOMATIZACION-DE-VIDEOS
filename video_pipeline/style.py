@@ -23,6 +23,7 @@ class VideoStyle:
     stroke_color: str = "#000000"
     stroke_width: int = 4
     animation_style: str = "highlight"
+    show_subtitles: bool = True
     caption_position: str = "bottom"
     caption_offset_y: float = 0.22
     emoji_by_keyword: dict[str, str] | None = None
@@ -78,6 +79,8 @@ def load_video_style(path: str | Path = "video_style.json") -> VideoStyle:
         raise StyleConfigError("stroke_width must be between 0 and 20.")
     if values["animation_style"] not in {"highlight", "karaoke"}:
         raise StyleConfigError("animation_style must be 'highlight' or 'karaoke'.")
+    if not isinstance(values["show_subtitles"], bool):
+        raise StyleConfigError("show_subtitles must be a boolean.")
     if values["caption_position"] not in {"bottom", "middle", "top"}:
         raise StyleConfigError("caption_position must be bottom, middle, or top.")
     if not 0 <= float(values["caption_offset_y"]) <= 0.8:

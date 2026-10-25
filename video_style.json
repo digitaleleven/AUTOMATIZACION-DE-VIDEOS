@@ -6,6 +6,7 @@
   "stroke_color": "#000000",
   "stroke_width": 4,
   "animation_style": "highlight",
+  "show_subtitles": true,
   "caption_position": "bottom",
   "caption_offset_y": 0.22,
   "emoji_by_keyword": {},

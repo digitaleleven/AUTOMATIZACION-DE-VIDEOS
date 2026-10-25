@@ -776,6 +776,35 @@ function hideOutput() {
   byId("output-link").href = "#";
 }
 
+async function initializeMasterPreview() {
+  const video = byId("remotion-final-video");
+  const source = video?.querySelector("source[data-src]");
+  const status = byId("remotion-final-video-status");
+  if (!video || !source || !status) return;
+
+  try {
+    const sourceUrl = source.dataset.src;
+    const response = await fetch(sourceUrl, {
+      method: "GET",
+      headers: { Range: "bytes=0-0" },
+      credentials: "same-origin",
+    });
+    if (response.body) await response.body.cancel().catch(() => {});
+    if (!response.ok) {
+      status.textContent = response.status === 404
+        ? "El MP4 final aún no se ha generado."
+        : `El MP4 final no está disponible (HTTP ${response.status}).`;
+      return;
+    }
+    source.src = sourceUrl;
+    video.hidden = false;
+    status.hidden = true;
+    video.load();
+  } catch {
+    status.textContent = "No se pudo comprobar la disponibilidad del MP4 final.";
+  }
+}
+
 function updateProcessButton() {
   const item = getSelectedItem();
   const busy = state.activeJob && !["completed", "complete", "failed", "error", "rejected"].includes(String(state.activeJob.status || "").toLowerCase());
@@ -819,6 +848,8 @@ function renderStyle(style) {
     if (!field) continue;
     if (key === "emoji_by_keyword") {
       field.value = value && typeof value === "object" ? JSON.stringify(value, null, 2) : "";
+    } else if (field.type === "checkbox") {
+      field.checked = value === true;
     } else if (field.type === "color") {
       field.value = /^#[0-9a-f]{6}$/i.test(value) ? value : "#000000";
     } else field.value = value == null ? "" : value;
@@ -832,7 +863,7 @@ function renderStyle(style) {
 function collectStyle() {
   const data = {};
   const fields = byId("style-form").elements;
-  for (const key of ["font_family", "font_size", "font_color", "highlight_color", "stroke_color", "stroke_width", "animation_style", "caption_position", "caption_offset_y", "emoji_by_keyword", "logo_path", "logo_position", "logo_scale", "logo_offset_x", "logo_offset_y", "output_fps", "max_video_duration_seconds", "max_transcription_chunks", "openai_price_per_audio_minute_usd", "shotstack_price_per_render_minute_usd", "max_estimated_cost_usd"]) {
+  for (const key of ["font_family", "font_size", "font_color", "highlight_color", "stroke_color", "stroke_width", "animation_style", "show_subtitles", "caption_position", "caption_offset_y", "emoji_by_keyword", "logo_path", "logo_position", "logo_scale", "logo_offset_x", "logo_offset_y", "output_fps", "max_video_duration_seconds", "max_transcription_chunks", "openai_price_per_audio_minute_usd", "shotstack_price_per_render_minute_usd", "max_estimated_cost_usd"]) {
     const field = fields.namedItem(key);
     if (!field) continue;
     if (key === "emoji_by_keyword") {
@@ -845,7 +876,8 @@ function collectStyle() {
         }
         data[key] = parsed;
       }
-    } else if (field.type === "number") data[key] = field.value === "" ? null : Number(field.value);
+    } else if (field.type === "checkbox") data[key] = field.checked;
+    else if (field.type === "number") data[key] = field.value === "" ? null : Number(field.value);
     else if (key === "logo_path") data[key] = field.value.trim() || null;
     else data[key] = field.value;
   }
@@ -1603,3 +1635,4 @@ byId("drive-test-file-button").addEventListener("click", async () => {
 });
 
 initializePanel();
+void initializeMasterPreview();

@@ -1,3 +1,15 @@
+.toggle-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.toggle-line input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  accent-color: #d5ad18;
+}
 :root {
   color-scheme: light;
   --canvas: #f4f7f8;
@@ -720,6 +732,7 @@ h2 { color: #102326; font-size: 24px; }
 .q03c-video-card { display: flex; flex-direction: column; align-items: center; }
 .q03c-video-card .preview-head { width: 100%; }
 .q03c-video { display: block; width: min(100%, 300px); max-height: 560px; aspect-ratio: 9 / 16; object-fit: contain; background: #102326; }
+.q03c-video[hidden] { display: none; }
 .q03c-video-note, .q03c-comparison-note { margin: 12px 0 0; color: #52696b; font-size: 12px; line-height: 1.55; }
 .q03c-comparison { display: block; width: 100%; height: auto; border: 1px solid #d2dfdd; border-radius: 10px; background: #102326; }
 .q03c-color-warning { margin: 12px 0 0; padding: 12px 14px; border-left: 3px solid #bd7044; border-radius: 0 8px 8px 0; background: #fff4eb; color: #68402b; font-size: 12px; line-height: 1.55; }

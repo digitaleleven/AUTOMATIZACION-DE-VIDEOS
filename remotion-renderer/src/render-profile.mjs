@@ -117,10 +117,10 @@ export const buildColorManagedProxyFilter = (
 
   const directEq =
     toneMap === "direct"
-      ? "eq=contrast=1.08:brightness=0.03:gamma=1.12:saturation=0.95"
+      ? "eq=contrast=1.08:brightness=0.03:gamma=1.12:saturation=0.96"
       : "";
   if (toneMap === "direct") {
-    return `fps=${fps},${scaleAndPad},unsharp=5:5:1.0:5:5:0.0,setsar=1,${colorTransform},${directEq},colorchannelmixer=rr=0.92:gg=0.95:bb=1.08,format=${REMOTION_RENDER_PROFILE.pixelFormat}`;
+    return `fps=${fps},${scaleAndPad},unsharp=5:5:0.9:5:5:0.0,setsar=1,${colorTransform},${directEq},colorchannelmixer=rr=0.92:gg=0.95:bb=1.08,format=${REMOTION_RENDER_PROFILE.pixelFormat}`;
   }
   return `${colorTransform},${scaleAndPad}${directEq},setsar=1,fps=${fps},format=${REMOTION_RENDER_PROFILE.pixelFormat}`;
 };
