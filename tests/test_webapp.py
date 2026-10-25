@@ -459,6 +459,7 @@ class VideoPanelApiTests(unittest.TestCase):
             "/api/health",
             "/api/library",
             "/api/style",
+            f"/api/jobs/{'a' * 32}",
             "/media/incoming/",
             "/media/q03c-sample",
             "/media/q03c-comparison",
@@ -500,18 +501,20 @@ class VideoPanelApiTests(unittest.TestCase):
         self.assertEqual(status, 401)
         self.assertIn("Inicia sesión", json.loads(body.decode("utf-8"))["detail"])
 
-        status, _, body = self.request(
-            "POST",
-            "/api/jobs",
-            body=json.dumps({
-                "source_id": "a" * 32,
-                "authorize_paid_apis": True,
-                "unknown_cost_acknowledged": True,
-            }).encode(),
-            headers={"Content-Type": "application/json"},
-            authenticated=False,
-        )
+        with patch.object(self.panel, "start_job") as start_job:
+            status, _, body = self.request(
+                "POST",
+                "/api/jobs",
+                body=json.dumps({
+                    "source_id": "a" * 32,
+                    "authorize_paid_apis": True,
+                    "unknown_cost_acknowledged": True,
+                }).encode(),
+                headers={"Content-Type": "application/json"},
+                authenticated=False,
+            )
         self.assertEqual(status, 401)
+        start_job.assert_not_called()
         self.assertEqual(self.panel.store.list_uploads(), [])
         self.assertIn("Inicia sesión", json.loads(body.decode("utf-8"))["detail"])
 
@@ -523,6 +526,95 @@ class VideoPanelApiTests(unittest.TestCase):
             authenticated=False,
         )
         self.assertEqual(status, 401)
+
+    def test_owner_session_can_start_job_through_authenticated_api(self):
+        job_id = "a" * 32
+        with patch.object(
+            self.panel,
+            "start_job",
+            return_value={"id": job_id, "status": "queued"},
+        ) as start_job:
+            status, _, body = self.request(
+                "POST",
+                "/api/jobs",
+                body=json.dumps({
+                    "source_id": "b" * 32,
+                    "authorize_paid_apis": True,
+                    "unknown_cost_acknowledged": True,
+                }).encode(),
+                headers={"Content-Type": "application/json"},
+            )
+
+        self.assertEqual(status, 202)
+        self.assertEqual(json.loads(body.decode("utf-8"))["id"], job_id)
+        start_job.assert_called_once()
+
+    def test_cross_origin_requests_are_rejected_with_valid_owner_session(self):
+        foreign_origin = "https://attacker.example"
+        style_before = self.panel.style()
+        cases = (
+            (
+                "GET",
+                "/api/library",
+                None,
+                {"Origin": foreign_origin},
+            ),
+            (
+                "POST",
+                "/api/upload",
+                b"not-a-video",
+                {
+                    "Origin": foreign_origin,
+                    "Content-Type": "application/octet-stream",
+                    "Content-Length": "11",
+                    "X-Upload-Filename": "cross-origin.mp4",
+                },
+            ),
+            (
+                "PUT",
+                "/api/style",
+                json.dumps({**style_before, "font_size": style_before["font_size"] + 1}).encode(),
+                {
+                    "Origin": foreign_origin,
+                    "Content-Type": "application/json",
+                },
+            ),
+            (
+                "POST",
+                "/api/jobs",
+                json.dumps({
+                    "source_id": "c" * 32,
+                    "authorize_paid_apis": True,
+                    "unknown_cost_acknowledged": True,
+                }).encode(),
+                {
+                    "Origin": foreign_origin,
+                    "Content-Type": "application/json",
+                },
+            ),
+        )
+        with (
+            patch.object(self.panel, "upload") as upload,
+            patch.object(self.panel, "start_job") as start_job,
+        ):
+            for method, path, body, headers in cases:
+                with self.subTest(method=method, path=path):
+                    status, _, response_body = self.request(
+                        method,
+                        path,
+                        body=body,
+                        headers=headers,
+                    )
+                    self.assertEqual(status, 403)
+                    self.assertIn(
+                        "origen no permitido",
+                        json.loads(response_body.decode("utf-8"))["detail"],
+                    )
+
+        upload.assert_not_called()
+        start_job.assert_not_called()
+        self.assertEqual(self.panel.store.list_uploads(), [])
+        self.assertEqual(self.panel.style(), style_before)
 
     def test_login_challenge_is_one_time_and_wrong_password_is_generic(self):
         status, headers, body = self.request("GET", "/login", authenticated=False)
