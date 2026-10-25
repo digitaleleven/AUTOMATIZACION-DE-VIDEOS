@@ -13,6 +13,10 @@ import { performance } from "node:perf_hooks";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  buildColorManagedProxyFilter,
+  REMOTION_RENDER_PROFILE,
+} from "./src/render-profile.mjs";
 
 const execFileAsync = promisify(execFile);
 const PACKAGE_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -43,7 +47,7 @@ const { stdout: probeOutput } = await execFileAsync("ffprobe", [
   "-v",
   "error",
   "-show_entries",
-  "format=duration:stream=codec_type,width,height,avg_frame_rate",
+  "format=duration:stream=codec_type,width,height,avg_frame_rate,color_range,color_space,color_transfer,color_primaries",
   "-of",
   "json",
   inputPath,
@@ -66,6 +70,7 @@ if (
     })}`,
   );
 }
+const colorManagedProxyFilter = buildColorManagedProxyFilter(video);
 
 const absoluteOutput = path.resolve(outputPath);
 await mkdir(path.dirname(absoluteOutput), { recursive: true });
@@ -91,31 +96,35 @@ try {
     await execFileAsync("ffmpeg", [
       "-hide_banner",
       "-y",
+      "-threads",
+      String(REMOTION_RENDER_PROFILE.offthreadVideoThreads),
       "-i",
       path.resolve(inputPath),
       "-map",
       "0:v:0",
       "-vf",
-      "scale=1080:1920:flags=lanczos,fps=50",
+      colorManagedProxyFilter,
       "-frames:v",
       "941",
       "-an",
       "-c:v",
       "libx264",
+      "-threads",
+      String(REMOTION_RENDER_PROFILE.offthreadVideoThreads),
       "-preset",
-      "medium",
+      REMOTION_RENDER_PROFILE.x264Preset,
       "-crf",
-      "14",
+      String(REMOTION_RENDER_PROFILE.proxyCrf),
       "-pix_fmt",
-      "yuv420p",
+      REMOTION_RENDER_PROFILE.pixelFormat,
       "-color_range",
       "tv",
       "-colorspace",
-      "bt709",
+      REMOTION_RENDER_PROFILE.colorSpace,
       "-color_primaries",
-      "bt709",
+      REMOTION_RENDER_PROFILE.colorSpace,
       "-color_trc",
-      "bt709",
+      REMOTION_RENDER_PROFILE.colorSpace,
       "-movflags",
       "+faststart",
       proxyPath,
@@ -180,6 +189,9 @@ try {
       chromiumOptions,
       concurrency: 1,
       maxRetries: 0,
+      disallowParallelEncoding: REMOTION_RENDER_PROFILE.disallowParallelEncoding,
+      offthreadVideoThreads: REMOTION_RENDER_PROFILE.offthreadVideoThreads,
+      offthreadVideoCacheSizeInBytes: REMOTION_RENDER_PROFILE.offthreadVideoCacheSizeInBytes,
       crf: 17,
       x264Preset: "medium",
       pixelFormat: "yuv420p",

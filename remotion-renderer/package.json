@@ -5,7 +5,9 @@
   "packageManager": "pnpm@10.26.1",
   "type": "module",
   "scripts": {
-    "render:sample": "node render-sample.mjs"
+    "render:sample": "node render-sample.mjs",
+    "test:captions": "node --test test/*.test.mjs",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@remotion/bundler": "4.0.538",

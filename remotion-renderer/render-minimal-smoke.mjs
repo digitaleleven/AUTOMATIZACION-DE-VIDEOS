@@ -4,6 +4,7 @@ import { copyFile, mkdir, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { REMOTION_RENDER_PROFILE } from "./src/render-profile.mjs";
 
 const PACKAGE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CHROMIUM = path.join(PACKAGE_DIR, "tools/chromium-offline.sh");
@@ -71,8 +72,13 @@ try {
     chromiumOptions,
     concurrency: 1,
     maxRetries: 0,
+    disallowParallelEncoding: REMOTION_RENDER_PROFILE.disallowParallelEncoding,
+    offthreadVideoThreads: REMOTION_RENDER_PROFILE.offthreadVideoThreads,
+    offthreadVideoCacheSizeInBytes: REMOTION_RENDER_PROFILE.offthreadVideoCacheSizeInBytes,
     crf: 22,
+    x264Preset: "medium",
     pixelFormat: "yuv420p",
+    colorSpace: "bt709",
     audioCodec: "aac",
     licenseKey: null,
     logLevel: "info",

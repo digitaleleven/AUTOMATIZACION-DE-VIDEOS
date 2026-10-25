@@ -1,0 +1,128 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import {
+  activeCaptionGroup,
+  activeWordIndex,
+  groupTimedWords,
+  mapWordTimingsToOutput,
+  parseWhisperWordTimings,
+} from "../src/caption-timing.mjs";
+import {
+  DURATION_IN_FRAMES,
+  FPS,
+  SEGMENTS,
+} from "../src/edit-timeline.mjs";
+import {
+  buildColorManagedProxyFilter,
+  REMOTION_RENDER_PROFILE,
+} from "../src/render-profile.mjs";
+
+test("Whisper parser requires precise, positive word intervals", () => {
+  const words = parseWhisperWordTimings({
+    words: [
+      { word: "Hola", start: 0.2, end: 0.5 },
+      { word: "bad", start: 1, end: 1 },
+      { word: " mundo.", start: 0.5, end: 0.9 },
+    ],
+  });
+
+  assert.deepEqual(words.map(({ text }) => text), ["Hola", "mundo."]);
+  assert.throws(() => parseWhisperWordTimings({ segments: [{ text: "sin palabras" }] }), /marcas temporales por palabra/);
+});
+
+test("only complete word timings inside kept clips are mapped to output time", () => {
+  const words = [
+    { text: "Hola", start: 0.2, end: 0.5 },
+    { text: "chicas", start: 1.6, end: 2.1 },
+    { text: "corte", start: 4.9, end: 5.1 },
+    { text: "¿Qué", start: 5.1, end: 5.3 },
+  ];
+  const mapped = mapWordTimingsToOutput(words, SEGMENTS, FPS);
+
+  assert.equal(mapped.length, 2);
+  assert.deepEqual(mapped.map(({ text }) => text), ["Hola", "¿Qué"]);
+  assert.ok(Math.abs(mapped[0].start - 0.2) < 1e-9);
+  assert.ok(Math.abs(mapped[0].end - 0.5) < 1e-9);
+  assert.ok(Math.abs(mapped[1].start - 1.7) < 1e-9);
+  assert.ok(Math.abs(mapped[1].end - 1.9) < 1e-9);
+  assert.equal(DURATION_IN_FRAMES, 285);
+});
+
+test("caption groups stay within four words and highlight one timed word", () => {
+  const words = [
+    { text: "Una", start: 0, end: 0.2 },
+    { text: "prueba", start: 0.2, end: 0.5 },
+    { text: "con", start: 0.5, end: 0.7 },
+    { text: "palabras", start: 0.7, end: 1.0 },
+    { text: "sin", start: 1, end: 1.2 },
+    { text: "inventar.", start: 1.2, end: 1.6 },
+  ];
+  const groups = groupTimedWords(words);
+
+  assert.deepEqual(groups.map((group) => group.words.length), [4, 2]);
+  const group = activeCaptionGroup(groups, 0.82);
+  assert.ok(group);
+  assert.equal(activeWordIndex(group, 0.82), 3);
+  assert.equal(activeWordIndex(group, 1.0), -1);
+  assert.equal(activeCaptionGroup(groups, 2), null);
+});
+
+test("overlapping transitions choose only the most recently started group and word", () => {
+  const earlierGroup = {
+    start: 1,
+    end: 2,
+    words: [{ text: "sale", start: 1, end: 1.6 }],
+  };
+  const incomingGroup = {
+    start: 1.4,
+    end: 2.2,
+    words: [{ text: "entra", start: 1.4, end: 1.8 }],
+  };
+  const active = activeCaptionGroup([earlierGroup, incomingGroup], 1.5);
+
+  assert.equal(active, incomingGroup);
+  assert.equal(activeWordIndex({
+    words: [
+      { text: "antes", start: 1.0, end: 1.6 },
+      { text: "ahora", start: 1.4, end: 1.8 },
+    ],
+  }, 1.5), 1);
+});
+
+test("HLG proxy conversion is explicit and outputs limited BT.709 YUV420p", () => {
+  const filter = buildColorManagedProxyFilter({
+    color_range: "tv",
+    color_space: "bt2020nc",
+    color_transfer: "arib-std-b67",
+    color_primaries: "bt2020",
+  });
+
+  assert.match(filter, /transferin=arib-std-b67/);
+  assert.match(filter, /tonemap=tonemap=hable:desat=0/);
+  assert.match(filter, /primaries=bt709:transfer=bt709:matrix=bt709:range=limited/);
+  assert.match(filter, /format=yuv420p/);
+  assert.equal(REMOTION_RENDER_PROFILE.colorSpace, "bt709");
+  assert.equal(REMOTION_RENDER_PROFILE.concurrency, 1);
+  assert.equal(REMOTION_RENDER_PROFILE.maxRetries, 0);
+});
+
+test("unsupported or incomplete source color metadata fails explicitly", () => {
+  assert.throws(
+    () => buildColorManagedProxyFilter({
+      color_range: "tv",
+      color_space: "bt2020nc",
+      color_transfer: "smpte2084",
+      color_primaries: "bt2020",
+    }),
+    /Perfil de entrada no admitido/,
+  );
+  assert.throws(
+    () => buildColorManagedProxyFilter({
+      color_range: "unknown",
+      color_space: "bt709",
+      color_transfer: "bt709",
+      color_primaries: "bt709",
+    }),
+    /rango de color explícito/,
+  );
+});

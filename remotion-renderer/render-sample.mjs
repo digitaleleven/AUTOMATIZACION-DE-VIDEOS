@@ -3,10 +3,10 @@ import { renderMedia, selectComposition } from "@remotion/renderer";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import {
-  copyFile,
   mkdir,
   mkdtemp,
   readdir,
+  readFile,
   rm,
   stat,
   writeFile,
@@ -14,12 +14,27 @@ import {
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
+import {
+  mapWordTimingsToOutput,
+  parseWhisperWordTimings,
+} from "./src/caption-timing.mjs";
+import {
+  DURATION_IN_FRAMES,
+  FPS,
+  SEGMENTS,
+} from "./src/edit-timeline.mjs";
+import {
+  buildColorManagedProxyFilter,
+  REMOTION_RENDER_PROFILE,
+} from "./src/render-profile.mjs";
 
 const PACKAGE_DIR = path.dirname(fileURLToPath(import.meta.url));
-const FPS = 50;
-const DURATION_IN_FRAMES = 285;
 const DURATION_SECONDS = DURATION_IN_FRAMES / FPS;
 const MIN_SOURCE_DURATION_SECONDS = 12;
+const SAMPLE_SOURCE_FRAMES = Math.max(
+  ...SEGMENTS.map((segment) => segment.sourceStart + segment.frames),
+);
+const SAMPLE_SOURCE_SECONDS = SAMPLE_SOURCE_FRAMES / FPS;
 const CHROMIUM = path.join(PACKAGE_DIR, "tools/chromium-offline.sh");
 
 const run = (command, args) =>
@@ -65,13 +80,13 @@ const parseArguments = (args) => {
   const parsed = {};
   for (let index = 0; index < forwardedArgs.length; index += 1) {
     const key = forwardedArgs[index];
-    if (!["--input", "--output"].includes(key) || !forwardedArgs[index + 1]) {
-      throw new Error("Usage: render-sample.mjs --input <video.mp4|video.mov> --output <sample.mp4>");
+    if (!["--input", "--output", "--transcript"].includes(key) || !forwardedArgs[index + 1]) {
+      throw new Error("Usage: render-sample.mjs --input <video.mp4|video.mov> --transcript <whisper.json> --output <sample.mp4>");
     }
     parsed[key.slice(2)] = forwardedArgs[++index];
   }
-  if (!parsed.input || !parsed.output) {
-    throw new Error("Both --input and --output are required; no source path is hard-coded.");
+  if (!parsed.input || !parsed.output || !parsed.transcript) {
+    throw new Error("Input, word-timestamp transcript JSON, and output are required; no source path is hard-coded.");
   }
   return parsed;
 };
@@ -87,7 +102,7 @@ const probe = async (filePath) => {
     "-v",
     "error",
     "-show_entries",
-    "format=duration,size,format_name:stream=codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate,sample_rate,channels",
+    "format=duration,size,format_name:stream=codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate,sample_rate,channels,pix_fmt,color_range,color_space,color_transfer,color_primaries",
     "-of",
     "json",
     filePath,
@@ -123,6 +138,7 @@ try {
   const args = parseArguments(process.argv.slice(2));
   const inputPath = path.resolve(args.input);
   outputPath = path.resolve(args.output);
+  const transcriptPath = path.resolve(args.transcript);
   outputDirectory = path.dirname(outputPath);
   await mkdir(outputDirectory, { recursive: true });
 
@@ -143,6 +159,12 @@ try {
   if (!inputStat.isFile() || inputStat.size === 0) {
     throw new Error(`Input is not a non-empty regular file: ${inputPath}`);
   }
+  const transcriptPayload = JSON.parse(await readFile(transcriptPath, "utf8"));
+  const sourceWords = parseWhisperWordTimings(transcriptPayload);
+  const wordTimings = mapWordTimingsToOutput(sourceWords, SEGMENTS, FPS);
+  if (wordTimings.length === 0) {
+    throw new Error("No precise Whisper word timestamps fall entirely inside the selected source clips.");
+  }
   const inputHashBefore = await hashFile(inputPath);
   const inputProbe = await probe(inputPath);
   const inputVideo = inputProbe.streams?.find((stream) => stream.codec_type === "video");
@@ -160,23 +182,75 @@ try {
   }
   if (!sourceFps) throw new Error("FFprobe did not return a valid source frame rate.");
 
-  const sourceFrameCount = Math.round(inputDuration * sourceFps);
-  const sourceFile = `source${path.extname(inputPath).toLowerCase()}`;
+  const sourceFile = "source-proxy.mp4";
   const audioFile = inputAudio ? "source-audio.wav" : null;
 
   console.log(`input=${inputPath}`);
   console.log(`input_sha256=${inputHashBefore}`);
   console.log(`input_probe=${JSON.stringify(inputProbe)}`);
-  console.log(`composition=${1080}x${1920} ${FPS}fps ${DURATION_IN_FRAMES} frames`);
+  console.log(
+    `composition=${REMOTION_RENDER_PROFILE.width}x${REMOTION_RENDER_PROFILE.height} ${FPS}fps ${DURATION_IN_FRAMES} frames`,
+  );
+  console.log(`word_timestamps=${sourceWords.length}; mapped_sample_words=${wordTimings.length}`);
 
   workDirectory = await mkdtemp(path.join(outputDirectory, ".remotion-work-"));
   const publicDirectory = path.join(workDirectory, "public");
   await mkdir(publicDirectory, { recursive: true });
-  const copiedInput = path.join(publicDirectory, sourceFile);
-  await copyFile(inputPath, copiedInput);
-  if ((await hashFile(copiedInput)) !== inputHashBefore) {
-    throw new Error("The temporary source copy does not match the original.");
+  const proxyPath = path.join(publicDirectory, sourceFile);
+  const proxyFilter = buildColorManagedProxyFilter(inputVideo);
+  await run("ffmpeg", [
+    "-nostdin",
+    "-hide_banner",
+    "-v",
+    "error",
+    "-threads",
+    String(REMOTION_RENDER_PROFILE.offthreadVideoThreads),
+    "-i",
+    inputPath,
+    "-map",
+    "0:v:0",
+    "-an",
+    "-vf",
+    proxyFilter,
+    "-frames:v",
+    String(SAMPLE_SOURCE_FRAMES),
+    "-c:v",
+    "libx264",
+    "-threads",
+    String(REMOTION_RENDER_PROFILE.offthreadVideoThreads),
+    "-preset",
+    REMOTION_RENDER_PROFILE.x264Preset,
+    "-crf",
+    String(REMOTION_RENDER_PROFILE.proxyCrf),
+    "-pix_fmt",
+    REMOTION_RENDER_PROFILE.pixelFormat,
+    "-color_range",
+    "tv",
+    "-colorspace",
+    REMOTION_RENDER_PROFILE.colorSpace,
+    "-color_primaries",
+    REMOTION_RENDER_PROFILE.colorSpace,
+    "-color_trc",
+    REMOTION_RENDER_PROFILE.colorSpace,
+    "-movflags",
+    "+faststart",
+    proxyPath,
+  ]);
+  const proxyProbe = await probe(proxyPath);
+  const proxyVideo = proxyProbe.streams?.find((stream) => stream.codec_type === "video");
+  if (
+    proxyVideo?.width !== REMOTION_RENDER_PROFILE.width ||
+    proxyVideo?.height !== REMOTION_RENDER_PROFILE.height ||
+    parseRate(proxyVideo.avg_frame_rate || proxyVideo.r_frame_rate) !== FPS ||
+    proxyVideo.pix_fmt !== "yuv420p"
+  ) {
+    throw new Error(`The color-managed proxy failed validation: ${JSON.stringify(proxyVideo)}`);
   }
+  const proxyFrameCount = Math.round(Number(proxyProbe.format?.duration) * FPS);
+  if (proxyFrameCount < SAMPLE_SOURCE_FRAMES) {
+    throw new Error("The temporary proxy is shorter than the source ranges required by the composition.");
+  }
+  console.log(`proxy_probe=${JSON.stringify(proxyProbe)}`);
   if (audioFile) {
     const copiedAudio = path.join(publicDirectory, audioFile);
     await run("ffmpeg", [
@@ -187,6 +261,8 @@ try {
       inputPath,
       "-map",
       "0:a:0",
+      "-t",
+      SAMPLE_SOURCE_SECONDS.toFixed(3),
       "-vn",
       "-c:a",
       "pcm_s16le",
@@ -221,8 +297,9 @@ try {
   });
   const inputProps = {
     sourceFile,
-    sourceDurationInFrames: sourceFrameCount,
+    sourceDurationInFrames: proxyFrameCount,
     audioFile,
+    wordTimings,
   };
   const browserOptions = { enableMultiProcessOnLinux: true };
   const composition = await selectComposition({
@@ -255,10 +332,15 @@ try {
     outputLocation: outputPath,
     browserExecutable: CHROMIUM,
     chromiumOptions: browserOptions,
-    concurrency: 1,
-    maxRetries: 0,
-    crf: 18,
-    pixelFormat: "yuv420p",
+    concurrency: REMOTION_RENDER_PROFILE.concurrency,
+    maxRetries: REMOTION_RENDER_PROFILE.maxRetries,
+    disallowParallelEncoding: REMOTION_RENDER_PROFILE.disallowParallelEncoding,
+    offthreadVideoThreads: REMOTION_RENDER_PROFILE.offthreadVideoThreads,
+    offthreadVideoCacheSizeInBytes: REMOTION_RENDER_PROFILE.offthreadVideoCacheSizeInBytes,
+    crf: REMOTION_RENDER_PROFILE.outputCrf,
+    x264Preset: REMOTION_RENDER_PROFILE.x264Preset,
+    pixelFormat: REMOTION_RENDER_PROFILE.pixelFormat,
+    colorSpace: REMOTION_RENDER_PROFILE.colorSpace,
     audioCodec: inputAudio ? "aac" : undefined,
     licenseKey: null,
     logLevel: "info",
@@ -274,10 +356,22 @@ try {
   const outputFps = parseRate(outputVideo?.avg_frame_rate || outputVideo?.r_frame_rate);
   const validation = {
     duration: Number.isFinite(outputDuration) && Math.abs(outputDuration - DURATION_SECONDS) <= 0.06,
-    dimensions: outputVideo?.width === 1080 && outputVideo?.height === 1920,
+    dimensions:
+      outputVideo?.width === REMOTION_RENDER_PROFILE.width &&
+      outputVideo?.height === REMOTION_RENDER_PROFILE.height,
     fps: Math.abs(outputFps - FPS) < 0.01,
     videoCodec: outputVideo?.codec_name === "h264",
+    pixelFormat: outputVideo?.pix_fmt === REMOTION_RENDER_PROFILE.pixelFormat,
+    colorRange: outputVideo?.color_range === "tv",
+    colorMetadata:
+      outputVideo?.color_space === REMOTION_RENDER_PROFILE.colorSpace &&
+      outputVideo?.color_transfer === REMOTION_RENDER_PROFILE.colorSpace &&
+      outputVideo?.color_primaries === REMOTION_RENDER_PROFILE.colorSpace,
     audioCodec: inputAudio ? outputAudio?.codec_name === "aac" : !outputAudio,
+    audioShape: inputAudio
+      ? outputAudio?.sample_rate === inputAudio.sample_rate &&
+        outputAudio?.channels === inputAudio.channels
+      : !outputAudio,
   };
   if (Object.values(validation).some((valid) => !valid)) {
     throw new Error(`FFprobe validation failed: ${JSON.stringify({
@@ -303,6 +397,9 @@ try {
   const report = {
     status: "success",
     input: { path: inputPath, sha256Before: inputHashBefore, sha256After: inputHashAfter },
+    transcript: { path: transcriptPath, exactWordTimings: sourceWords.length, mappedToSample: wordTimings.length },
+    proxy: { path: proxyPath, probe: proxyProbe, expectedSourceSeconds: SAMPLE_SOURCE_SECONDS },
+    renderProfile: REMOTION_RENDER_PROFILE,
     output: { path: outputPath, sizeBytes: outputStat.size, probe: outputProbe },
     validation,
     renderSeconds,

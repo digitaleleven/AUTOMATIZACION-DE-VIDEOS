@@ -12,15 +12,14 @@ import {
 import type { CSSProperties, FC } from "react";
 import { TransitionSeries, linearTiming } from "@remotion/transitions";
 import { fade } from "@remotion/transitions/fade";
-
-const FPS = 50;
-const TRANSITION_FRAMES = 20;
-const SEGMENTS = [
-  { sourceStart: 0, frames: 100, outputStart: 0 },
-  { sourceStart: 250, frames: 125, outputStart: 80 },
-  { sourceStart: 500, frames: 100, outputStart: 185 },
-] as const;
-const DURATION_IN_FRAMES = 285;
+import { WordSubtitles } from "./WordSubtitles";
+import type { TimedWord } from "./caption-timing.mjs";
+import {
+  DURATION_IN_FRAMES,
+  FPS,
+  SEGMENTS,
+  TRANSITION_FRAMES,
+} from "./edit-timeline.mjs";
 
 type ClipProps = {
   sourceFile: string;
@@ -133,7 +132,6 @@ const AnimatedSparkle: FC = () => {
     height: 190,
     opacity,
     transform: `scale(${scale}) rotate(${rotation}deg)`,
-    filter: "drop-shadow(0 0 28px rgba(255, 205, 92, 0.9))",
   };
 
   return (
@@ -155,7 +153,8 @@ const PhaseOneSample: FC<{
   sourceFile: string;
   sourceDurationInFrames: number;
   audioFile: string | null;
-}> = ({ sourceFile, sourceDurationInFrames, audioFile }) => {
+  wordTimings: TimedWord[];
+}> = ({ sourceFile, sourceDurationInFrames, audioFile, wordTimings }) => {
   return (
     <AbsoluteFill style={{ backgroundColor: "#09090b" }}>
       <TransitionSeries>
@@ -211,6 +210,7 @@ const PhaseOneSample: FC<{
       <Sequence from={50} durationInFrames={60} layout="none">
         <AnimatedSparkle />
       </Sequence>
+      <WordSubtitles words={wordTimings} fps={FPS} />
     </AbsoluteFill>
   );
 };
@@ -227,6 +227,7 @@ export const RemotionRoot: FC = () => (
       sourceFile: "source.mov",
       sourceDurationInFrames: 941,
       audioFile: null,
+      wordTimings: [],
     }}
   />
 );
