@@ -616,3 +616,17 @@ mtime_ms = 1792944229200
 storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/6b12c83c-959a-4959-8310-31963ca92983/af78641f-445e-440b-a6c6-69afdf62a7f6"
 storage_version_token = "1792944252255678"
 content_type = "text/csv"
+
+[[outputs]]
+id = "Sodj7-4Z9QuDSK8CvkZUY"
+uri = "file://outputs/c4b45d7b58fb48ba8e5d34dfa4e21f5c-analysis-5-000s-MATRIX-MOTION-5b1139c3.mp4"
+type = "video"
+title = "Demo MATRIX MOTION 4K · IMG_1254 · 5 s"
+description = "MP4 verificado localmente: 2160×3840, 60 FPS, H.264/BT.709 y AAC estéreo. Subida privada verificada en matrix-motion-videos. Sin llamada nueva a Whisper ni a Gemini; el bloque SEO queda pendiente."
+logical_id = "9535f1c5-2388-4027-8681-047d68a9e45a"
+content_hash = "sha256:c232252f8ef6b74ce23c5bbb6a96e01a99df89e2a18ec87d2d4c55c5c7af30f3"
+size = 69875033
+mtime_ms = 1792960688348
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/9535f1c5-2388-4027-8681-047d68a9e45a/7f5e2f7f-9523-4876-afc6-35bbfb38f8f0"
+storage_version_token = "1792960757032254"
+content_type = "video/mp4"
