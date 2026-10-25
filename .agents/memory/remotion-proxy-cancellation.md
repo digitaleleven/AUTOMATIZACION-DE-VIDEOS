@@ -36,3 +36,11 @@ Cuando Remotion necesita guardar bundles grandes en el disco del workspace, no a
 **Why:** un intento real trasladó el bundle al workspace para evitar el tmpfs, pero Chromium rechazó la ruta larga del perfil antes de producir fotogramas. El directorio temporal fallido llegó a 1.1 GB; el espacio libre seguía amplio.
 
 **How to apply:** usar un enlace temporal corto bajo `/tmp` como `TMPDIR`, apuntado al directorio temporal del workspace; eliminarlo al salir y conservar el registro del fallo. Verificar con la ruta exacta del error antes de atribuirlo a memoria o a espacio.
+
+### ProRes 4444 alpha en Remotion
+
+En Remotion 4.0.538, `renderMedia` con `codec: "prores"`, perfil 4444 y `pixelFormat: "yuva444p10le"` puede producir un archivo MOV que FFprobe reporta como `yuva444p12le`. La opción `imageFormat: "png"` es necesaria para capturar fotogramas transparentes; el formato final puede ser de 12 bits aunque se haya solicitado entrada de 10 bits.
+
+**Why:** una validación estricta de `pix_fmt === "yuva444p10le"` rechazó una capa ProRes 4444 que sí conservaba alfa, audio y todos los fotogramas.
+
+**How to apply:** validar el códec/perfil ProRes 4444 y aceptar las salidas alfa `yuva444p10le` y `yuva444p12le`; comprobar los metadatos reales con FFprobe antes de componer con FFmpeg.
