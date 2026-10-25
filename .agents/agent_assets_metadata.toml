@@ -322,3 +322,31 @@ mtime_ms = 1792876213953
 storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/4235dfa0-29e6-4046-a7e9-b8fde6d66586/f67b0fd1-0207-4fb9-b168-fbc7d7de9883"
 storage_version_token = "1792876371242692"
 content_type = "image/jpeg"
+
+[[outputs]]
+id = "n4Eeyv3CUM3I6pvnUvRk8"
+uri = "file://remotion-renderer/generated-artifacts/remotion/allintra-control-30fps-1080.mp4"
+type = "video"
+title = "MATRIX MOTION — prueba All-Intra 30 FPS"
+description = "Muestra de 5 segundos, 1080×1920, con audio AAC y composición Remotion."
+logical_id = "4181e2df-7e52-47d3-a565-77077b61fc8b"
+content_hash = "sha256:452cb60c8e95d1da2c717152a16a361e3edc1ac99432681f8594ea3df619edc5"
+size = 10006672
+mtime_ms = 1792926299218
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/4181e2df-7e52-47d3-a565-77077b61fc8b/64a5c574-9684-499c-9218-1e5a77472893"
+storage_version_token = "1792926399883191"
+content_type = "video/mp4"
+
+[[outputs]]
+id = "QkdBGLn--Xklg2EGqTVl8"
+uri = "file://remotion-renderer/generated-artifacts/remotion/allintra-control-30fps-1080-frame-2.5.png"
+type = "image"
+title = "MATRIX MOTION — fotograma a 2,5 s"
+description = "Captura extraída del MP4 de prueba para revisar color y presencia de fotogramas negros."
+logical_id = "94fcd1e7-4a1f-4daf-90b6-53d16aa9e6a0"
+content_hash = "sha256:cf442396016ea50f56905ae100f7279a4572007d18588ed1314b7c686c323a74"
+size = 2003820
+mtime_ms = 1792926329466
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/94fcd1e7-4a1f-4daf-90b6-53d16aa9e6a0/3cef3165-8087-4548-8f63-391b1e786fb3"
+storage_version_token = "1792926400931824"
+content_type = "image/png"

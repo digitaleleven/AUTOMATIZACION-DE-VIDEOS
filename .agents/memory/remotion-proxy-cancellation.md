@@ -23,6 +23,8 @@ Un proxy H.264 de 30 FPS con todos los fotogramas I puede superar FFprobe y una 
 
 En Remotion 4.0.538, el servidor de OffthreadVideo registra el mismo mensaje para errores de extracción y de escritura HTTP. Si el registro además dice que los encabezados ya se enviaron y muestra `write ECANCELED`, el código del servidor ya había generado el fotograma y comenzado la respuesta 200; el consumidor cerró o canceló el flujo durante la escritura. La sugerencia de ampliar disco se añade genéricamente ante `Failed to fetch` y no demuestra falta de espacio.
 
-**Why:** la prueba All-Intra de MATRIX MOTION validó 360/360 fotogramas I y decodificó directamente el fotograma 0, pero Chromium no completó la recepción desde `/proxy`; el workspace tenía 248 GB libres.
+En una prueba local posterior, el proxy All-Intra 4K volvió a fallar al entregar el fotograma 0, mientras que un proxy All-Intra 1080p a los mismos 30 FPS sí completó el render. Esto respalda el uso de 1080p para la composición 1080p, pero no demuestra por sí solo un OOM ni una saturación concreta del búfer.
 
-**How to apply:** separar la validación del archivo de la del endpoint; distingue el fallo de decodificación de una cancelación del cuerpo HTTP, y comprueba el espacio real antes de atribuir el error al disco o a la estructura GOP.
+**Why:** la prueba 4K registró cancelación del cuerpo HTTP con 248 GB libres; la prueba 1080p terminó con 150 fotogramas decodificables y sin fotogramas negros detectados.
+
+**How to apply:** emparejar resolución del proxy con la composición de salida y validar imagen y audio; atribuir fallos a memoria solo con métricas de memoria u OOM, no por el aviso genérico de Chrome.
