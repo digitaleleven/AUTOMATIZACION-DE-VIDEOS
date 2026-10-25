@@ -602,3 +602,17 @@ mtime_ms = 1792939073384
 storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/513e35a5-60e4-443f-b284-b11a14422086/08fb8918-71c4-4641-bd5a-42e3073d2e32"
 storage_version_token = "1792939175286587"
 content_type = "video/mp4"
+
+[[outputs]]
+id = "YSP2-PjGzNk3Z1nVZEsmb"
+uri = "file://generated-artifacts/cleanup-inventory/multimedia-inventory.csv"
+type = "table"
+title = "Inventario de medios MATRIX MOTION (solo lectura)"
+description = "CSV con 180 rutas de medios, tamaños, clasificación propuesta, alcance de limpieza, copias hard link y elementos que se conservarían. No se ha borrado nada."
+logical_id = "6b12c83c-959a-4959-8310-31963ca92983"
+content_hash = "sha256:0568a3a71747201c8c7a1145e5b3851af1b71129c4f8d4772c1970dbc3107ecb"
+size = 28109
+mtime_ms = 1792944229200
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/6b12c83c-959a-4959-8310-31963ca92983/af78641f-445e-440b-a6c6-69afdf62a7f6"
+storage_version_token = "1792944252255678"
+content_type = "text/csv"
