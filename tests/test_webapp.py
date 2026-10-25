@@ -288,6 +288,11 @@ class VideoPanelApiTests(unittest.TestCase):
         self.assertIn(b'data-src="/media/outputs/IMG_1254-MATRIX-MOTION-v3-PRO-MASTER.mp4"', body)
         self.assertIn(b'name="show_subtitles" type="checkbox"', body)
         self.assertIn(b'00:56,51', body)
+        self.assertIn(b'<script src="/upload-controller.js" defer></script>', body)
+
+        status, _, upload_controller = self.request("GET", "/upload-controller.js")
+        self.assertEqual(status, 200)
+        self.assertIn(b"function bindFileInput", upload_controller)
 
     def test_mm004_result_is_authenticated_range_media(self):
         output_path = self.panel.output_dir / "IMG_1254-MATRIX-MOTION-MM004.mp4"

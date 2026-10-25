@@ -74,6 +74,7 @@
               <button id="upload-trigger" class="hero-upload" type="button"><span class="upload-mark">＋</span><span>Añadir vídeo</span><b>→</b></button>
               <input id="video-input" type="file" accept="video/mp4,video/quicktime,.mp4,.mov" hidden>
               <p>MP4 o MOV <span>·</span> H.264 o HEVC</p>
+              <div class="upload-progress" id="upload-message" role="status" aria-live="polite" hidden></div>
             </div>
           </section>
 
@@ -164,7 +165,6 @@
                   <button class="outline-button" type="button" data-action="upload">Añadir un vídeo</button>
                 </div>
               </div>
-              <div class="upload-progress" id="upload-message" role="status" aria-live="polite" hidden></div>
             </div>
           </section>
 
@@ -439,6 +439,7 @@
       <button class="rail-link" type="button" data-scroll="configuracion"><span>☷</span>Ajustes</button>
     </nav>
     <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+    <script src="/upload-controller.js" defer></script>
     <script src="/app.js" defer></script>
   </body>
 </html>

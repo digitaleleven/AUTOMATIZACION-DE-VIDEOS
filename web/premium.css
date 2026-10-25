@@ -255,8 +255,10 @@ h2 { margin: 0; color: #2a3b30; font-size: 22px; font-weight: 680; letter-spacin
 .library-item-status { align-self: center; padding: 5px 7px; border-radius: 6px; background: #edf1e9; color: #667767; font-family: var(--mono-font); font-size: 8px; white-space: nowrap; }
 .library-item-status.status-error { background: var(--danger-soft); color: var(--danger); }
 .library-item-status.status-complete { background: #e5efe5; color: #3f7651; }
-.upload-progress { padding: 11px 15px; border-top: 1px solid var(--line); color: var(--ink-soft); font-size: 10px; line-height: 1.55; }
+.upload-progress { margin-top: 10px; padding: 11px 13px; border: 1px solid var(--line); border-radius: 12px; background: #fff; color: var(--ink-soft); font-size: 11px; line-height: 1.55; text-align: left; overflow-wrap: anywhere; }
 .upload-progress.error { color: var(--danger); }
+.upload-progress[aria-busy="true"] { border-color: #b7d7d0; background: #f2fbf8; }
+.hero-upload:disabled { cursor: wait; opacity: .65; transform: none; }
 
 .studio-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(285px, .75fr); gap: 14px; }
 .preview-card { min-width: 0; padding: 15px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); box-shadow: var(--shadow); }

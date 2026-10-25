@@ -42,6 +42,7 @@ const state = {
   driveToken: null,
   driveTokenExpiresAt: 0,
   googleTokenClient: null,
+  uploadingVideo: false,
 };
 
 let csrfToken = "";
@@ -1164,41 +1165,39 @@ byId("library-list").addEventListener("click", (event) => {
   renderLibrary();
   renderSelectedItem();
 });
-byId("upload-trigger").addEventListener("click", () => byId("video-input").click());
-byId("video-input").addEventListener("change", async (event) => {
-  const file = event.target.files?.[0];
-  if (!file) return;
-  const lowerName = file.name.toLowerCase();
-  if (!lowerName.endsWith(".mp4") && !lowerName.endsWith(".mov")) {
-    displayToast("Solo se admiten archivos .MP4 y .MOV.", true);
-    event.target.value = "";
-    return;
-  }
-  const message = byId("upload-message");
-  message.hidden = false;
-  message.textContent = `Guardando ${file.name} en la aplicación…`;
-  try {
-    const uploaded = await uploadVideo(
-      file,
-      byId("upload-niche").value,
-      byId("upload-style-notes").value.trim(),
-    );
-    const returnedId = uploaded?.id ?? uploaded?.item?.id ?? uploaded?.source_id;
-    const freshLibrary = await loadLibrary();
-    state.library = freshLibrary;
+const uploadController = window.MatrixMotionUploadController.createUploadController({
+  upload: uploadVideo,
+  loadLibrary,
+  getLibrary: () => state.library,
+  setLibrary: (items) => {
+    state.library = items;
     state.libraryLoaded = true;
-    state.selectedId = returnedId ?? freshLibrary.find((item) => item.filename === file.name || item.original_filename === file.name)?.id ?? freshLibrary[0]?.id ?? null;
-    renderLibrary();
-    renderSelectedItem();
-    byId("upload-style-notes").value = "";
-    message.textContent = "Vídeo guardado. Revisa sus datos y el coste estimado antes de iniciar el procesamiento.";
-    displayToast("Vídeo añadido a la biblioteca.");
-  } catch (error) {
-    message.textContent = `No se pudo cargar el vídeo: ${error.message}`;
-    displayToast(`Error de carga: ${error.message}`, true);
-  } finally {
-    event.target.value = "";
-  }
+  },
+  setSelectedId: (id) => { state.selectedId = id; },
+  renderLibrary,
+  renderSelectedItem,
+  getNiche: () => byId("upload-niche").value,
+  getStyleNotes: () => byId("upload-style-notes").value.trim(),
+  clearStyleNotes: () => { byId("upload-style-notes").value = ""; },
+  setBusy: (busy) => {
+    state.uploadingVideo = busy;
+    byId("video-input").disabled = busy;
+    byId("upload-trigger").disabled = busy;
+    document.querySelectorAll("[data-action='upload']").forEach((button) => { button.disabled = busy; });
+    byId("upload-trigger").setAttribute("aria-busy", String(busy));
+  },
+  setMessage: (text, { error = false, busy = false } = {}) => {
+    const message = byId("upload-message");
+    message.hidden = false;
+    message.classList.toggle("error", error);
+    message.setAttribute("aria-busy", String(busy));
+    message.textContent = text;
+  },
+  notify: displayToast,
+});
+window.MatrixMotionUploadController.bindFileInput(byId("video-input"), uploadController);
+byId("upload-trigger").addEventListener("click", () => {
+  if (!state.uploadingVideo) byId("video-input").click();
 });
 
 byId("paid-consent").addEventListener("change", updateProcessButton);
