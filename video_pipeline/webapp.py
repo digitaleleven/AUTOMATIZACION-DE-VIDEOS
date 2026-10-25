@@ -49,7 +49,7 @@ from .google_drive import (
 )
 from .media import MediaError, prepare_video_for_modal, probe_video, temporary_work_directory
 from .edit_plan import EditPlanError, edited_duration, normalize_edit_plan
-from .models import VideoInfo
+from .models import VideoInfo, WordTiming
 from .drive import (
     DriveAccessError,
     create_test_file,
@@ -70,6 +70,7 @@ from .pipeline import (
 )
 from .modal_pipeline import process_local_video_modal
 from .modal_renderer import modal_configuration_status
+from .gemini_video import analyze_video
 from .r2_storage import configuration_status as r2_configuration_status, upload_mp4 as upload_mp4_to_r2
 from .state import ProcessingLedger
 from .shotstack import ShotstackClient, ShotstackError
@@ -2314,8 +2315,18 @@ class VideoPanel:
                     edit_options=edit_options,
                 )
                 modal_ledger_claimed = True
-                result = process_local_video_modal(
+                update_phase("analyzing_with_gemini")
+                gemini_analysis = analyze_video(
                     normalized_video.path,
+                    duration_seconds=normalized_video.duration,
+                    briefing=edit_options.get("style_notes", ""),
+                )
+                gemini_words = [
+                    WordTiming(text=word["text"], start=word["start"], end=word["end"])
+                    for word in gemini_analysis["words"]
+                ]
+                result = process_local_video_modal(
+                    source_path,
                     self.output_dir,
                     job_id=job_id,
                     paid_api_authorized=True,
@@ -2332,9 +2343,13 @@ class VideoPanel:
                     render_mode=edit_options.get("render_mode", "full"),
                     render_settings=edit_options.get("render_settings"),
                     creative_plan=edit_options.get("creative_plan"),
+                    subtitle_words=gemini_words if edit_options["subtitle_mode"] == "dynamic" else None,
                     briefing=edit_options.get("style_notes", ""),
                     progress_callback=update_phase,
                 )
+                result["gemini_analysis"] = gemini_analysis
+                result["gemini_analysis"]["suggested_cuts_applied"] = False
+                result["transcription_provider"] = "gemini-3.8-flash"
                 update_phase("uploading_to_r2")
                 result["r2_storage"] = upload_mp4_to_r2(result["output"], job_id)
                 result["source"] = str(source_path)

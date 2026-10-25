@@ -105,6 +105,7 @@ def process_local_video_modal(
     render_mode: str = "full",
     render_settings: dict[str, Any] | None = None,
     creative_plan: dict[str, Any] | None = None,
+    subtitle_words: list[WordTiming] | None = None,
     briefing: str = "",
     openai_client: Any = None,
     modal_client: ModalRenderClient | None = None,
@@ -179,7 +180,12 @@ def process_local_video_modal(
             "El montaje conserva el reencuadre suave automático; no se ignoró el zoom solicitado."
         )
 
-    if subtitle_mode == "dynamic" and not os.getenv("OPENAI_API_KEY") and openai_client is None:
+    if (
+        subtitle_mode == "dynamic"
+        and subtitle_words is None
+        and not os.getenv("OPENAI_API_KEY")
+        and openai_client is None
+    ):
         raise RuntimeError("OPENAI_API_KEY no está configurada; no se inició transcripción.")
     settings = config or PipelineConfig()
     if upload_to_drive and not settings.processed_folder_id:
@@ -216,17 +222,29 @@ def process_local_video_modal(
 
     words: list[WordTiming] = []
     if subtitle_mode == "dynamic":
-        if progress_callback:
-            progress_callback("transcribing")
-        with temporary_work_directory() as transcription_dir:
-            words = transcribe_video(
-                video,
-                transcription_dir,
-                model=settings.openai_model,
-                client=openai_client,
-            )
+        if subtitle_words is not None:
+            words = list(subtitle_words)
+            if any(
+                not isinstance(word, WordTiming)
+                or not word.text.strip()
+                or word.start < 0
+                or word.end <= word.start
+                or word.end > video.duration + 0.05
+                for word in words
+            ):
+                raise ValueError("Las palabras con timestamps no superaron la validación temporal.")
+        else:
+            if progress_callback:
+                progress_callback("transcribing")
+            with temporary_work_directory() as transcription_dir:
+                words = transcribe_video(
+                    video,
+                    transcription_dir,
+                    model=settings.openai_model,
+                    client=openai_client,
+                )
         if not words:
-            raise RuntimeError("OpenAI no devolvió palabras con marcas temporales válidas.")
+            raise RuntimeError("No se obtuvieron palabras con marcas temporales válidas para los subtítulos.")
 
     transcript = {
         "words": [
