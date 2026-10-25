@@ -418,6 +418,9 @@ function statusLabel(status) {
     normalizing: "Preparando el formato del vídeo", preparing_captions: "Preparando subtítulos",
     uploading: "Enviando el vídeo a Shotstack Stage",
     uploading_captions: "Enviando los subtítulos a Shotstack Stage",
+    uploading_to_modal: "Subiendo el trabajo a Modal",
+    rendering_on_modal: "Renderizando con Remotion en Modal",
+    downloading_from_modal: "Descargando el MP4 desde Modal",
     validating_output: "Comprobando el resultado", interrupted: "Interrumpido",
   };
   return labels[String(status || "").toLowerCase()] || (status ? String(status) : "No disponible");
@@ -462,7 +465,7 @@ function renderSummary() {
   if (!state.libraryLoaded) return;
   const visibleItems = getVisibleLibraryItems(state.library);
   const hiddenTestCount = state.library.length - visibleItems.length;
-  const pendingStatuses = new Set(["ready", "pending", "queued", "processing", "transcribing", "rendering", "downloading", "normalizing", "preparing_captions", "uploading", "uploading_captions", "validating_output"]);
+  const pendingStatuses = new Set(["ready", "pending", "queued", "processing", "transcribing", "rendering", "downloading", "normalizing", "preparing_captions", "uploading", "uploading_captions", "uploading_to_modal", "rendering_on_modal", "downloading_from_modal", "validating_output"]);
   const processedStatuses = new Set(["completed", "complete"]);
   const errorStatuses = new Set(["failed", "error", "rejected", "interrupted"]);
   const count = (statuses) => visibleItems.filter((item) => statuses.has(String(item.status || "").toLowerCase())).length;
@@ -714,7 +717,7 @@ function renderHealth(health) {
   const modal = health?.modal || {};
   const modalStatus = byId("health-modal");
   modalStatus.textContent = modal.sdk_installed && modal.credentials_configured
-    ? "SDK y perfil detectados; despliegue no comprobado"
+    ? "SDK y perfil detectados; worker comprobado antes de procesar"
     : "No configurado en el servidor";
   modalStatus.className = "health-unknown";
   const env = health?.shotstack_environment;

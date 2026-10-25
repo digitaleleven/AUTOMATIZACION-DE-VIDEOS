@@ -9,3 +9,4 @@
 - [Conversión HDR HLG a SDR](hlg-sdr-color.md) — La responsable rechazó Q03E por dominante amarilla; ninguna curva probada la neutralizó sin una referencia blanca fiable.
 - [Semántica de cortes FFmpeg](ffmpeg-cut-timelines.md) — Los intervalos de silencio son rangos que se eliminan; conviértelos a su complemento y verifica duración y fotogramas.
 - [Entrega de vídeos grandes](large-video-delivery.md) — Adjuntos limitados a 100 MiB; entregar másteres grandes por enlace autenticado, sin recomprimirlos.
+- [Disco efímero de Modal](modal-ephemeral-disk.md) — La cuota predeterminada es 512 GiB; pedir menos se rechaza y pedir más escala la memoria facturable 20:1.

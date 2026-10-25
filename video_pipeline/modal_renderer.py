@@ -78,6 +78,26 @@ class ModalRenderClient:
                 ) from exc
         return self._modal
 
+    def ensure_worker_available(self) -> None:
+        """Resolve the deployed function before any transcription or source upload."""
+        config = modal_configuration_status()
+        if not config["sdk_installed"] or not config["credentials_configured"]:
+            raise RuntimeError("Modal no está listo en el servidor; no se contactó al worker.")
+        try:
+            self._worker = self._sdk().Function.from_name(
+                MODAL_APP_NAME,
+                MODAL_FUNCTION_NAME,
+            )
+        except Exception as exc:
+            logger.warning(
+                "modal_worker_lookup_failed error_type=%s",
+                type(exc).__name__,
+            )
+            raise RuntimeError(
+                "El worker de Modal no está desplegado o no es accesible; "
+                "no se subió el vídeo ni se inició una transcripción."
+            ) from None
+
     def render(
         self,
         *,
@@ -119,6 +139,7 @@ class ModalRenderClient:
                 "no se inició ningún render."
             )
 
+        self.ensure_worker_available()
         sdk = self._sdk()
         volume = sdk.Volume.from_name(MODAL_VOLUME_NAME, create_if_missing=True)
         remote_prefix = f"jobs/{job_id}"
@@ -173,8 +194,7 @@ class ModalRenderClient:
 
         if progress_callback:
             progress_callback("rendering_on_modal")
-        function = sdk.Function.from_name(MODAL_APP_NAME, MODAL_FUNCTION_NAME)
-        result = function.remote(job_id)
+        result = self._worker.remote(job_id)
         if not isinstance(result, dict) or result.get("job_id") != job_id:
             raise RuntimeError("Modal devolvió una respuesta de trabajo no reconocida.")
         remote_output = result.get("output_path")

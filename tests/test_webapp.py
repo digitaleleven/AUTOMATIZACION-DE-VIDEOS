@@ -1446,6 +1446,92 @@ class VideoPanelApiTests(unittest.TestCase):
         self.assertFalse(proposal["api_plan"]["openai_transcription"])
         self.assertEqual(proposal["api_plan"]["openai_transcription_chunks"], 0)
         self.assertEqual(proposal["api_plan"]["external_services_called_during_proposal"], [])
+
+    def test_modal_proposal_is_local_and_discloses_unknown_compute_cost(self):
+        status, response = self.upload(self.create_movie(".mp4"))
+        self.assertEqual(status, 201)
+        source_id = response["item"]["id"]
+        with patch(
+            "video_pipeline.webapp.modal_configuration_status",
+            return_value={
+                "sdk_installed": True,
+                "credentials_configured": True,
+                "app_name": "matrix-motion-remotion",
+                "function_name": "render_master",
+                "deployment_status": "not_checked",
+            },
+        ):
+            status, _, body = self.request(
+                "POST",
+                "/api/proposals",
+                body=json.dumps({
+                    "source_id": source_id,
+                    "subtitle_mode": "none",
+                    "output_fps": 30,
+                    "output_profile": "1080p",
+                    "output_quality": "high",
+                    "render_backend": "modal",
+                }).encode(),
+                headers={"Content-Type": "application/json"},
+            )
+
+        self.assertEqual(status, 200)
+        proposal = json.loads(body.decode("utf-8"))
+        self.assertEqual(proposal["api_plan"]["renderer_backend"], "modal")
+        self.assertFalse(proposal["api_plan"]["shotstack_key_configured"])
+        self.assertEqual(proposal["api_plan"]["shotstack_render_jobs"], 0)
+        self.assertIsNone(proposal["costs"]["modal_compute_usd"])
+        self.assertIsNone(proposal["costs"]["total_estimate_usd"])
+        self.assertIn("tarifa cotizada", proposal["costs"]["estimate_note"])
+        self.assertEqual(proposal["edit"]["output_fps"], 30)
+        self.assertEqual(proposal["api_plan"]["external_services_called_during_proposal"], [])
+
+    def test_modal_render_requires_separate_compute_and_unknown_cost_approval(self):
+        status, response = self.upload(self.create_movie(".mp4"))
+        self.assertEqual(status, 201)
+        source_id = response["item"]["id"]
+        status, _, body = self.request(
+            "POST",
+            "/api/proposals",
+            body=json.dumps({
+                "source_id": source_id,
+                "subtitle_mode": "none",
+                "output_fps": 30,
+                "output_profile": "1080p",
+                "output_quality": "high",
+                "render_backend": "modal",
+            }).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 200)
+        proposal = json.loads(body.decode())
+        proposal_id = proposal["proposal_id"]
+        status, _, body = self.request(
+            "POST",
+            "/api/jobs",
+            body=json.dumps({
+                "proposal_id": proposal_id,
+                "authorize_paid_apis": False,
+                "authorize_modal_compute": False,
+            }).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 403)
+        self.assertIn("autorización explícita", json.loads(body.decode())["detail"])
+        status, _, body = self.request(
+            "POST",
+            "/api/jobs",
+            body=json.dumps({
+                "proposal_id": proposal_id,
+                "authorize_paid_apis": False,
+                "authorize_modal_compute": True,
+                "unknown_cost_acknowledged": False,
+            }).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 403)
+        self.assertIn("coste estimado es desconocido", json.loads(body.decode())["detail"])
+        self.assertEqual(self.panel.store.job_history_for_source(source_id), [])
         self.assertEqual(proposal["costs"]["openai_usd"], 0.0)
         self.assertIsNone(proposal["costs"]["total_estimate_usd"])
         self.assertIn(proposal["proposal_id"], self.panel.pending_proposals)

@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, replace
+from dataclasses import replace
 import hashlib
 import json
-import logging
 import os
 from pathlib import Path
 import re
-import json
 import subprocess
 from typing import Any
 
@@ -21,9 +19,6 @@ from .modal_renderer import ModalRenderClient
 from .style import VideoStyle
 from .subtitles import build_subtitle_segments
 from .transcription import transcribe_video
-
-logger = logging.getLogger(__name__)
-
 
 def _validate_remote_input_profile(source: Path) -> None:
     """Reject unsupported color/audio before any OpenAI or Modal compute request."""
@@ -184,6 +179,10 @@ def process_local_video_modal(
     if output_path.exists():
         raise FileExistsError("Se rechaza sobrescribir un resultado anterior.")
 
+    renderer = modal_client or ModalRenderClient()
+    # Fail before OpenAI transcription when the serverless worker is not deployed or accessible.
+    renderer.ensure_worker_available()
+
     words: list[WordTiming] = []
     if subtitle_mode == "dynamic":
         if progress_callback:
@@ -232,7 +231,7 @@ def process_local_video_modal(
             )
         if progress_callback:
             progress_callback("rendering_on_modal")
-        remote = (modal_client or ModalRenderClient()).render(
+        remote = renderer.render(
             job_id=job_id,
             input_path=source,
             transcript=transcript,

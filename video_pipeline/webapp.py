@@ -1306,10 +1306,15 @@ class VideoPanel:
             include_transcription=False,
         )
         job = self.store.latest_job_for_source(upload["id"])
+        latest_options = {}
         if job:
             status = job["status"]
             output_id = job["output_id"]
             error = job["error"]
+            try:
+                latest_options = json.loads(job.get("edit_options_json") or "{}")
+            except (TypeError, json.JSONDecodeError):
+                latest_options = {}
         else:
             if processing.get("status") == "completed":
                 status = "completed"
@@ -1376,12 +1381,6 @@ class VideoPanel:
             and drive_import.get("status") == "upload_failed"
             and self.store.latest_job_for_source(upload["id"])
         )
-        latest_options = {}
-        if job:
-            try:
-                latest_options = json.loads(job.get("edit_options_json") or "{}")
-            except (TypeError, json.JSONDecodeError):
-                latest_options = {}
         attempts_used = int(processing.get("attempts") or 0)
         has_retry = any(int(attempt.get("attempt_number") or 1) > 1 for attempt in attempt_history)
         prior_error = f"{job.get('error') or ''} {processing.get('error') or ''}" if job else ""
@@ -1800,6 +1799,11 @@ class VideoPanel:
     def start_job(self, payload: Any) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise PanelError("La solicitud del trabajo debe ser un objeto JSON.")
+        if (
+            payload.get("authorize_paid_apis") is not True
+            and payload.get("authorize_modal_compute") is not True
+        ):
+            raise PanelError("Falta la autorización explícita para usar un motor de render.", 403)
         proposal_id = str(payload.get("proposal_id") or "")
         if not re.fullmatch(r"[0-9a-f]{32}", proposal_id):
             raise PanelError("Prepara y revisa una propuesta antes de autorizar el render.", 409)
@@ -1917,6 +1921,18 @@ class VideoPanel:
             raise PanelError("Falta la autorización expresa para un único reintento en Shotstack Stage.", 403)
         if not re.fullmatch(r"[0-9a-f]{32}", job_id):
             raise PanelError("Identificador de trabajo no válido.")
+        retry_target = self.store.get_job(job_id)
+        if retry_target:
+            try:
+                retry_options = json.loads(retry_target.get("edit_options_json") or "{}")
+            except (TypeError, json.JSONDecodeError):
+                retry_options = {}
+            if retry_options.get("renderer_backend") == "modal":
+                raise PanelError(
+                    "Los reintentos de Modal están deshabilitados. El estado remoto debe reconciliarse "
+                    "antes de autorizar otro render.",
+                    409,
+                )
         expected_previous_attempt = 2 if controlled_third_attempt else 1
         if controlled_third_attempt:
             target = RENDER001_THIRD_RETRY_TARGET

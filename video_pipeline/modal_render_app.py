@@ -189,7 +189,6 @@ def _safe_caption_style(value: Any) -> dict[str, Any]:
     volumes={str(VOLUME_MOUNT): staging_volume},
     cpu=4,
     memory=16 * 1024,
-    ephemeral_disk=40 * 1024,
     timeout=60 * 60,
     retries=0,
     max_containers=1,
