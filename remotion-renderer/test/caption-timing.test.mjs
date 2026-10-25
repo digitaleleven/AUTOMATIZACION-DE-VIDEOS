@@ -11,6 +11,7 @@ import {
   DURATION_IN_FRAMES,
   FPS,
   SEGMENTS,
+  getSourceTrimWindow,
 } from "../src/edit-timeline.mjs";
 import {
   buildColorManagedProxyFilter,
@@ -46,6 +47,20 @@ test("only complete word timings inside kept clips are mapped to output time", (
   assert.ok(Math.abs(mapped[1].start - 1.7) < 1e-9);
   assert.ok(Math.abs(mapped[1].end - 1.9) < 1e-9);
   assert.equal(DURATION_IN_FRAMES, 285);
+});
+
+test("Remotion source trim windows use absolute end times after the start", () => {
+  const windows = SEGMENTS.map(({ sourceStart, frames }) =>
+    getSourceTrimWindow(sourceStart, frames, FPS),
+  );
+
+  assert.deepEqual(windows, [
+    { trimBefore: 0, trimAfter: 2 },
+    { trimBefore: 5, trimAfter: 7.5 },
+    { trimBefore: 10, trimAfter: 12 },
+  ]);
+  assert.ok(windows.every(({ trimBefore, trimAfter }) => trimAfter > trimBefore));
+  assert.throws(() => getSourceTrimWindow(0, 0, FPS), /Invalid source trim values/);
 });
 
 test("caption groups stay within four words and highlight one timed word", () => {

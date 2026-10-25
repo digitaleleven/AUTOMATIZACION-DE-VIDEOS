@@ -19,6 +19,7 @@ import {
   FPS,
   SEGMENTS,
   TRANSITION_FRAMES,
+  getSourceTrimWindow,
 } from "./edit-timeline.mjs";
 
 type ClipProps = {
@@ -37,6 +38,7 @@ const Clip: FC<ClipProps> = ({
   zoom,
 }) => {
   const frame = useCurrentFrame();
+  const trim = getSourceTrimWindow(sourceStart, frames, FPS);
   const scale = zoom
     ? interpolate(frame, [0, frames - 1], [1, 1.12], {
         easing: Easing.inOut(Easing.quad),
@@ -49,8 +51,8 @@ const Clip: FC<ClipProps> = ({
     <AbsoluteFill style={{ backgroundColor: "#09090b", overflow: "hidden" }}>
       <OffthreadVideo
         src={staticFile(sourceFile)}
-        trimBefore={sourceStart / FPS}
-        trimAfter={Math.max(0, sourceDurationInFrames - sourceStart - frames) / FPS}
+        trimBefore={trim.trimBefore}
+        trimAfter={trim.trimAfter}
         muted
         style={{
           width: "100%",
