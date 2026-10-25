@@ -378,3 +378,31 @@ mtime_ms = 1792927185635
 storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/5b25bc20-84f2-42ef-a3b9-860bd970bbcf/cd45b62f-58ab-4730-a1d6-8a2e21f02b0b"
 storage_version_token = "1792927233129451"
 content_type = "image/png"
+
+[[outputs]]
+id = "323iy-VqU6mUcbfhwnuRF"
+uri = "file://remotion-renderer/generated-artifacts/remotion/allintra-direct-eq-30fps-1080.mp4"
+type = "video"
+title = "MATRIX MOTION — muestra directa EQ 30 FPS"
+description = "Render local de 5 segundos, 1080×1920, H.264 y AAC; nueva prueba sin tone mapping."
+logical_id = "18958bdd-bc23-4d35-9014-97e8a559de29"
+content_hash = "sha256:5bdb0fc42d57aa38cdeb78f57fc0eaab9d3dd21f377b558abf08d5bdab41b10e"
+size = 11032873
+mtime_ms = 1792927638578
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/18958bdd-bc23-4d35-9014-97e8a559de29/77ca5b8e-3784-4ba7-ab54-f70026043bde"
+storage_version_token = "1792927724794406"
+content_type = "video/mp4"
+
+[[outputs]]
+id = "TPl08EJ3RSe2SatYXdhUQ"
+uri = "file://remotion-renderer/generated-artifacts/remotion/allintra-direct-eq-30fps-1080-frame-2.5.png"
+type = "image"
+title = "MATRIX MOTION — captura directa EQ a 2,5 s"
+description = "Fotograma del render nuevo para revisión visual del color y los subtítulos."
+logical_id = "02d44d1e-1c92-4811-a1db-612c1c62d555"
+content_hash = "sha256:96acbaf2a411d003fe89a41ecd3345158c4337a6cf224a04145cbed446827700"
+size = 1793546
+mtime_ms = 1792927682995
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/02d44d1e-1c92-4811-a1db-612c1c62d555/584dbb32-9521-47d5-a838-884bed411042"
+storage_version_token = "1792927725565321"
+content_type = "image/png"
