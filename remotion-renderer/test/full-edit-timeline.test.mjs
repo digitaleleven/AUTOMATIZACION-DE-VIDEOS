@@ -29,8 +29,8 @@ test("master camera zoom stays smooth and Remotion blur is confined to cut bound
   assert.equal(cameraScaleAtFrame(26, [20]), 1.03);
   assert.equal(cameraScaleAtFrame(32, [20]), 1.06);
   assert.equal(cameraScaleAtFrame(44, [20]), 1);
-  assert.equal(isSceneCutBlurFrame(89, [90]), true);
-  assert.equal(isSceneCutBlurFrame(90, [90]), false);
+  assert.equal(isSceneCutBlurFrame(89, [90]), false);
+  assert.equal(isSceneCutBlurFrame(90, [90]), true);
 });
 
 test("MM-004 cuts preserve all 1799 proxy frames outside cuts on a gapless timeline", () => {

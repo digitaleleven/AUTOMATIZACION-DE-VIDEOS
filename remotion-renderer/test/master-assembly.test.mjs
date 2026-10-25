@@ -126,6 +126,20 @@ test("FFmpeg graph trims source video and audio, overlays alpha graphics, and mi
   assert.match(graph, /alimiter=limit=0\.95\[aout\]/u);
 });
 
+test("Remotion-composed video bypasses duplicate color, zoom and alpha-composite stages", () => {
+  const graph = buildMasterFilterComplex({
+    clips,
+    sourceAudioStreamIndex: 2,
+    colorFilter: "",
+    jumpFrames: [],
+    precomposedVideo: true,
+  });
+  assert.match(graph, /\[1:v\]fps=30,setpts=PTS-STARTPTS,format=yuv420p\[vout\]/u);
+  assert.doesNotMatch(graph, /\[0:v\]|zoompan|overlay=0:0/u);
+  assert.match(graph, /\[0:2\]asplit=2/u);
+  assert.match(graph, /\[1:a:0\]aresample=48000/u);
+});
+
 test("product overlays trigger synchronized pops and restrained reframes", () => {
   const overlays = [{ startFrame: 130 }];
   assert.ok(buildJumpFrames(clips, words, [], 30, overlays).includes(130));

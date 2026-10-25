@@ -27,7 +27,7 @@ export function cameraScaleAtFrame(frame, reframeFrames = [], easingFrames = 12,
 export function isSceneCutBlurFrame(frame, sceneCutFrames) {
   return Number.isInteger(frame) &&
     Array.isArray(sceneCutFrames) &&
-    sceneCutFrames.some((cutFrame) => Number.isInteger(cutFrame) && frame === cutFrame - 1);
+    sceneCutFrames.some((cutFrame) => Number.isInteger(cutFrame) && frame === cutFrame);
 }
 
 export function buildKeepSegments(sourceFrames, cuts, fps = FULL_FPS) {

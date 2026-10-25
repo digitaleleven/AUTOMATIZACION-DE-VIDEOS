@@ -32,6 +32,7 @@ import {
   buildJumpFrames,
   buildMasterFilterComplex,
   buildSoundEffectCues,
+  buildZoompanFilter,
 } from "./src/master-assembly.mjs";
 import {
   MASTER_OVERLAY_PROFILE,
@@ -420,6 +421,29 @@ try {
     FULL_FPS,
     productCues,
   ).filter((frame) => frame < durationInFrames);
+  const colorFilter = buildColorManagedProxyFilter(inputVideo, FULL_FPS, {
+    ...APPROVED_MASTER_COLOR_PROFILE,
+    width: FULL_WIDTH,
+    height: FULL_HEIGHT,
+  });
+  const sourceVideoFilter = `${colorFilter},${buildZoompanFilter(jumpFrames, {
+    width: FULL_WIDTH,
+    height: FULL_HEIGHT,
+    fps: FULL_FPS,
+  })}`;
+  const videoSegments = clips
+    .filter((clip) => clip.outputStart < renderFrameCount)
+    .map((clip) => ({
+      ...clip,
+      frames: Math.min(clip.frames, renderFrameCount - clip.outputStart),
+    }));
+  const sourceFramesNeeded = Math.max(
+    ...videoSegments.map((segment) => segment.sourceStart + segment.frames),
+  );
+  const sceneCutFrames = clips
+    .slice(1)
+    .map((clip) => clip.outputStart)
+    .filter((frame) => frame < renderFrameCount);
   const soundEffects = buildSoundEffectCues(
     clips,
     effects,
@@ -433,7 +457,11 @@ try {
   );
 
   const disk = await statfs(workRoot);
-  const requiredBytes = FULL_WIDTH * FULL_HEIGHT * 8 * renderFrameCount + 1024 ** 3;
+  const inputSizeBytes = (await stat(inputPath)).size;
+  const requiredBytes =
+    FULL_WIDTH * FULL_HEIGHT * 8 * renderFrameCount +
+    inputSizeBytes * 3 +
+    1024 ** 3;
   if (disk.bavail * disk.bsize < requiredBytes) {
     throw new Error("Espacio insuficiente en workspace para la capa alpha y el máster; no se inicia Chromium.");
   }
@@ -443,6 +471,43 @@ try {
   await mkdir(publicEffectsDirectory, { recursive: true });
   for (const asset of new Set(effects.flatMap((effect) => effect.assets))) {
     await copyFile(path.join(effectsDirectory, asset), path.join(publicEffectsDirectory, asset));
+  }
+  const publicMediaDirectory = path.join(publicDirectory, "media");
+  await mkdir(publicMediaDirectory, { recursive: true });
+  const sourceVideoAsset = "matrix-master-source.mp4";
+  const sourceVideoPath = path.join(publicMediaDirectory, sourceVideoAsset);
+  console.log("stage=preprocess_scene_video");
+  await run("ffmpeg", [
+    "-nostdin", "-n", "-hide_banner", "-loglevel", "error",
+    "-threads", "2", "-i", inputPath,
+    "-map", "0:v:0",
+    "-vf", sourceVideoFilter,
+    "-frames:v", String(sourceFramesNeeded),
+    "-an",
+    "-c:v", "libx264", "-threads", "2", "-preset", "medium", "-crf", "12",
+    "-profile:v", "high", "-pix_fmt", "yuv420p",
+    "-fps_mode", "cfr",
+    "-color_range", "tv", "-colorspace", "bt709",
+    "-color_primaries", "bt709", "-color_trc", "bt709",
+    "-movflags", "+faststart",
+    sourceVideoPath,
+  ]);
+  const sourceProxyProbe = await probe(sourceVideoPath, true);
+  const sourceProxyVideo = sourceProxyProbe.streams?.find(
+    (stream) => stream.codec_type === "video",
+  );
+  if (
+    sourceProxyVideo?.codec_name !== "h264" ||
+    sourceProxyVideo.width !== FULL_WIDTH ||
+    sourceProxyVideo.height !== FULL_HEIGHT ||
+    parseRate(sourceProxyVideo.avg_frame_rate) !== FULL_FPS ||
+    Number(sourceProxyVideo.nb_read_frames) !== sourceFramesNeeded ||
+    sourceProxyVideo.color_primaries !== "bt709" ||
+    sourceProxyVideo.color_transfer !== "bt709" ||
+    sourceProxyVideo.color_space !== "bt709" ||
+    sourceProxyVideo.color_range !== "tv"
+  ) {
+    throw new Error("La fuente SDR temporal no conserva la resolución, cadencia o perfil BT.709 esperado.");
   }
   const publicOverlaysDirectory = path.join(publicDirectory, "overlays");
   await mkdir(publicOverlaysDirectory, { recursive: true });
@@ -479,6 +544,10 @@ try {
     soundEffects: soundEffectsInRender,
     titleOverlay: creativeOverlays.title,
     brandLogoAsset: creativeOverlays.brandLogo,
+    sourceVideoAsset,
+    videoSegments,
+    sceneCutFrames,
+    reframeFrames: jumpFrames,
     promoText: creativeOverlays.promo?.text ?? null,
     imageOverlays: creativeOverlays.images,
     cardOverlays: creativeOverlays.cards,
@@ -554,11 +623,6 @@ try {
     throw new Error(`La capa Remotion no conserva alpha/audio/formato: ${JSON.stringify(overlayProbe)}`);
   }
 
-  const colorFilter = buildColorManagedProxyFilter(inputVideo, FULL_FPS, {
-    ...APPROVED_MASTER_COLOR_PROFILE,
-    width: FULL_WIDTH,
-    height: FULL_HEIGHT,
-  });
   const filterComplex = buildMasterFilterComplex({
     clips,
     sourceAudioStreamIndex: inputAudio.index,
@@ -567,6 +631,7 @@ try {
     originalAudioVolume: audioSettings.original_volume,
     noiseReduction: audioSettings.noise_reduction,
     includeSoundEffects: soundEffectsInRender.length > 0,
+    precomposedVideo: true,
     width: FULL_WIDTH,
     height: FULL_HEIGHT,
     fps: FULL_FPS,

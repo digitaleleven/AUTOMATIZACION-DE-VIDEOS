@@ -26,3 +26,11 @@ La validación del contrato Python → Remotion debe cubrir el JSON completo, no
 **Why:** una invocación real superó el parser, pero fue rechazada porque faltaba el texto canónico exigido por la comprobación de cobertura. También había marcadores de duración cero que deben conservarse con ventanas compartidas, no descartarse.
 
 **How to apply:** mantener una prueba local entre ambos lenguajes que use el mismo constructor de transcripción del pipeline y el validador real de Remotion; conservar palabras y tiempos originales, sin atribuir precisión individual a ventanas compartidas.
+
+### Motion blur nativo en cortes de escena
+
+La responsable autorizó cambiar el compositor final para que Remotion procese también el vídeo y pueda aplicar motion blur en los límites entre escenas. La conversión de color y el montaje de audio deben conservar sus etapas validadas; no introducir solapamientos que cambien la duración sin autorización aparte.
+
+**Why:** el compositor anterior mezclaba el vídeo en FFmpeg después de renderizar una capa gráfica transparente en Remotion, así que Remotion no podía muestrear fotogramas de la escena.
+
+**How to apply:** procesar el vídeo base dentro de la composición Remotion con una copia de trabajo BT.709 y mantener la mezcla final del audio original. La autorización de arquitectura no autoriza por sí sola desplegar el worker ni ejecutar un render remoto.

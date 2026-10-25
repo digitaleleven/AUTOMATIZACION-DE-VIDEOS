@@ -206,8 +206,7 @@ const SourceVideoBackground: FC<{
   segments: SourceVideoSegment[];
   sceneCutFrames: number[];
   reframeFrames: number[];
-  fps: number;
-}> = ({ asset, segments, sceneCutFrames, reframeFrames, fps }) => {
+}> = ({ asset, segments, sceneCutFrames, reframeFrames }) => {
   const frame = useCurrentFrame();
   const scale = cameraScaleAtFrame(frame, reframeFrames);
   const videoTrack = (
@@ -239,7 +238,7 @@ const SourceVideoBackground: FC<{
     </AbsoluteFill>
   );
 
-  // The shutter is enabled for the final frame before each hard cut only.
+  // The shutter is enabled on the first frame of each new scene only.
   // This samples both sides of that cut without shortening the edit or its audio.
   return isSceneCutBlurFrame(frame, sceneCutFrames) ? (
     <CameraMotionBlur shutterAngle={360} samples={5}>
@@ -435,7 +434,6 @@ const FullEdit: FC<FullEditProps> = ({
         segments={videoSegments}
         sceneCutFrames={sceneCutFrames}
         reframeFrames={reframeFrames}
-        fps={fps}
       />
     )}
     <div
