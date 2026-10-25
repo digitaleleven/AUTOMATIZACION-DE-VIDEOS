@@ -93,10 +93,12 @@
               <div><p class="eyebrow">01 / NUEVO PROYECTO</p><h2 id="create-title">Crear vídeo</h2><p class="section-description">Sube el original, define su categoría y elige el estilo de subtítulos.</p></div>
               <span class="status-pill">Motor disponible: Modal</span>
             </div>
-            <div class="create-steps" aria-label="Pasos confirmados">
+            <div class="create-steps" aria-label="Flujo de creación de cinco pasos">
               <span class="create-step active"><b>1</b> Vídeo</span><span class="step-connector"></span>
               <span class="create-step"><b>2</b> Categoría</span><span class="step-connector"></span>
-              <span class="create-step"><b>3</b> Estilo</span>
+              <span class="create-step"><b>3</b> Estilo</span><span class="step-connector"></span>
+              <span class="create-step"><b>4</b> Personalización</span><span class="step-connector"></span>
+              <span class="create-step"><b>5</b> Resumen</span>
             </div>
             <div class="upload-preferences" aria-label="Preferencias de este vídeo">
               <label class="sr-only" for="upload-niche">Nicho o categoría</label>
@@ -139,6 +141,106 @@
               <input id="video-input" type="file" accept="video/mp4,video/quicktime,.mp4,.mov" hidden>
             </div>
             <div class="upload-progress" id="upload-message" role="status" aria-live="polite" hidden></div>
+          </section>
+
+          <section class="section-block creation-customization" id="personalizacion" data-page-section="create" aria-labelledby="customization-title">
+            <div class="section-head">
+              <div><p class="eyebrow">04 / PERSONALIZACIÓN</p><h2 id="customization-title">Define el acabado</h2><p class="section-description">Ajustes de esta propuesta. Puedes mantenerlos en su estado inicial o afinar cada detalle.</p></div>
+              <span class="status-pill">Ajustes editables</span>
+            </div>
+            <div class="customization-accordions" aria-label="Opciones de personalización">
+              <details class="customization-accordion" open>
+                <summary><span class="accordion-index">01</span><span class="accordion-title"><strong>Subtítulos inteligentes</strong><small>Lectura, color y posición en pantalla</small></span><span class="accordion-chevron" aria-hidden="true"></span></summary>
+                <div class="accordion-content">
+                  <div class="setting-row setting-switch-row">
+                    <div><strong>Subtítulos</strong><p>Activa o desactiva los subtítulos para este vídeo.</p></div>
+                    <label class="switch-control" for="custom-captions-enabled"><input id="custom-captions-enabled" type="checkbox" role="switch" checked><span class="switch-track" aria-hidden="true"></span><span class="switch-state">ON</span><span class="sr-only">Activar subtítulos inteligentes</span></label>
+                  </div>
+                  <div class="custom-field-grid">
+                    <label class="custom-field" for="custom-caption-color"><span>Color de palabra destacada</span><select id="custom-caption-color"><option value="#FFC0CB">Rosa pastel · #FFC0CB</option><option value="#00AFA8">Turquesa · #00AFA8</option><option value="#FFE600">Amarillo · #FFE600</option></select></label>
+                    <label class="custom-field" for="custom-caption-timing"><span>Ritmo de lectura</span><select id="custom-caption-timing"><option value="word-by-word">Palabra por palabra</option><option value="groups">Grupos de palabras</option></select></label>
+                    <label class="custom-field" for="custom-caption-size"><span>Tamaño del texto</span><select id="custom-caption-size"><option value="small">Compacto</option><option value="medium" selected>Medio</option><option value="large">Grande</option></select></label>
+                    <label class="custom-field" for="custom-caption-position"><span>Posición vertical</span><select id="custom-caption-position"><option value="lower">Zona inferior segura</option><option value="center">Centro</option><option value="upper">Zona superior</option></select></label>
+                  </div>
+                  <p class="custom-field-note">La transcripción no se inicia desde estos controles. El procesamiento requiere autorización explícita.</p>
+                </div>
+              </details>
+
+              <details class="customization-accordion">
+                <summary><span class="accordion-index">02</span><span class="accordion-title"><strong>Efectos y animaciones</strong><small>Movimiento medido y elementos gráficos</small></span><span class="accordion-chevron" aria-hidden="true"></span></summary>
+                <div class="accordion-content">
+                  <div class="custom-field-grid">
+                    <label class="custom-field" for="custom-autozoom"><span>Autozoom</span><select id="custom-autozoom"><option value="off">Desactivado</option><option value="smooth" selected>Suave</option><option value="aggressive">Agresivo</option><option value="emphatic">Enfático</option></select></label>
+                    <label class="custom-field" for="custom-transitions"><span>Transiciones</span><select id="custom-transitions"><option value="clean" selected>Cortes limpios</option><option value="soft">Fundidos suaves</option><option value="dynamic">Dinámicas</option></select></label>
+                  </div>
+                  <fieldset class="custom-choice-set"><legend>Capas visuales</legend>
+                    <label class="custom-check"><input id="custom-layer-titles" type="checkbox"><span>Títulos y rótulos</span></label>
+                    <label class="custom-check"><input id="custom-layer-accents" type="checkbox"><span>Elementos gráficos de apoyo</span></label>
+                  </fieldset>
+                  <p class="custom-field-note">Los efectos se aplican solo si el contenido y el encuadre lo permiten.</p>
+                </div>
+              </details>
+
+              <details class="customization-accordion">
+                <summary><span class="accordion-index">03</span><span class="accordion-title"><strong>Audio y mezcla</strong><small>Niveles, limpieza y música</small></span><span class="accordion-chevron" aria-hidden="true"></span></summary>
+                <div class="accordion-content">
+                  <label class="range-field" for="custom-original-volume"><span><strong>Volumen del audio original</strong><small>Ajustable de 0 a 100%</small></span><input id="custom-original-volume" type="range" min="0" max="100" value="100"><span class="range-scale"><small>0%</small><small>100%</small></span></label>
+                  <div class="custom-check-list">
+                    <label class="custom-check"><input id="custom-noise-reduction" type="checkbox"><span>Reducción de ruido</span></label>
+                    <label class="custom-check"><input id="custom-music-enabled" type="checkbox"><span>Añadir música</span></label>
+                    <label class="custom-check"><input id="custom-music-ducking" type="checkbox"><span>Reducir la música durante la voz (ducking)</span></label>
+                  </div>
+                  <p class="custom-field-note">No se añadirá música automáticamente. La mezcla queda sujeta a la propuesta y revisión.</p>
+                </div>
+              </details>
+
+              <details class="customization-accordion">
+                <summary><span class="accordion-index">04</span><span class="accordion-title"><strong>Formato e imagen</strong><small>Salida vertical fija y tratamiento visual</small></span><span class="accordion-chevron" aria-hidden="true"></span></summary>
+                <div class="accordion-content">
+                  <div class="format-lock" aria-label="Formato de salida fijo">
+                    <span class="format-lock-mark" aria-hidden="true">9:16</span>
+                    <span><strong>Vertical · 1080 × 1920</strong><small>Formato de salida fijo para este estudio.</small></span>
+                    <span class="locked-label">FIJO</span>
+                  </div>
+                  <label class="custom-field" for="custom-image-filter"><span>Filtro de imagen</span><select id="custom-image-filter"><option value="none">Sin filtro</option><option value="natural" selected>Natural</option><option value="warm">Cálido sutil</option><option value="cool">Frío sutil</option><option value="contrast">Contraste suave</option></select></label>
+                </div>
+              </details>
+
+              <details class="customization-accordion">
+                <summary><span class="accordion-index">05</span><span class="accordion-title"><strong>Instrucciones libres</strong><small>Contexto específico para este vídeo</small></span><span class="accordion-chevron" aria-hidden="true"></span></summary>
+                <div class="accordion-content">
+                  <label class="custom-field" for="custom-free-instructions"><span>Notas para la edición</span><textarea id="custom-free-instructions" rows="4" maxlength="1000" placeholder="Indica qué debe priorizarse, qué conviene evitar o cualquier detalle importante."></textarea></label>
+                  <p class="custom-field-note">Las instrucciones son una referencia de edición; revisa siempre la propuesta antes de autorizar un render.</p>
+                </div>
+              </details>
+            </div>
+          </section>
+
+          <section class="section-block creation-final-summary" id="resumen-final" data-page-section="create" aria-labelledby="final-summary-title">
+            <div class="section-head">
+              <div><p class="eyebrow">05 / RESUMEN FINAL</p><h2 id="final-summary-title">Todo listo para revisar</h2><p class="section-description">Comprueba el archivo y el motor antes de continuar. Nada se procesa en segundo plano.</p></div>
+              <span class="preview-status" id="creation-summary-status">PENDIENTE DE VÍDEO</span>
+            </div>
+            <div class="final-summary-panel" aria-live="polite">
+              <div class="summary-file-preview" id="creation-summary-thumbnail" aria-label="Miniatura del vídeo seleccionado">
+                <div class="summary-thumbnail-empty"><span class="thumbnail-frame" aria-hidden="true"></span><strong>Sin miniatura</strong><small>Selecciona un vídeo para mostrar su imagen.</small></div>
+                <img id="creation-summary-image" src="" alt="Miniatura del vídeo seleccionado" hidden>
+              </div>
+              <div class="final-summary-details">
+                <div class="summary-file-heading"><span class="summary-label">ARCHIVO DE ORIGEN</span><strong id="creation-summary-name">Ningún vídeo seleccionado</strong></div>
+                <dl class="final-summary-meta">
+                  <div><dt>Duración</dt><dd id="creation-summary-duration">Pendiente</dd></div>
+                  <div><dt>Categoría</dt><dd id="creation-summary-category">Pendiente</dd></div>
+                  <div><dt>Subtítulos</dt><dd id="creation-summary-captions">Pendiente de vídeo</dd></div>
+                </dl>
+                <div class="engine-summary"><span class="engine-status-dot" aria-hidden="true"></span><div><strong>Modal Cloud Engine</strong><small>Motor previsto · coste cloud variable, no cotizado aquí.</small></div><span class="engine-summary-tag">POR AUTORIZAR</span></div>
+              </div>
+            </div>
+            <p class="summary-transparency"><strong>Sin archivo no hay propuesta.</strong> Selecciona un vídeo para completar los datos reales. No se ha iniciado ninguna subida adicional, transcripción ni render desde este resumen.</p>
+            <div class="creation-actions" aria-label="Acciones de creación">
+              <button class="primary-button creation-submit" id="create-video-button" type="button"><span>Crear mi vídeo</span><b aria-hidden="true">→</b></button>
+              <button class="outline-button creation-demo" id="quick-demo-button" type="button">Prueba Rápida (Demo)</button>
+            </div>
           </section>
 
           <section class="drive-section" id="drive-section" data-page-section="settings" aria-labelledby="drive-title">

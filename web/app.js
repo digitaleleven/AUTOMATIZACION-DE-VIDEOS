@@ -567,6 +567,7 @@ function syncRenderBackendControls() {
   byId("add-zoom-button").disabled = modal;
   for (const field of byId("edit-zooms-list").querySelectorAll("input, select")) {
     field.disabled = modal;
+  }
   if (modal) {
     fps.value = "30";
     profile.value = "1080p";
