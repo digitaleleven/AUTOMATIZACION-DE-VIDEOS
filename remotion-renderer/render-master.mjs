@@ -24,9 +24,9 @@ import {
 import {
   buildKeepSegments,
   buildTimedVectorEffects,
-  FULL_FPS,
-  FULL_HEIGHT,
-  FULL_WIDTH,
+  FULL_FPS as DEFAULT_FPS,
+  FULL_HEIGHT as DEFAULT_HEIGHT,
+  FULL_WIDTH as DEFAULT_WIDTH,
 } from "./src/full-edit-timeline.mjs";
 import {
   buildJumpFrames,
@@ -35,6 +35,7 @@ import {
 } from "./src/master-assembly.mjs";
 import {
   MASTER_OVERLAY_PROFILE,
+  resolveMasterRenderProfile,
   resolveRenderFrameCount,
   supportsAlphaOverlayPixelFormat,
 } from "./src/master-render-profile.mjs";
@@ -73,14 +74,18 @@ const DEFAULTS = {
 
 const parseArguments = (args) => {
   const parsed = {};
-  const allowed = new Set(["--input", "--transcript", "--plan", "--effects-dir", "--output", "--show-subtitles", "--render-frames", "--briefing", "--caption-style-json"]);
+  const allowed = new Set([
+    "--input", "--transcript", "--plan", "--effects-dir", "--output",
+    "--show-subtitles", "--render-frames", "--briefing", "--caption-style-json",
+    "--width", "--height", "--fps",
+  ]);
   for (let index = 0; index < args.length; index += 1) {
     const key = args[index];
     if (!allowed.has(key) || !args[index + 1]) {
       throw new Error(
         "Uso: render-master.mjs [--input MOV] [--transcript JSON] [--plan JSON] " +
         "[--effects-dir DIR] [--output MP4] [--show-subtitles true|false] " +
-        "[--render-frames COUNT] [--briefing TEXT]",
+        "[--render-frames COUNT] [--briefing TEXT] [--width PX] [--height PX] [--fps FPS]",
       );
     }
     parsed[key] = args[index + 1];
@@ -96,6 +101,9 @@ const parseArguments = (args) => {
     renderFramesArg: parsed["--render-frames"],
     briefing: parsed["--briefing"] || "",
     captionStyleJsonArg: parsed["--caption-style-json"],
+    width: parsed["--width"] === undefined ? DEFAULT_WIDTH : Number(parsed["--width"]),
+    height: parsed["--height"] === undefined ? DEFAULT_HEIGHT : Number(parsed["--height"]),
+    fps: parsed["--fps"] === undefined ? DEFAULT_FPS : Number(parsed["--fps"]),
   };
 };
 
@@ -218,6 +226,8 @@ let renderLockPath;
 
 try {
   const options = parseArguments(process.argv.slice(2));
+  const { width: FULL_WIDTH, height: FULL_HEIGHT, fps: FULL_FPS } =
+    resolveMasterRenderProfile(options.width, options.height, options.fps);
   const inputPath = options.input;
   const transcriptPath = options.transcript;
   const planPath = options.plan;
@@ -438,6 +448,9 @@ try {
     onProgress: (progress) => console.log(`overlay_bundle_progress=${progress}%`),
   });
   const inputProps = {
+    width: FULL_WIDTH,
+    height: FULL_HEIGHT,
+    fps: FULL_FPS,
     durationInFrames,
     effects,
     wordTimings,

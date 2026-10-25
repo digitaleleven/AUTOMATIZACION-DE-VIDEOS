@@ -18,6 +18,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from fractions import Fraction
 from typing import Any
 
 import modal
@@ -38,6 +39,12 @@ _SAFE_CAPTION_STYLE_KEYS = {
     "caption_position",
     "max_words_per_caption",
 }
+_WORKER_OUTPUT_PROFILES = {
+    "720p": (720, 1280),
+    "1080p": (1080, 1920),
+    "2160p": (2160, 3840),
+}
+_WORKER_OUTPUT_FPS = {25, 30, 50, 60}
 
 app = modal.App(name=APP_NAME)
 staging_volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
@@ -93,6 +100,64 @@ def _file_sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _probe_video_profile(path: Path) -> dict[str, Any]:
+    result = _run_checked(
+        [
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_streams", "-of", "json", str(path),
+        ],
+        timeout=120,
+    )
+    streams = json.loads(result.stdout).get("streams", [])
+    if not streams:
+        raise ValueError("No se pudo leer la pista de vídeo de la fuente.")
+    stream = streams[0]
+    width = int(stream.get("width") or 0)
+    height = int(stream.get("height") or 0)
+    rotation = 0
+    for side_data in stream.get("side_data_list", []):
+        if side_data.get("rotation") is not None:
+            rotation = int(round(float(side_data["rotation"])))
+            break
+    if abs(rotation) % 180 == 90:
+        width, height = height, width
+    return {
+        "width": width,
+        "height": height,
+        "avg_frame_rate": stream.get("avg_frame_rate") or "0/1",
+    }
+
+
+def validate_worker_render_profile(
+    plan: dict[str, Any],
+    *,
+    source_width: int,
+    source_height: int,
+) -> tuple[int, int, int]:
+    """Validate staged output settings before invoking the renderer."""
+    width = plan.get("output_width")
+    height = plan.get("output_height")
+    fps = plan.get("output_fps")
+    if any(isinstance(value, bool) or not isinstance(value, int) for value in (width, height, fps)):
+        raise ValueError("El plan no contiene una resolución y una tasa de salida válidas.")
+    if (width, height) not in _WORKER_OUTPUT_PROFILES.values():
+        raise ValueError("La salida debe ser vertical 720p, 1080p o 2160p.")
+    if fps not in _WORKER_OUTPUT_FPS:
+        raise ValueError("La tasa de salida debe ser 25, 30, 50 o 60 FPS.")
+    if (width, height) == _WORKER_OUTPUT_PROFILES["2160p"] and (
+        source_width < 2160 or source_height < 3840
+    ):
+        raise ValueError("La salida 2160p requiere una fuente maestra vertical de 2160 × 3840 o superior.")
+    return width, height, fps
+
+
+def _rate_value(value: str) -> float:
+    try:
+        return float(Fraction(value))
+    except (ValueError, ZeroDivisionError):
+        return 0.0
 
 
 def _normalize_audio_if_needed(source: Path, work_dir: Path) -> Path:
@@ -238,6 +303,13 @@ def render_master(job_id: str) -> dict[str, Any]:
                 raise FileNotFoundError(f"No se encontró el archivo de trabajo Modal: {name}.")
         shutil.copyfile(remote_job / "transcript.json", local_transcript)
         shutil.copyfile(remote_job / "plan.json", local_plan)
+        render_plan = json.loads(local_plan.read_text(encoding="utf-8"))
+        source_profile = _probe_video_profile(local_source)
+        output_width, output_height, output_fps = validate_worker_render_profile(
+            render_plan,
+            source_width=source_profile["width"],
+            source_height=source_profile["height"],
+        )
         remote_effects = remote_job / "effects"
         if remote_effects.is_dir():
             for asset in remote_effects.iterdir():
@@ -271,6 +343,12 @@ def render_master(job_id: str) -> dict[str, Any]:
             briefing,
             "--caption-style-json",
             json.dumps(caption_style, ensure_ascii=False),
+            "--width",
+            str(output_width),
+            "--height",
+            str(output_height),
+            "--fps",
+            str(output_fps),
         ]
         _run_checked(command, timeout=55 * 60)
         report_path = local_job / "rendered.report.json"
@@ -293,10 +371,20 @@ def render_master(job_id: str) -> dict[str, Any]:
             ).stdout
         )
         output_streams = output_probe.get("streams", [])
-        if not any(stream.get("codec_type") == "video" for stream in output_streams):
+        output_video = next(
+            (stream for stream in output_streams if stream.get("codec_type") == "video"),
+            None,
+        )
+        if not output_video:
             raise RuntimeError("El resultado de Remotion no contiene una pista de vídeo.")
         if not any(stream.get("codec_type") == "audio" for stream in output_streams):
             raise RuntimeError("El resultado de Remotion no contiene una pista de audio.")
+        if (
+            int(output_video.get("width") or 0) != output_width
+            or int(output_video.get("height") or 0) != output_height
+            or abs(_rate_value(output_video.get("avg_frame_rate") or "0/1") - output_fps) > 0.01
+        ):
+            raise RuntimeError("El MP4 no coincide con la resolución y los FPS aprobados en el plan.")
 
         output_size = local_output.stat().st_size
         if output_size > 4 * 1024**3:
@@ -335,6 +423,7 @@ def render_master(job_id: str) -> dict[str, Any]:
                 for stream in output_streams
                 if stream.get("codec_type") == "video"
             ),
+            "fps": output_fps,
         }
     finally:
         shutil.rmtree(local_job, ignore_errors=True)

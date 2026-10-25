@@ -16,7 +16,7 @@ from .edit_plan import EditPlanError, edited_duration, normalize_edit_plan, stic
 from .media import probe_video, temporary_work_directory, validate_rendered_output
 from .models import WordTiming
 from .modal_renderer import ModalRenderClient
-from .style import VideoStyle
+from .style import StyleConfigError, VideoStyle, validate_output_profile
 from .subtitles import build_subtitle_segments
 from .transcription import transcribe_video
 
@@ -146,8 +146,14 @@ def process_local_video_modal(
         raise ValueError("Los ajustes de audio no son válidos.")
     if not isinstance(briefing, str) or len(briefing) > 4000:
         raise ValueError("Las notas de estilo superan el límite de 4.000 caracteres.")
-    if style.output_width != 1080 or style.output_height != 1920 or style.output_fps != 30:
-        raise ValueError("Modal está configurado para 1080 × 1920 a 30 FPS.")
+    try:
+        validate_output_profile(
+            style.output_width,
+            style.output_height,
+            style.output_fps,
+        )
+    except StyleConfigError as exc:
+        raise ValueError(str(exc)) from None
     if style.logo_path:
         raise ValueError(
             "El render Remotion en Modal no aplica el logo global configurado; "
@@ -161,6 +167,16 @@ def process_local_video_modal(
         progress_callback("validating")
     video = probe_video(source)
     _validate_remote_input_profile(source)
+    try:
+        validate_output_profile(
+            style.output_width,
+            style.output_height,
+            style.output_fps,
+            source_width=video.width,
+            source_height=video.height,
+        )
+    except StyleConfigError as exc:
+        raise ValueError(str(exc)) from None
     if video.video_codec not in {"h264", "hevc"}:
         raise ValueError("Modal solo admite vídeo H.264 o HEVC/H.265.")
     if video.duration > style.max_video_duration_seconds:
@@ -200,19 +216,13 @@ def process_local_video_modal(
         min(expected_duration, 5.0) if render_mode == "quick_demo" else expected_duration
     )
     render_frames = (
-        max(1, round(expected_render_duration * 30))
+        max(1, round(expected_render_duration * style.output_fps))
         if render_mode == "quick_demo"
         else None
     )
-    expected_style = replace(
-        style,
-        output_width=1080,
-        output_height=1920,
-        output_fps=30,
-        output_quality="high",
-    )
+    expected_style = replace(style, output_quality="high")
     safe_stem = re.sub(r"[^A-Za-z0-9_-]+", "-", source.stem).strip("-_")[:60] or "video"
-    output_path = destination_dir / f"{safe_stem}-MATRIX-MOTION-MODAL-{job_id[:8]}.mp4"
+    output_path = destination_dir / f"{safe_stem}-MATRIX-MOTION-{job_id[:8]}.mp4"
     if output_path.exists():
         raise FileExistsError("Se rechaza sobrescribir un resultado anterior.")
 
@@ -268,6 +278,9 @@ def process_local_video_modal(
         "cuts": plan["cuts"],
         "effect_cues": effect_cues,
         "expected_output_duration_seconds": expected_duration,
+        "output_width": expected_style.output_width,
+        "output_height": expected_style.output_height,
+        "output_fps": expected_style.output_fps,
         "overlays": {},
         "render_mode": render_mode,
         "render_settings": render_settings,

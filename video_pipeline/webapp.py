@@ -76,16 +76,20 @@ from .r2_storage import configuration_status as r2_configuration_status, upload_
 from .state import ProcessingLedger
 from .shotstack import ShotstackClient, ShotstackError
 from .state import ProcessingLedger
-from .style import VideoStyle, load_video_style, save_video_style
+from .style import (
+    OUTPUT_PROFILES,
+    SUPPORTED_OUTPUT_FPS,
+    StyleConfigError,
+    VideoStyle,
+    load_video_style,
+    save_video_style,
+    validate_output_profile,
+)
 
 logger = logging.getLogger(__name__)
 MAX_JSON_BYTES = 64 * 1024
 COPY_CHUNK_BYTES = 1024 * 1024
 ALLOWED_CODECS = {"h264", "hevc"}
-OUTPUT_PROFILES = {
-    "720p": (720, 1280),
-    "1080p": (1080, 1920),
-}
 VIDEO_NICHE_LABELS = {
     "beauty_skincare": "Beauty & Skincare",
     "fashion": "Fashion & Style",
@@ -1638,6 +1642,7 @@ class VideoPanel:
         if len(style_notes) > 4000:
             raise PanelError("Las notas combinadas superan el límite de 4.000 caracteres.")
 
+        video = probe_video(self._source_path(upload))
         subtitle_mode = str(payload.get("subtitle_mode") or "none")
         if subtitle_mode not in {"dynamic", "simple", "none"}:
             raise PanelError("Elige subtítulos dinámicos, sencillos o sin subtítulos.")
@@ -1652,24 +1657,36 @@ class VideoPanel:
         render_mode = str(payload.get("render_mode") or "full")
         if render_mode not in {"full", "quick_demo"}:
             raise PanelError("Elige creación completa o prueba rápida de 5 segundos.")
-        output_profile = str(payload.get("output_profile") or "1080p")
+        source_is_4k = video.width >= 2160 and video.height >= 3840
+        default_profile = "2160p" if source_is_4k else "1080p"
+        output_profile = str(payload.get("output_profile") or default_profile)
         if output_profile not in OUTPUT_PROFILES:
-            raise PanelError(
-                "El perfil solicitado no está disponible en Modal; se requiere 1080 × 1920."
-            )
+            raise PanelError("Elige un perfil vertical disponible: 720p, 1080p o 2160p.")
         output_width, output_height = OUTPUT_PROFILES[output_profile]
+        try:
+            validate_output_profile(
+                output_width,
+                output_height,
+                30,
+                source_width=video.width,
+                source_height=video.height,
+            )
+        except StyleConfigError as exc:
+            raise PanelError(str(exc)) from None
         output_quality = str(payload.get("output_quality") or "high")
         if output_quality != "high":
-            raise PanelError("Modal usa el perfil de calidad alta aprobado.")
+            raise PanelError("El motor MATRIX requiere el perfil de calidad alta.")
+        default_output_fps = min(
+            sorted(SUPPORTED_OUTPUT_FPS),
+            key=lambda rate: abs(rate - (video.fps or 30)),
+        )
         try:
-            raw_output_fps = float(payload.get("output_fps", 30))
+            raw_output_fps = float(payload.get("output_fps", default_output_fps))
         except (TypeError, ValueError):
             raise PanelError("Los FPS de salida deben ser 25, 30, 50 o 60.") from None
         if not raw_output_fps.is_integer() or raw_output_fps not in {25, 30, 50, 60}:
             raise PanelError("Los FPS de salida deben ser 25, 30, 50 o 60.")
         output_fps = int(raw_output_fps)
-        if output_profile != "1080p" or output_fps != 30:
-            raise PanelError("Remotion en Modal está preparado para 1080 × 1920 a 30 FPS.")
 
         item = self._public_library_item(upload)
         existing_status, existing_backend = self._source_render_state_for_mode(upload, render_mode)
@@ -1692,10 +1709,9 @@ class VideoPanel:
         )
         if render_backend == "modal" and style.logo_path:
             raise PanelError(
-                "El motor Remotion en Modal no aplica el logo global configurado; "
+                "El motor MATRIX no aplica el logo global configurado; "
                 "no se preparó una propuesta que lo omita."
             )
-        video = probe_video(self._source_path(upload))
         try:
             creative_plan = normalize_edit_plan(payload.get("creative_plan"), video.duration)
         except EditPlanError as exc:

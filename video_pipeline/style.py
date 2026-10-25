@@ -14,6 +14,37 @@ class StyleConfigError(ValueError):
     """Raised for invalid video style configuration."""
 
 
+OUTPUT_PROFILES = {
+    "720p": (720, 1280),
+    "1080p": (1080, 1920),
+    "2160p": (2160, 3840),
+}
+SUPPORTED_OUTPUT_FPS = frozenset({25, 30, 50, 60})
+
+
+def validate_output_profile(
+    width: int,
+    height: int,
+    fps: int,
+    *,
+    source_width: int | None = None,
+    source_height: int | None = None,
+) -> tuple[int, int, int]:
+    """Validate a portrait render profile and prevent unsupported 4K upscaling."""
+    try:
+        width, height, fps = int(width), int(height), int(fps)
+    except (TypeError, ValueError):
+        raise StyleConfigError("La resolución y los FPS deben ser números enteros.") from None
+    if (width, height) not in OUTPUT_PROFILES.values():
+        raise StyleConfigError("La salida debe ser vertical 720p, 1080p o 2160p.")
+    if fps not in SUPPORTED_OUTPUT_FPS:
+        raise StyleConfigError("Los FPS de salida deben ser 25, 30, 50 o 60.")
+    if (width, height) == OUTPUT_PROFILES["2160p"] and source_width is not None and source_height is not None:
+        if int(source_width) < 2160 or int(source_height) < 3840:
+            raise StyleConfigError("La salida 2160p requiere una fuente maestra vertical de 2160 × 3840 o superior.")
+    return width, height, fps
+
+
 @dataclass(frozen=True)
 class VideoStyle:
     font_family: str = "Montserrat"
@@ -97,12 +128,11 @@ def load_video_style(path: str | Path = "video_style.json") -> VideoStyle:
         raise StyleConfigError("logo_scale must be between 0.02 and 0.4.")
     if any(not -1 <= float(values[key]) <= 1 for key in ("logo_offset_x", "logo_offset_y")):
         raise StyleConfigError("Logo offsets must be between -1 and 1.")
-    if (int(values["output_width"]), int(values["output_height"])) not in {
-        (720, 1280), (1080, 1920),
-    }:
-        raise StyleConfigError("Output must use the 720 × 1280 or 1080 × 1920 portrait profile.")
-    if int(values["output_fps"]) not in {25, 30, 50, 60}:
-        raise StyleConfigError("output_fps must be one of 25, 30, 50, or 60.")
+    validate_output_profile(
+        values["output_width"],
+        values["output_height"],
+        values["output_fps"],
+    )
     if not isinstance(values["output_quality"], str) or values["output_quality"] not in {"medium", "high"}:
         raise StyleConfigError("output_quality must be 'medium' or 'high'.")
     legacy_size_limit = values["max_input_size_mb"]
