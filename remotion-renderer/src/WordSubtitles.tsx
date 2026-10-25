@@ -38,7 +38,7 @@ export const WordSubtitles: FC<{
   fps: number;
 }> = ({ words, fps }) => {
   const frame = useCurrentFrame();
-  const groups = useMemo(() => groupTimedWords(words, 2, 4), [words]);
+  const groups = useMemo(() => groupTimedWords(words, 1, 3), [words]);
   const seconds = frame / fps;
   const group = activeCaptionGroup(groups, seconds);
   if (!group) return null;

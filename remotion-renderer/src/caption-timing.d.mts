@@ -16,6 +16,12 @@ export function mapWordTimingsToOutput(
   segments: readonly { sourceStart: number; frames: number; outputStart: number }[],
   fps?: number,
 ): TimedWord[];
+export function isKeywordWord(text: string): boolean;
+export function keywordWindowsForSegment(
+  words: readonly TimedWord[],
+  segment: { outputStart: number; frames: number },
+  fps?: number,
+): { startFrame: number; endFrame: number }[];
 export function groupTimedWords(
   words: readonly TimedWord[],
   minWords?: number,

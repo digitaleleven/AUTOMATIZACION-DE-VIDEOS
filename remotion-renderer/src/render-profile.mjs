@@ -40,7 +40,15 @@ export const parseAllIntraFrameInfo = (ffprobeCsv) => {
 export const buildColorManagedProxyFilter = (
   video,
   fps = REMOTION_RENDER_PROFILE.fps,
+  { toneMap = "hable", mobiusParam = 0.5 } = {},
 ) => {
+  if (!["hable", "mobius"].includes(toneMap)) {
+    throw new Error(`Curva de mapeo tonal no admitida: ${toneMap}`);
+  }
+  if (toneMap === "mobius" && (!Number.isFinite(mobiusParam) || mobiusParam <= 0)) {
+    throw new Error("El parámetro Mobius debe ser positivo y finito.");
+  }
+
   const rangeIn =
     video.color_range === "tv" ? "limited" :
     video.color_range === "pc" ? "full" :
@@ -61,7 +69,8 @@ export const buildColorManagedProxyFilter = (
     colorTransform =
       "zscale=primariesin=bt2020:transferin=arib-std-b67:matrixin=bt2020nc:rangein=limited:" +
       "primaries=bt2020:transfer=linear:matrix=gbr:range=full:npl=100," +
-      "format=gbrpf32le,tonemap=tonemap=hable:desat=0," +
+      `format=gbrpf32le,tonemap=tonemap=${toneMap}:` +
+      (toneMap === "mobius" ? `param=${mobiusParam},` : "desat=0,") +
       "zscale=primariesin=bt2020:transferin=linear:matrixin=gbr:rangein=full:" +
       "primaries=bt709:transfer=bt709:matrix=bt709:range=limited";
   } else if (
@@ -83,11 +92,14 @@ export const buildColorManagedProxyFilter = (
     );
   }
 
-  return (
-    `${colorTransform},` +
-    `scale=${REMOTION_RENDER_PROFILE.width}:${REMOTION_RENDER_PROFILE.height}:` +
-    "force_original_aspect_ratio=increase:flags=lanczos," +
-    `crop=${REMOTION_RENDER_PROFILE.width}:${REMOTION_RENDER_PROFILE.height},setsar=1,` +
-    `fps=${fps},format=${REMOTION_RENDER_PROFILE.pixelFormat}`
-  );
+  const scaleAndPad =
+    toneMap === "mobius"
+      ? `scale=${REMOTION_RENDER_PROFILE.width}:${REMOTION_RENDER_PROFILE.height}:` +
+        "force_original_aspect_ratio=decrease:flags=lanczos," +
+        `pad=${REMOTION_RENDER_PROFILE.width}:${REMOTION_RENDER_PROFILE.height}:(ow-iw)/2:(oh-ih)/2`
+      : `scale=${REMOTION_RENDER_PROFILE.width}:${REMOTION_RENDER_PROFILE.height}:` +
+        "force_original_aspect_ratio=increase:flags=lanczos," +
+        `crop=${REMOTION_RENDER_PROFILE.width}:${REMOTION_RENDER_PROFILE.height}`;
+
+  return `${colorTransform},${scaleAndPad},setsar=1,fps=${fps},format=${REMOTION_RENDER_PROFILE.pixelFormat}`;
 };

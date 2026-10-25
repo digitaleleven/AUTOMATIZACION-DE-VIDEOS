@@ -4,6 +4,8 @@ import {
   activeCaptionGroup,
   activeWordIndex,
   groupTimedWords,
+  isKeywordWord,
+  keywordWindowsForSegment,
   mapWordTimingsToOutput,
   parseWhisperWordTimings,
 } from "../src/caption-timing.mjs";
@@ -64,7 +66,7 @@ test("Remotion source clips use frame-based trim and duration props", () => {
   assert.throws(() => getSourceClipWindow(300, 100, 360), /Invalid source clip frame range/);
 });
 
-test("caption groups stay within four words and highlight one timed word", () => {
+test("caption groups stay within one to three words and highlight one timed word", () => {
   const words = [
     { text: "Una", start: 0, end: 0.2 },
     { text: "prueba", start: 0.2, end: 0.5 },
@@ -75,11 +77,11 @@ test("caption groups stay within four words and highlight one timed word", () =>
   ];
   const groups = groupTimedWords(words);
 
-  assert.deepEqual(groups.map((group) => group.words.length), [4, 2]);
+  assert.deepEqual(groups.map((group) => group.words.length), [3, 3]);
   const group = activeCaptionGroup(groups, 0.82);
   assert.ok(group);
-  assert.equal(activeWordIndex(group, 0.82), 3);
-  assert.equal(activeWordIndex(group, 1.0), -1);
+  assert.equal(activeWordIndex(group, 0.82), 0);
+  assert.equal(activeWordIndex(group, 1.0), 1);
   assert.equal(activeCaptionGroup(groups, 2), null);
 });
 
@@ -105,6 +107,26 @@ test("overlapping transitions choose only the most recently started group and wo
   }, 1.5), 1);
 });
 
+test("keyword zoom windows skip Spanish stopwords and use segment-local frames", () => {
+  const words = [
+    { text: "que", start: 1.6, end: 1.8 },
+    { text: "me", start: 1.8, end: 1.9 },
+    { text: "está", start: 1.9, end: 2.0 },
+    { text: "funcionando", start: 2.0, end: 2.4 },
+    { text: "perfectamente", start: 3.9, end: 4.0 },
+  ];
+
+  assert.equal(isKeywordWord("está"), false);
+  assert.equal(isKeywordWord("funcionando"), true);
+  assert.deepEqual(
+    keywordWindowsForSegment(words, { outputStart: 48, frames: 75 }, 30),
+    [
+      { startFrame: 12, endFrame: 24 },
+      { startFrame: 69, endFrame: 72 },
+    ],
+  );
+});
+
 test("HLG proxy conversion is explicit and outputs limited BT.709 YUV420p", () => {
   const filter = buildColorManagedProxyFilter({
     color_range: "tv",
@@ -126,6 +148,32 @@ test("HLG proxy conversion is explicit and outputs limited BT.709 YUV420p", () =
   assert.equal(REMOTION_RENDER_PROFILE.colorSpace, "bt709");
   assert.equal(REMOTION_RENDER_PROFILE.concurrency, 1);
   assert.equal(REMOTION_RENDER_PROFILE.maxRetries, 0);
+});
+
+test("Mobius is applied in linear RGB before BT.709 and outputs a padded 1080p proxy", () => {
+  const filter = buildColorManagedProxyFilter({
+    color_range: "tv",
+    color_space: "bt2020nc",
+    color_transfer: "arib-std-b67",
+    color_primaries: "bt2020",
+  }, 30, { toneMap: "mobius", mobiusParam: 0.5 });
+
+  const linearRgb = filter.indexOf("format=gbrpf32le");
+  const mobius = filter.indexOf("tonemap=tonemap=mobius:param=0.5");
+  const bt709 = filter.indexOf("primaries=bt709:transfer=bt709");
+  assert.ok(linearRgb >= 0 && linearRgb < mobius && mobius < bt709);
+  assert.match(filter, /force_original_aspect_ratio=decrease:flags=lanczos/);
+  assert.match(filter, /pad=1080:1920:\(ow-iw\)\/2:\(oh-ih\)\/2/);
+  assert.match(filter, /fps=30,format=yuv420p/);
+  assert.throws(
+    () => buildColorManagedProxyFilter({
+      color_range: "tv",
+      color_space: "bt2020nc",
+      color_transfer: "arib-std-b67",
+      color_primaries: "bt2020",
+    }, 30, { toneMap: "mobius", mobiusParam: 0 }),
+    /El parámetro Mobius debe ser positivo/,
+  );
 });
 
 test("unsupported or incomplete source color metadata fails explicitly", () => {

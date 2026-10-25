@@ -9,10 +9,12 @@ import {
   staticFile,
   useCurrentFrame,
 } from "remotion";
+import { useMemo } from "react";
 import type { CSSProperties, FC } from "react";
 import { TransitionSeries, linearTiming } from "@remotion/transitions";
 import { fade } from "@remotion/transitions/fade";
 import { WordSubtitles } from "./WordSubtitles";
+import { keywordWindowsForSegment } from "./caption-timing.mjs";
 import type { TimedWord } from "./caption-timing.mjs";
 import {
   DURATION_IN_FRAMES,
@@ -22,12 +24,17 @@ import {
   getSourceClipWindow,
 } from "./edit-timeline.mjs";
 
+type KeywordWindow = {
+  startFrame: number;
+  endFrame: number;
+};
+
 type ClipProps = {
   sourceFile: string;
   sourceDurationInFrames: number;
   sourceStart: number;
   frames: number;
-  zoom: boolean;
+  keywordWindows: KeywordWindow[];
 };
 
 const Clip: FC<ClipProps> = ({
@@ -35,7 +42,7 @@ const Clip: FC<ClipProps> = ({
   sourceDurationInFrames,
   sourceStart,
   frames,
-  zoom,
+  keywordWindows,
 }) => {
   const frame = useCurrentFrame();
   const sourceClip = getSourceClipWindow(
@@ -43,13 +50,26 @@ const Clip: FC<ClipProps> = ({
     frames,
     sourceDurationInFrames,
   );
-  const scale = zoom
-    ? interpolate(frame, [0, frames - 1], [1, 1.12], {
+  const scale = keywordWindows.reduce((largestScale, window) => {
+    const wordDuration = Math.max(1, window.endFrame - window.startFrame);
+    const rampFrames = Math.max(1, Math.min(5, Math.floor(wordDuration / 2)));
+    const wordScale = interpolate(
+      frame,
+      [
+        window.startFrame - rampFrames,
+        window.startFrame,
+        window.endFrame,
+        window.endFrame + rampFrames,
+      ],
+      [1, 1.05, 1.12, 1],
+      {
         easing: Easing.inOut(Easing.quad),
         extrapolateLeft: "clamp",
         extrapolateRight: "clamp",
-      })
-    : 1;
+      },
+    );
+    return Math.max(largestScale, wordScale);
+  }, 1);
 
   return (
     <AbsoluteFill style={{ backgroundColor: "#09090b", overflow: "hidden" }}>
@@ -119,38 +139,78 @@ const AudioSegment: FC<{
     </Sequence>
   ) : null;
 
-const AnimatedSparkle: FC = () => {
+const STICKER_DURATION_FRAMES = Math.round(FPS * 1.8);
+
+const AnimatedSticker: FC<{
+  kind: "drop" | "kiss";
+  position: "left" | "right";
+}> = ({ kind, position }) => {
   const frame = useCurrentFrame();
-  const opacity = interpolate(frame, [0, 8, 48, 60], [0, 1, 1, 0], {
+  const fadeInFrames = Math.round(FPS * 0.25);
+  const fadeOutFrames = Math.round(FPS * 0.2);
+  const opacity = Math.min(
+    interpolate(frame, [0, fadeInFrames], [0, 0.92], {
+      extrapolateLeft: "clamp",
+      extrapolateRight: "clamp",
+    }),
+    interpolate(
+      frame,
+      [STICKER_DURATION_FRAMES - fadeOutFrames, STICKER_DURATION_FRAMES],
+      [0.92, 0],
+      { extrapolateLeft: "clamp", extrapolateRight: "clamp" },
+    ),
+  );
+  const scale = interpolate(frame, [0, Math.round(FPS * 0.3)], [0.76, 1], {
+    easing: Easing.out(Easing.back(1.15)),
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
   });
-  const scale = interpolate(frame, [0, 30, 60], [0.45, 1.08, 0.8], {
-    extrapolateLeft: "clamp",
-    extrapolateRight: "clamp",
-  });
-  const rotation = interpolate(frame, [0, 60], [-18, 36]);
   const style: CSSProperties = {
     position: "absolute",
-    top: "16%",
-    right: "12%",
-    width: 190,
-    height: 190,
+    top: "17%",
+    [position]: "9%",
+    width: 104,
+    height: 104,
     opacity,
-    transform: `scale(${scale}) rotate(${rotation}deg)`,
+    transform: `scale(${scale})`,
+    filter: "drop-shadow(0 3px 7px rgba(0,0,0,0.18))",
   };
 
   return (
-    <svg viewBox="0 0 200 200" style={style} aria-hidden="true">
-      <path
-        d="M100 8 119 75 185 100 119 120 100 192 80 120 15 100 80 75Z"
-        fill="#fff2bb"
-        stroke="#f7bd50"
-        strokeWidth="6"
-        strokeLinejoin="round"
-      />
-      <circle cx="153" cy="48" r="13" fill="#fff8df" />
-      <circle cx="43" cy="151" r="9" fill="#f7bd50" />
+    <svg viewBox="0 0 100 100" style={style} aria-hidden="true">
+      {kind === "drop" ? (
+        <>
+          <path
+            d="M50 7C39 25 23 43 23 60a27 27 0 0 0 54 0C77 43 61 25 50 7Z"
+            fill="#c8edf0"
+            stroke="#5d9da8"
+            strokeWidth="3"
+          />
+          <path
+            d="M38 61c0-8 5-15 11-23"
+            fill="none"
+            stroke="#fff"
+            strokeWidth="4"
+            strokeLinecap="round"
+            opacity="0.9"
+          />
+        </>
+      ) : (
+        <>
+          <path
+            d="M50 42C37 28 23 29 16 38c-7 10 4 24 13 33 8 8 15 11 21 15 6-4 13-7 21-15 9-9 20-23 13-33-7-9-21-10-34 4Z"
+            fill="#df6377"
+          />
+          <path
+            d="M50 42c-8-7-17-8-24-5M50 42c8-7 17-8 24-5"
+            fill="none"
+            stroke="#f7b0b9"
+            strokeWidth="3"
+            strokeLinecap="round"
+            opacity="0.8"
+          />
+        </>
+      )}
     </svg>
   );
 };
@@ -161,6 +221,14 @@ const PhaseOneSample: FC<{
   audioFile: string | null;
   wordTimings: TimedWord[];
 }> = ({ sourceFile, sourceDurationInFrames, audioFile, wordTimings }) => {
+  const keywordWindows = useMemo(
+    () =>
+      SEGMENTS.map((segment) =>
+        keywordWindowsForSegment(wordTimings, segment, FPS),
+      ),
+    [wordTimings],
+  );
+
   return (
     <AbsoluteFill style={{ backgroundColor: "#09090b" }}>
       <TransitionSeries>
@@ -170,7 +238,7 @@ const PhaseOneSample: FC<{
             sourceDurationInFrames={sourceDurationInFrames}
             sourceStart={SEGMENTS[0].sourceStart}
             frames={SEGMENTS[0].frames}
-            zoom={false}
+            keywordWindows={keywordWindows[0]}
           />
         </TransitionSeries.Sequence>
         <TransitionSeries.Transition
@@ -183,7 +251,7 @@ const PhaseOneSample: FC<{
             sourceDurationInFrames={sourceDurationInFrames}
             sourceStart={SEGMENTS[1].sourceStart}
             frames={SEGMENTS[1].frames}
-            zoom
+            keywordWindows={keywordWindows[1]}
           />
         </TransitionSeries.Sequence>
         <TransitionSeries.Transition
@@ -196,7 +264,7 @@ const PhaseOneSample: FC<{
             sourceDurationInFrames={sourceDurationInFrames}
             sourceStart={SEGMENTS[2].sourceStart}
             frames={SEGMENTS[2].frames}
-            zoom={false}
+            keywordWindows={keywordWindows[2]}
           />
         </TransitionSeries.Sequence>
       </TransitionSeries>
@@ -213,8 +281,11 @@ const PhaseOneSample: FC<{
         />
       ))}
 
-      <Sequence from={FPS} durationInFrames={Math.round(FPS * 1.2)} layout="none">
-        <AnimatedSparkle />
+      <Sequence from={FPS} durationInFrames={STICKER_DURATION_FRAMES} layout="none">
+        <AnimatedSticker kind="drop" position="left" />
+      </Sequence>
+      <Sequence from={FPS * 3} durationInFrames={STICKER_DURATION_FRAMES} layout="none">
+        <AnimatedSticker kind="kiss" position="right" />
       </Sequence>
       <WordSubtitles words={wordTimings} fps={FPS} />
     </AbsoluteFill>

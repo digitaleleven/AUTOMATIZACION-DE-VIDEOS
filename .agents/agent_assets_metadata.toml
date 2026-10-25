@@ -350,3 +350,31 @@ mtime_ms = 1792926329466
 storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/94fcd1e7-4a1f-4daf-90b6-53d16aa9e6a0/3cef3165-8087-4548-8f63-391b1e786fb3"
 storage_version_token = "1792926400931824"
 content_type = "image/png"
+
+[[outputs]]
+id = "Vf37OS1enTeM-1bybvU93"
+uri = "file://remotion-renderer/generated-artifacts/remotion/allintra-mobius-30fps-1080.mp4"
+type = "video"
+title = "MATRIX MOTION — muestra Mobius 30 FPS"
+description = "Render local único de 5 segundos, 1080×1920, con audio AAC; color pendiente de aprobación."
+logical_id = "a8d676ec-effc-428b-8db8-ead317c932d4"
+content_hash = "sha256:927699cd67b752bfb7d9eece1205452df2bac526d95d50d867ae9bc99c288cd0"
+size = 9292828
+mtime_ms = 1792927157367
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/a8d676ec-effc-428b-8db8-ead317c932d4/f359d823-1d94-4f3e-9fd1-5490a57ba9cc"
+storage_version_token = "1792927232397577"
+content_type = "video/mp4"
+
+[[outputs]]
+id = "P47ymxIrAW3QN7ut656Pi"
+uri = "file://remotion-renderer/generated-artifacts/remotion/allintra-mobius-30fps-1080-frame-2.5.png"
+type = "image"
+title = "MATRIX MOTION — captura Mobius a 2,5 s"
+description = "Fotograma del nuevo render para evaluar color, subtítulos y la capa vectorial."
+logical_id = "5b25bc20-84f2-42ef-a3b9-860bd970bbcf"
+content_hash = "sha256:1006c6d4725471ee32f7faf6c44747efc5682631d5da0f984443642bc8f99909"
+size = 1684487
+mtime_ms = 1792927185635
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/5b25bc20-84f2-42ef-a3b9-860bd970bbcf/cd45b62f-58ab-4730-a1d6-8a2e21f02b0b"
+storage_version_token = "1792927233129451"
+content_type = "image/png"

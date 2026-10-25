@@ -1,4 +1,19 @@
 const SENTENCE_END = /[.!?…]["'”’)\]]*$/u;
+const normalizeWord = (text) =>
+  text
+    .toLocaleLowerCase("es")
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .replace(/[^\p{L}\p{N}]/gu, "");
+
+const SPANISH_STOP_WORDS = new Set([
+  "a", "al", "algo", "como", "con", "cuando", "de", "del", "donde", "el",
+  "ella", "ellos", "en", "era", "es", "esa", "ese", "eso", "esta", "este",
+  "esto", "fue", "ha", "hay", "la", "las", "le", "les", "lo", "los", "más",
+  "me", "mi", "muy", "no", "nos", "o", "para", "pero", "por", "que", "se",
+  "sin", "si", "sí", "son", "su", "sus", "te", "tu", "tú", "un", "una",
+  "uno", "y", "ya",
+].map(normalizeWord));
 
 export function parseWhisperWordTimings(payload) {
   const rawWords = payload && typeof payload === "object" ? payload.words : null;
@@ -71,6 +86,48 @@ export function mapWordTimingsToOutput(words, segments, fps = 50) {
   return mapped.sort((left, right) => left.start - right.start || left.end - right.end);
 }
 
+export function isKeywordWord(text) {
+  if (typeof text !== "string") return false;
+  const normalized = normalizeWord(text);
+  return normalized.length >= 4 && !SPANISH_STOP_WORDS.has(normalized);
+}
+
+export function keywordWindowsForSegment(words, segment, fps = 30) {
+  if (
+    !Number.isFinite(fps) ||
+    fps <= 0 ||
+    !Number.isFinite(segment?.outputStart) ||
+    !Number.isFinite(segment?.frames) ||
+    segment.frames <= 0
+  ) {
+    throw new Error("El segmento para zoom de palabras clave no es válido.");
+  }
+
+  const outputStartSeconds = segment.outputStart / fps;
+  const outputEndSeconds = outputStartSeconds + segment.frames / fps;
+  return words
+    .filter(
+      (word) =>
+        isKeywordWord(word.text) &&
+        word.start >= outputStartSeconds &&
+        word.end <= outputEndSeconds &&
+        word.end > word.start,
+    )
+    .map((word) => {
+      const startFrame = Math.max(
+        0,
+        Math.round((word.start - outputStartSeconds) * fps),
+      );
+      return {
+        startFrame,
+        endFrame: Math.max(
+          startFrame + 1,
+          Math.round((word.end - outputStartSeconds) * fps),
+        ),
+      };
+    });
+}
+
 function partitionSentence(words, maxWords) {
   const groups = [];
   let offset = 0;
@@ -85,7 +142,7 @@ function partitionSentence(words, maxWords) {
   return groups;
 }
 
-export function groupTimedWords(words, minWords = 2, maxWords = 4) {
+export function groupTimedWords(words, minWords = 1, maxWords = 3) {
   if (!Number.isInteger(minWords) || !Number.isInteger(maxWords) || minWords < 1 || maxWords < minWords) {
     throw new Error("Los límites de palabras por subtítulo no son válidos.");
   }
