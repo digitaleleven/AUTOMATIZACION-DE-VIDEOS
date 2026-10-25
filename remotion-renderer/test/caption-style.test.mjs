@@ -22,6 +22,9 @@ test("configuration and explicit briefing lines override each caption token safe
       fontFamily: "Montserrat",
       highlightColor: "#FF2A85",
       textColor: "#000000",
+      fontSize: 54,
+      position: "bottom",
+      maxWordsPerCaption: 2,
     },
   );
 });

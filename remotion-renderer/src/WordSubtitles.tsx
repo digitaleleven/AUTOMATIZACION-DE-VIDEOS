@@ -18,6 +18,9 @@ export type CaptionStyle = {
   fontFamily: string;
   highlightColor: string;
   textColor: string;
+  fontSize?: number;
+  position?: "bottom" | "middle" | "top";
+  maxWordsPerCaption?: number;
 };
 
 const DEFAULT_CAPTION_STYLE: CaptionStyle = {
@@ -64,7 +67,10 @@ export const WordSubtitles: FC<{
   captionGroups,
 }) => {
   const frame = useCurrentFrame();
-  const groups = useMemo(() => captionGroups ?? groupTimedWords(words, 1, 3), [words, captionGroups]);
+  const maxWords = [1, 2, 3].includes(captionStyle.maxWordsPerCaption ?? 2)
+    ? captionStyle.maxWordsPerCaption ?? 2
+    : 2;
+  const groups = useMemo(() => captionGroups ?? groupTimedWords(words, 1, maxWords), [words, captionGroups, maxWords]);
   const seconds = frame / fps;
   const group = activeCaptionGroup(groups, seconds);
   if (!showSubtitles || !group) return null;
@@ -85,6 +91,18 @@ export const WordSubtitles: FC<{
         ...captionContainerStyle,
         color: textColor,
         fontFamily: `${fontFamily}, Arial, sans-serif`,
+        fontSize:
+          Number.isInteger(captionStyle.fontSize) &&
+          (captionStyle.fontSize as number) >= 32 &&
+          (captionStyle.fontSize as number) <= 120
+            ? captionStyle.fontSize
+            : captionContainerStyle.fontSize,
+        top:
+          captionStyle.position === "top"
+            ? "28%"
+            : captionStyle.position === "middle"
+              ? "50%"
+              : "75%",
       }}>
         {group.words.map((word, index) => (
           (() => {

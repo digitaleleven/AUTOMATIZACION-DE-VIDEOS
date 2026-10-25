@@ -312,7 +312,7 @@ try {
     );
   }
   const renderFrameCount = resolveRenderFrameCount(
-    options.renderFramesArg,
+    options.renderFramesArg ?? plan.render_frames,
     durationInFrames,
   );
   const renderDurationSeconds = renderFrameCount / FULL_FPS;
@@ -321,7 +321,12 @@ try {
   const sourceWords = showSubtitles ? parseWhisperWordTimings(transcript) : [];
   const wordTimings = mapWordTimingsToOutput(sourceWords, clips, FULL_FPS);
   const captionTrack = showSubtitles
-    ? prepareCaptionTrack(transcript, clips, FULL_FPS)
+    ? prepareCaptionTrack(
+        transcript,
+        clips,
+        FULL_FPS,
+        Number(captionStyle.maxWordsPerCaption ?? 2),
+      )
     : { groups: [] };
   if (showSubtitles && wordTimings.length === 0) {
     throw new Error("No hay marcas de palabra temporales válidas para la edición.");
@@ -361,7 +366,27 @@ try {
       }
     }
   }
-  const jumpFrames = buildJumpFrames(
+  const renderSettings = plan.render_settings ?? {};
+  if (!renderSettings || typeof renderSettings !== "object" || Array.isArray(renderSettings)) {
+    throw new Error("Las opciones de personalización del render no son válidas.");
+  }
+  const zoomMode = renderSettings.auto_zoom ?? "smooth";
+  if (!["off", "smooth"].includes(zoomMode)) {
+    throw new Error("El modo de autozoom solicitado no está soportado por el perfil seguro.");
+  }
+  const audioSettings = renderSettings.audio ?? {
+    original_volume: 1,
+    noise_reduction: false,
+  };
+  if (
+    !audioSettings || typeof audioSettings !== "object" || Array.isArray(audioSettings) ||
+    typeof audioSettings.noise_reduction !== "boolean" ||
+    !Number.isFinite(audioSettings.original_volume) ||
+    audioSettings.original_volume < 0 || audioSettings.original_volume > 1
+  ) {
+    throw new Error("Los ajustes de audio no son válidos.");
+  }
+  const jumpFrames = zoomMode === "off" ? [] : buildJumpFrames(
     clips,
     wordTimings,
     plan.effect_cues,
@@ -505,6 +530,8 @@ try {
     sourceAudioStreamIndex: inputAudio.index,
     colorFilter,
     jumpFrames,
+    originalAudioVolume: audioSettings.original_volume,
+    noiseReduction: audioSettings.noise_reduction,
     includeSoundEffects: soundEffectsInRender.length > 0,
     width: FULL_WIDTH,
     height: FULL_HEIGHT,

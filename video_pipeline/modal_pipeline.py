@@ -87,7 +87,7 @@ def _modal_caption_style(style: VideoStyle) -> dict[str, Any]:
         "font_family": getattr(style, "font_family", None),
         "font_color": getattr(style, "font_color", None),
         "highlight_color": getattr(style, "highlight_color", None),
-        "caption_font_size": getattr(style, "caption_font_size", None),
+        "caption_font_size": getattr(style, "font_size", None),
         "caption_position": getattr(style, "caption_position", None),
         "max_words_per_caption": getattr(style, "max_words_per_caption", None),
     }
@@ -102,6 +102,8 @@ def process_local_video_modal(
     paid_api_authorized: bool,
     style: VideoStyle,
     subtitle_mode: str = "none",
+    render_mode: str = "full",
+    render_settings: dict[str, Any] | None = None,
     creative_plan: dict[str, Any] | None = None,
     briefing: str = "",
     openai_client: Any = None,
@@ -120,6 +122,27 @@ def process_local_video_modal(
         raise ValueError("Identificador de trabajo Modal no válido.")
     if subtitle_mode not in {"dynamic", "none"}:
         raise ValueError("El motor Remotion en Modal admite subtítulos dinámicos o ninguno.")
+    if render_mode not in {"full", "quick_demo"}:
+        raise ValueError("El modo de render debe ser full o quick_demo.")
+    if render_settings is None:
+        render_settings = {
+            "auto_zoom": "smooth",
+            "audio": {"original_volume": 1.0, "noise_reduction": False},
+        }
+    if (
+        not isinstance(render_settings, dict)
+        or render_settings.get("auto_zoom", "smooth") not in {"off", "smooth"}
+        or not isinstance(render_settings.get("audio"), dict)
+    ):
+        raise ValueError("Las opciones de personalización no son válidas.")
+    audio_settings = render_settings["audio"]
+    if (
+        isinstance(audio_settings.get("original_volume"), bool)
+        or not isinstance(audio_settings.get("original_volume"), (int, float))
+        or not 0 <= float(audio_settings["original_volume"]) <= 1
+        or not isinstance(audio_settings.get("noise_reduction"), bool)
+    ):
+        raise ValueError("Los ajustes de audio no son válidos.")
     if not isinstance(briefing, str) or len(briefing) > 4000:
         raise ValueError("Las notas de estilo superan el límite de 4.000 caracteres.")
     if style.output_width != 1080 or style.output_height != 1920 or style.output_fps != 30:
@@ -167,6 +190,14 @@ def process_local_video_modal(
 
     source_hash = _sha256_file(source)
     expected_duration = edited_duration(video.duration, plan["cuts"])
+    expected_render_duration = (
+        min(expected_duration, 5.0) if render_mode == "quick_demo" else expected_duration
+    )
+    render_frames = (
+        max(1, round(expected_render_duration * 30))
+        if render_mode == "quick_demo"
+        else None
+    )
     expected_style = replace(
         style,
         output_width=1080,
@@ -220,7 +251,11 @@ def process_local_video_modal(
         "effect_cues": effect_cues,
         "expected_output_duration_seconds": expected_duration,
         "overlays": {},
+        "render_mode": render_mode,
+        "render_settings": render_settings,
     }
+    if render_frames is not None:
+        modal_plan["render_frames"] = render_frames
     with temporary_work_directory() as work_dir:
         effects_dir = Path(work_dir) / "effects"
         effects_dir.mkdir(parents=True, exist_ok=True)
@@ -249,7 +284,7 @@ def process_local_video_modal(
             video,
             remote.output_path,
             expected_style,
-            expected_duration_seconds=expected_duration,
+            expected_duration_seconds=expected_render_duration,
         )
 
     if _sha256_file(source) != source_hash:
@@ -294,6 +329,10 @@ def process_local_video_modal(
         "output_format_bit_rate_bps": validated.format_bit_rate_bps,
         "output_duration_seconds": validated.duration,
         "expected_output_duration_seconds": expected_duration,
+        "render_mode": render_mode,
+        "rendered_duration_scope": (
+            "primeros 5 segundos para revisión" if render_mode == "quick_demo" else "vídeo completo"
+        ),
         "transcribed_word_count": len(words),
         "subtitle_mode": subtitle_mode,
         "subtitle_segment_count": len(build_subtitle_segments(words, video_duration=video.duration)),

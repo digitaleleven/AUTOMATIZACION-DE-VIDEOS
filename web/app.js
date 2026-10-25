@@ -140,7 +140,17 @@ async function uploadVideo(file, niche, styleNotes, editingStyle) {
   });
 }
 
-async function prepareEditProposal(sourceId, subtitleMode, outputFps, outputProfile, outputQuality, creativePlan, renderBackend) {
+async function prepareEditProposal(
+  sourceId,
+  subtitleMode,
+  outputFps,
+  outputProfile,
+  outputQuality,
+  creativePlan,
+  renderBackend,
+  renderMode = "full",
+  customization = {},
+) {
   return requestJson(API.proposals, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -152,8 +162,29 @@ async function prepareEditProposal(sourceId, subtitleMode, outputFps, outputProf
       output_quality: outputQuality,
       creative_plan: creativePlan,
       render_backend: renderBackend,
+      render_mode: renderMode,
+      customization,
     }),
   });
+}
+
+function collectPanelCustomization() {
+  return {
+    caption_color: byId("custom-caption-color").value,
+    caption_timing: byId("custom-caption-timing").value,
+    caption_size: byId("custom-caption-size").value,
+    caption_position: byId("custom-caption-position").value,
+    auto_zoom: byId("custom-autozoom").value,
+    transitions: byId("custom-transitions").value,
+    audio_volume: Number(byId("custom-original-volume").value),
+    noise_reduction: byId("custom-noise-reduction").checked,
+    music_enabled: byId("custom-music-enabled").checked,
+    music_ducking: byId("custom-music-ducking").checked,
+    titles: byId("custom-layer-titles").checked,
+    accents: byId("custom-layer-accents").checked,
+    image_filter: byId("custom-image-filter").value,
+    notes: byId("custom-free-instructions").value,
+  };
 }
 
 function invalidateEditOptions() {
@@ -606,6 +637,7 @@ function renderEditProposal(proposal) {
   const lines = [
     `Vídeo: ${proposal.source_name || "No disponible"} · ${Number.isFinite(duration) ? `${duration.toFixed(2)} s` : "duración desconocida"}`,
     "Motor: Remotion + FFmpeg en Modal",
+    `Modo: ${edit.render_mode === "quick_demo" ? "muestra de 5 segundos" : "vídeo completo"}`,
     `Nicho: ${edit.niche_label || VIDEO_NICHE_LABELS[edit.niche] || VIDEO_NICHE_LABELS.generic_viral}`,
     `Subtítulos: fuente ${captionStyle.fontFamily || "Montserrat"} · resaltado ${captionStyle.highlightColor || "#FF2A85"} · texto ${captionStyle.textColor || "#FFFFFF"}`,
     `Briefing: ${edit.style_notes ? `${edit.style_notes} (las directivas explícitas de tipografía y color se aplican a esta propuesta)` : "ninguna"}`,
@@ -622,8 +654,8 @@ function renderEditProposal(proposal) {
     `Cortes que se quitarán: ${cutsLabel}`,
     `Zooms: ${zoomsLabel}`,
     `Stickers con animación de zoom: ${stickersLabel}`,
-    "El plan creativo de esta propuesta es manual; no se ha pedido a una IA que analice el contenido.",
-    `Destino: ${proposal.destination || "no disponible"}`,
+    "Gemini no se ha llamado: la ficha oficial de Gemini 1.5 Flash devuelve 404 y no aparece en el catálogo vigente. El análisis queda pendiente de elegir un modelo documentado.",
+    `Destino: Cloudflare R2 privado · bucket ${proposal.destination || "matrix-motion-videos"}`,
     `OpenAI estimado: ${formatCost(costs.openai_usd)}`,
     `Cómputo Modal: ${formatCost(costs.modal_compute_usd)} (no cotizado)`,
     `Total estimado: ${formatCost(costs.total_estimate_usd)}`,
@@ -638,9 +670,9 @@ function renderEditProposal(proposal) {
   byId("unknown-cost-consent").checked = false;
   byId("paid-consent").checked = false;
   byId("paid-consent-copy").textContent = apiPlan.openai_transcription
-    ? "Autorizo enviar solo el audio a OpenAI para transcribirlo y el vídeo normalizado a Modal para un render Remotion."
-    : "Autorizo enviar el vídeo normalizado a Modal para un render Remotion. No se usará OpenAI.";
-  byId("approve-render-button").querySelector("span").textContent = "Autorizar y renderizar en Modal";
+    ? "Autorizo enviar el audio a OpenAI para transcribirlo, el vídeo normalizado a Modal y el MP4 resultante al bucket privado de Cloudflare R2."
+    : "Autorizo enviar el vídeo normalizado a Modal y guardar el MP4 en el bucket privado de Cloudflare R2. No se usará OpenAI.";
+  byId("approve-render-button").querySelector("span").textContent = "Autorizar y crear en Modal";
   byId("render-approval").hidden = false;
   updateProcessButton();
 }
@@ -663,6 +695,7 @@ function renderSelectedItem() {
     byId("unknown-cost-wrap").hidden = true;
     byId("retry-drive-upload-button").hidden = true;
     updateProcessButton();
+    updateCreationSummary(null);
     return;
   }
   syncEditOptionsForSelectedItem(item);
@@ -715,6 +748,65 @@ function renderSelectedItem() {
   }
   byId("retry-drive-upload-button").hidden = item.can_retry_drive_upload !== true;
   updateProcessButton();
+  updateCreationSummary(item);
+}
+
+function updateCreationSummary(item = getSelectedItem()) {
+  const name = byId("creation-summary-name");
+  const duration = byId("creation-summary-duration");
+  const category = byId("creation-summary-category");
+  const captions = byId("creation-summary-captions");
+  const status = byId("creation-summary-status");
+  const image = byId("creation-summary-image");
+  const placeholder = $("#creation-summary-thumbnail .summary-thumbnail-empty");
+  if (!item) {
+    name.textContent = "Ningún vídeo seleccionado";
+    duration.textContent = "Pendiente";
+    category.textContent = "Pendiente";
+    captions.textContent = "Pendiente de vídeo";
+    status.textContent = "PENDIENTE DE VÍDEO";
+    image.hidden = true;
+    image.removeAttribute("src");
+    if (placeholder) placeholder.hidden = false;
+    byId("create-video-button").disabled = true;
+    byId("quick-demo-button").disabled = true;
+    return;
+  }
+  name.textContent = item.original_filename || item.filename || "Vídeo seleccionado";
+  duration.textContent = formatDuration(item.duration_seconds);
+  category.textContent =
+    item.niche_label || VIDEO_NICHE_LABELS[item.niche] || VIDEO_NICHE_LABELS.generic_viral;
+  captions.textContent = byId("custom-captions-enabled").checked
+    ? `Activados · ${byId("custom-caption-color").selectedOptions[0]?.textContent || "Rosa pastel"}`
+    : "Desactivados";
+  status.textContent = "VÍDEO SELECCIONADO";
+  byId("create-video-button").disabled = false;
+  byId("quick-demo-button").disabled = false;
+  if (item.thumbnail_url) {
+    image.src = item.thumbnail_url;
+    image.hidden = false;
+    if (placeholder) placeholder.hidden = true;
+    return;
+  }
+  const video = byId("source-video");
+  const capture = () => {
+    if (!video.videoWidth || !video.videoHeight) return;
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = 180;
+      canvas.height = 320;
+      const context = canvas.getContext("2d");
+      if (!context) return;
+      context.drawImage(video, 0, 0, canvas.width, canvas.height);
+      image.src = canvas.toDataURL("image/jpeg", 0.78);
+      image.hidden = false;
+      if (placeholder) placeholder.hidden = true;
+    } catch {
+      // Thumbnail preview is optional; do not report a fake thumbnail.
+    }
+  };
+  if (video.readyState >= 2) capture();
+  else video.addEventListener("loadeddata", capture, { once: true });
 }
 
 function renderHealth(health) {
@@ -732,6 +824,15 @@ function renderHealth(health) {
     : "No configurado en el servidor";
   modalStatus.className = "health-unknown";
   byId("health-environment").textContent = "Modal exclusivo";
+  const r2 = health?.r2_storage || {};
+  const engineTag = byId("engine-summary-tag");
+  if (engineTag) {
+    const configured = modal.sdk_installed && modal.credentials_configured && r2.ready === true;
+    engineTag.textContent = configured ? "CONFIGURACIÓN DETECTADA" : "FALTA CONFIGURACIÓN";
+    engineTag.setAttribute("aria-label", configured
+      ? "Modal y R2 tienen configuración detectada; no se ha realizado una prueba real."
+      : "Falta configurar Modal o R2.");
+  }
   const drive = health?.drive_connected;
   const driveReady = health?.drive_oauth_ready;
   const pickerReady = health?.drive_picker_configured;
@@ -1303,12 +1404,29 @@ syncRenderBackendControls();
       invalidateEditOptions();
   });
 }
+for (const controlId of [
+  "custom-captions-enabled", "custom-caption-color", "custom-caption-timing",
+  "custom-caption-size", "custom-caption-position", "custom-autozoom",
+  "custom-transitions", "custom-original-volume", "custom-noise-reduction",
+  "custom-music-enabled", "custom-music-ducking", "custom-layer-titles",
+  "custom-layer-accents", "custom-image-filter", "custom-free-instructions",
+]) {
+  const control = byId(controlId);
+  const eventName = control.type === "range" || control.tagName === "TEXTAREA" ? "input" : "change";
+  control.addEventListener(eventName, () => {
+    invalidateEditOptions();
+    updateCreationSummary();
+  });
+}
   byId("add-cut-button").addEventListener("click", () => addCreativePlanRow("cut"));
   byId("add-zoom-button").addEventListener("click", () => addCreativePlanRow("zoom"));
   byId("add-sticker-button").addEventListener("click", () => addCreativePlanRow("sticker"));
-byId("process-button").addEventListener("click", async () => {
+async function prepareProposalForMode(renderMode = "full") {
   const item = getSelectedItem();
-  if (!item) return;
+  if (!item) {
+    displayToast("Selecciona un vídeo antes de continuar.", true);
+    return;
+  }
   const button = byId("process-button");
   button.disabled = true;
   button.textContent = "Preparando propuesta…";
@@ -1318,15 +1436,20 @@ byId("process-button").addEventListener("click", async () => {
   try {
     const result = await prepareEditProposal(
       item.id,
-      byId("edit-subtitle-mode").value,
+      byId("custom-captions-enabled").checked ? "dynamic" : "none",
       byId("edit-output-fps").value,
       byId("edit-output-profile").value,
       byId("edit-output-quality").value,
       collectCreativePlan(),
       byId("edit-render-backend").value,
+      renderMode,
+      collectPanelCustomization(),
     );
     renderEditProposal(result);
-    displayToast("Propuesta preparada localmente. No se inició ningún servicio externo.");
+    updateCreationSummary(item);
+    displayToast(
+      `${renderMode === "quick_demo" ? "Prueba de 5 segundos" : "Propuesta completa"} preparada localmente. Revisa los permisos y el coste antes de iniciar servicios.`,
+    );
   } catch (error) {
     summary.hidden = false;
     summary.textContent = `No se pudo preparar la propuesta: ${error.message}`;
@@ -1336,7 +1459,29 @@ byId("process-button").addEventListener("click", async () => {
     button.textContent = "Preparar propuesta local";
     updateProcessButton();
   }
-});
+}
+
+byId("process-button").addEventListener("click", () => prepareProposalForMode("full"));
+
+async function handleStep5Action(renderMode) {
+  const item = getSelectedItem();
+  if (!item) {
+    displayToast("Selecciona un vídeo antes de continuar.", true);
+    return;
+  }
+  const proposal = state.editProposal;
+  const matches =
+    proposal?.source_id === item.id &&
+    proposal?.edit?.render_mode === renderMode;
+  if (!matches) {
+    await prepareProposalForMode(renderMode);
+    return;
+  }
+  byId("approve-render-button").click();
+}
+
+byId("create-video-button").addEventListener("click", () => handleStep5Action("full"));
+byId("quick-demo-button").addEventListener("click", () => handleStep5Action("quick_demo"));
 
 byId("approve-render-button").addEventListener("click", async () => {
   const proposal = state.editProposal;

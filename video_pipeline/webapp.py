@@ -70,6 +70,7 @@ from .pipeline import (
 )
 from .modal_pipeline import process_local_video_modal
 from .modal_renderer import modal_configuration_status
+from .r2_storage import configuration_status as r2_configuration_status, upload_mp4 as upload_mp4_to_r2
 from .state import ProcessingLedger
 from .shotstack import ShotstackClient, ShotstackError
 from .state import ProcessingLedger
@@ -129,6 +130,71 @@ def _parse_caption_style_overrides(style_notes: str) -> dict[str, str]:
             raise PanelError(f"{match.group(1)} en las notas debe ser un color hexadecimal #RRGGBB.")
         overrides[key] = value.upper()
     return overrides
+
+
+def _validate_panel_customization(raw: Any) -> tuple[dict[str, Any], dict[str, Any], str]:
+    """Validate the controls that the current Modal renderer really applies."""
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise PanelError("La personalización debe ser un objeto.")
+    allowed = {
+        "caption_color", "caption_timing", "caption_size", "caption_position",
+        "auto_zoom", "transitions", "audio_volume", "noise_reduction",
+        "music_enabled", "music_ducking", "titles", "accents", "image_filter", "notes",
+    }
+    if set(raw) - allowed:
+        raise PanelError("La personalización contiene opciones desconocidas.")
+
+    color = raw.get("caption_color", "#FFC0CB")
+    if color not in {"#FFC0CB", "#00AFA8", "#FFE600"}:
+        raise PanelError("El color de subtítulos debe ser rosa pastel, turquesa o amarillo.")
+    timing = raw.get("caption_timing", "groups")
+    if timing not in {"word-by-word", "groups"}:
+        raise PanelError("El ritmo de subtítulos no es válido.")
+    size_map = {"small": 42, "medium": 54, "large": 68}
+    size = raw.get("caption_size", "medium")
+    if size not in size_map:
+        raise PanelError("El tamaño de subtítulos no es válido.")
+    position_map = {"lower": "bottom", "center": "middle", "upper": "top"}
+    position = raw.get("caption_position", "lower")
+    if position not in position_map:
+        raise PanelError("La posición de subtítulos no es válida.")
+    zoom = raw.get("auto_zoom", "smooth")
+    if zoom not in {"off", "smooth"}:
+        raise PanelError("Este motor permite autozoom suave o desactivado; los modos agresivos no están disponibles.")
+    if raw.get("transitions", "clean") != "clean":
+        raise PanelError("Este motor solo admite cortes limpios; las transiciones adicionales no están disponibles.")
+    if raw.get("image_filter", "natural") not in {"none", "natural"}:
+        raise PanelError("Los filtros de color adicionales requieren una muestra y aprobación visual.")
+    if any(raw.get(key, False) is not False for key in ("music_enabled", "music_ducking", "titles", "accents")):
+        raise PanelError("No hay biblioteca de música o capas de diseño habilitada para este render.")
+    volume = raw.get("audio_volume", 100)
+    if isinstance(volume, bool) or not isinstance(volume, (int, float)) or not 0 <= volume <= 100:
+        raise PanelError("El volumen original debe estar entre 0 y 100.")
+    noise_reduction = raw.get("noise_reduction", False)
+    if not isinstance(noise_reduction, bool):
+        raise PanelError("La reducción de ruido debe ser booleana.")
+    notes = raw.get("notes", "")
+    if not isinstance(notes, str) or len(notes) > 1000:
+        raise PanelError("Las instrucciones especiales deben tener como máximo 1.000 caracteres.")
+
+    style_overrides = {
+        "highlight_color": color,
+        "font_size": size_map[size],
+        "caption_position": position_map[position],
+        "max_words_per_caption": 1 if timing == "word-by-word" else 2,
+    }
+    render_settings = {
+        "auto_zoom": zoom,
+        "audio": {
+            "original_volume": float(volume) / 100,
+            "noise_reduction": noise_reduction,
+        },
+        "transitions": "clean",
+        "image_filter": raw.get("image_filter", "natural"),
+    }
+    return style_overrides, render_settings, notes.strip()
 GOOGLE_OAUTH_STATE_COOKIE = "matrix_motion_google_oauth_state"
 RENDER001_THIRD_RETRY_TARGET = {
     "job_id": "8ec0c6cb1ff84b6f94d8dd0c64a56747",
@@ -551,28 +617,50 @@ class VideoPanel:
             environment = "configuración inválida"
         return {
             "openai_key_configured": bool(os.getenv("OPENAI_API_KEY")),
+            "gemini_key_configured": bool(os.getenv("GEMINI_API_KEY")),
             "shotstack_key_configured": bool(os.getenv("SHOTSTACK_API_KEY")),
             "shotstack_environment": environment,
             "modal": modal_status,
+            "r2_storage": r2_configuration_status(),
             "drive_connected": bool(drive_status.get("ready") and drive_status.get("verified")),
             "drive_oauth_ready": bool(drive_status.get("ready")),
             "drive_picker_configured": all(picker_configuration().get(key) for key in ("client_id", "api_key", "app_id")),
         }
 
     def _source_render_state(self, upload: dict[str, Any]) -> tuple[str, str]:
-        """Return the newest state and backend, defaulting historical jobs to Stage."""
-        job = self.store.latest_job_for_source(upload["id"])
-        if job:
+        """Return the current full-render state for compatibility with old callers."""
+        return self._source_render_state_for_mode(upload, "full")
+
+    def _source_render_state_for_mode(
+        self, upload: dict[str, Any], render_mode: str
+    ) -> tuple[str, str]:
+        """Keep one full render and one explicitly requested 5-second demo per source."""
+        history = self.store.job_history_for_source(upload["id"])
+        history = sorted(
+            history,
+            key=lambda item: float(item.get("created_at") or 0),
+            reverse=True,
+        )
+        for job in history:
             try:
                 options = json.loads(job.get("edit_options_json") or "{}")
             except (TypeError, json.JSONDecodeError):
                 options = {}
+            saved_mode = options.get("render_mode", "full")
+            if saved_mode != render_mode:
+                continue
             backend = options.get("renderer_backend", "shotstack_stage")
             if backend not in {"shotstack_stage", "modal"}:
                 backend = "shotstack_stage"
             return str(job.get("status") or "ready"), backend
 
-        processing = self.store.ledger.get(upload["source_sha256"])
+        ledger_key = hashlib.sha256(
+            f"{upload['source_sha256']}:{render_mode}".encode("utf-8")
+        ).hexdigest()
+        processing = self.store.ledger.get(ledger_key)
+        # Existing records predate separate demo/full job keys and represent a full attempt.
+        if not processing and render_mode == "full":
+            processing = self.store.ledger.get(upload["source_sha256"])
         if processing:
             try:
                 options = json.loads(processing.get("edit_options_json") or "{}")
@@ -1494,6 +1582,13 @@ class VideoPanel:
         caption_style_overrides = upload_metadata.get("caption_style_overrides")
         if not isinstance(caption_style_overrides, dict):
             caption_style_overrides = _parse_caption_style_overrides(style_notes)
+        panel_style, render_settings, panel_notes = _validate_panel_customization(
+            payload.get("customization")
+        )
+        if panel_notes:
+            style_notes = f"{style_notes}\n\n{panel_notes}".strip()
+        if len(style_notes) > 4000:
+            raise PanelError("Las notas combinadas superan el límite de 4.000 caracteres.")
 
         subtitle_mode = str(payload.get("subtitle_mode") or "none")
         if subtitle_mode not in {"dynamic", "simple", "none"}:
@@ -1506,6 +1601,9 @@ class VideoPanel:
                 "El motor Remotion de Modal admite subtítulos dinámicos o ninguno; "
                 "elige una de esas opciones."
             )
+        render_mode = str(payload.get("render_mode") or "full")
+        if render_mode not in {"full", "quick_demo"}:
+            raise PanelError("Elige creación completa o prueba rápida de 5 segundos.")
         output_profile = str(payload.get("output_profile") or "1080p")
         if output_profile not in OUTPUT_PROFILES:
             raise PanelError(
@@ -1526,7 +1624,7 @@ class VideoPanel:
             raise PanelError("Remotion en Modal está preparado para 1080 × 1920 a 30 FPS.")
 
         item = self._public_library_item(upload)
-        existing_status, existing_backend = self._source_render_state(upload)
+        existing_status, existing_backend = self._source_render_state_for_mode(upload, render_mode)
         if existing_status in {"processing", "queued"}:
             raise PanelError("Este vídeo ya tiene un trabajo activo.", 409)
         if existing_status in {"completed", "failed"} and existing_backend == render_backend:
@@ -1538,7 +1636,7 @@ class VideoPanel:
 
         style = replace(
             self._style_for_upload(source_id),
-            **caption_style_overrides,
+            **{**caption_style_overrides, **panel_style},
             output_width=output_width,
             output_height=output_height,
             output_fps=output_fps,
@@ -1630,6 +1728,8 @@ class VideoPanel:
             "output_fps": output_fps,
             "creative_plan": creative_plan,
             "renderer_backend": render_backend,
+            "render_mode": render_mode,
+            "render_settings": render_settings,
         }
         proposal = {
             "proposal_id": proposal_id,
@@ -1674,14 +1774,19 @@ class VideoPanel:
             },
             "edit": {
                 "subtitle_mode": subtitle_mode,
+                "render_mode": render_mode,
                 "niche": niche,
                 "niche_label": niche_label,
                 "style_notes": style_notes,
                 "caption_style_overrides": caption_style_overrides,
+                "render_settings": render_settings,
                 "caption_style": {
                     "fontFamily": style.font_family,
                     "highlightColor": style.highlight_color,
                     "textColor": style.font_color,
+                    "fontSize": style.font_size,
+                    "position": style.caption_position,
+                    "maxWordsPerCaption": style.max_words_per_caption,
                 },
                 "output_width": style.output_width,
                 "output_height": style.output_height,
@@ -1733,9 +1838,8 @@ class VideoPanel:
                 ),
             },
             "destination": (
-                "Google Drive · 02_PROCESADOS"
-                if drive_import
-                else str(self.output_dir)
+                "Cloudflare R2 privado · matrix-motion-videos"
+                + (" y Google Drive · 02_PROCESADOS" if drive_import else "")
             ),
             "warnings": [
                 warning
@@ -1816,7 +1920,8 @@ class VideoPanel:
         ):
             raise PanelError("Falta autorizar el envío del audio a OpenAI para transcribirlo.", 403)
 
-        existing_status, existing_backend = self._source_render_state(upload)
+        render_mode = str(proposal["options"].get("render_mode") or "full")
+        existing_status, existing_backend = self._source_render_state_for_mode(upload, render_mode)
         if existing_status in {"processing", "queued"}:
             raise PanelError("Este vídeo ya tiene un trabajo activo; no se iniciará otro render.", 409)
         if existing_status in {"completed", "failed"} and existing_backend == render_backend:
@@ -1844,6 +1949,12 @@ class VideoPanel:
         modal_status = health.get("modal") or {}
         if not modal_status.get("sdk_installed") or not modal_status.get("credentials_configured"):
             raise PanelError("Modal no está instalado o configurado en el servidor.", 409)
+        if not (health.get("r2_storage") or {}).get("ready"):
+            raise PanelError(
+                "Cloudflare R2 no está configurado con los cuatro valores requeridos y el bucket esperado; "
+                "no se inició ningún render.",
+                409,
+            )
         drive_import = (
             self.drive_store.get_import_for_local_upload(source_id)
             if self.drive_store
@@ -2154,6 +2265,7 @@ class VideoPanel:
         )
         modal_ledger: ProcessingLedger | None = None
         modal_ledger_claimed = False
+        result: dict[str, Any] | None = None
         try:
             source_path = self._source_path(upload)
             def update_phase(phase: str) -> None:
@@ -2192,8 +2304,11 @@ class VideoPanel:
                 modal_ledger = ProcessingLedger(
                     self.store.database_path.with_name("modal_processing.sqlite3")
                 )
+                ledger_key = hashlib.sha256(
+                    f"{upload['source_sha256']}:{edit_options.get('render_mode', 'full')}".encode("utf-8")
+                ).hexdigest()
                 modal_ledger.claim(
-                    upload["source_sha256"],
+                    ledger_key,
                     str(source_path),
                     max_attempts=1,
                     edit_options=edit_options,
@@ -2214,10 +2329,14 @@ class VideoPanel:
                     ),
                     style=style,
                     subtitle_mode=edit_options["subtitle_mode"],
+                    render_mode=edit_options.get("render_mode", "full"),
+                    render_settings=edit_options.get("render_settings"),
                     creative_plan=edit_options.get("creative_plan"),
                     briefing=edit_options.get("style_notes", ""),
                     progress_callback=update_phase,
                 )
+                update_phase("uploading_to_r2")
+                result["r2_storage"] = upload_mp4_to_r2(result["output"], job_id)
                 result["source"] = str(source_path)
                 result["duration_seconds"] = original_video.duration
                 result["source_dimensions"] = {
@@ -2242,7 +2361,7 @@ class VideoPanel:
                 result["normalization"] = normalization_report
                 result.setdefault("conversion", {})["input_normalization"] = normalization_report
                 result["source_modified"] = False
-                modal_ledger.mark_completed(upload["source_sha256"], result["output"])
+                modal_ledger.mark_completed(ledger_key, result["output"])
             if drive_import and self.drive_store:
                 output = result.get("drive_output") or {}
                 output_file_id = output.get("id") if isinstance(output, dict) else None
@@ -2266,7 +2385,9 @@ class VideoPanel:
             if modal_ledger is not None and modal_ledger_claimed:
                 try:
                     modal_ledger.mark_failed(
-                        upload["source_sha256"],
+                        hashlib.sha256(
+                            f"{upload['source_sha256']}:{edit_options.get('render_mode', 'full')}".encode("utf-8")
+                        ).hexdigest(),
                         f"{type(exc).__name__}: {exc}",
                     )
                 except Exception:
@@ -2288,6 +2409,16 @@ class VideoPanel:
                 progress=None,
                 error=str(exc)[:1600],
                 estimated_cost_usd=estimate,
+                output_id=(
+                    Path(result["output"]).name
+                    if result and result.get("output") and Path(result["output"]).is_file()
+                    else None
+                ),
+                result_json=(
+                    json.dumps(result, ensure_ascii=False)
+                    if result and result.get("output") and Path(result["output"]).is_file()
+                    else None
+                ),
             )
         finally:
             with self.job_lock:

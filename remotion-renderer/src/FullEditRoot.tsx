@@ -377,6 +377,9 @@ export const FullRemotionRoot: FC = () => (
         fontFamily: "Montserrat",
         highlightColor: "#FFC0CB",
         textColor: "#202124",
+        fontSize: 54,
+        position: "bottom",
+        maxWordsPerCaption: 2,
       },
     }}
   />

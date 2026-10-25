@@ -7,7 +7,10 @@ const normalized = (text) => tokens(text).map(
 ).filter(Boolean);
 
 // Shared windows are display intervals, NOT recovered word-level alignment.
-export function prepareCaptionTrack(payload, clips, fps = 30) {
+export function prepareCaptionTrack(payload, clips, fps = 30, maxWordsPerCaption = 2) {
+  if (![1, 2, 3].includes(maxWordsPerCaption)) {
+    throw new Error("Los subtítulos deben mostrar entre 1 y 3 palabras por bloque.");
+  }
   if (!Array.isArray(payload?.words) || !payload.words.length || !tokens(payload.text).length) {
     throw new Error("La cobertura requiere texto completo y palabras de la transcripción.");
   }
@@ -72,7 +75,7 @@ export function prepareCaptionTrack(payload, clips, fps = 30) {
   const groups = [];
   let precise = [];
   const flush = () => {
-    if (precise.length) groups.push(...groupTimedWords(precise, 1, 3));
+    if (precise.length) groups.push(...groupTimedWords(precise, 1, maxWordsPerCaption));
     precise = [];
   };
   for (const unit of units) {

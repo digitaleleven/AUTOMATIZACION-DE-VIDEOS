@@ -170,12 +170,12 @@
                 <summary><span class="accordion-index">02</span><span class="accordion-title"><strong>Efectos y animaciones</strong><small>Movimiento medido y elementos gráficos</small></span><span class="accordion-chevron" aria-hidden="true"></span></summary>
                 <div class="accordion-content">
                   <div class="custom-field-grid">
-                    <label class="custom-field" for="custom-autozoom"><span>Autozoom</span><select id="custom-autozoom"><option value="off">Desactivado</option><option value="smooth" selected>Suave</option><option value="aggressive">Agresivo</option><option value="emphatic">Enfático</option></select></label>
-                    <label class="custom-field" for="custom-transitions"><span>Transiciones</span><select id="custom-transitions"><option value="clean" selected>Cortes limpios</option><option value="soft">Fundidos suaves</option><option value="dynamic">Dinámicas</option></select></label>
+                    <label class="custom-field" for="custom-autozoom"><span>Autozoom</span><select id="custom-autozoom"><option value="off">Desactivado</option><option value="smooth" selected>Suave</option><option value="aggressive" disabled>Agresivo · no disponible</option><option value="emphatic" disabled>Enfático · no disponible</option></select></label>
+                    <label class="custom-field" for="custom-transitions"><span>Transiciones</span><select id="custom-transitions"><option value="clean" selected>Cortes limpios</option><option value="soft" disabled>Fundidos suaves · no disponibles</option><option value="dynamic" disabled>Dinámicas · no disponibles</option></select></label>
                   </div>
                   <fieldset class="custom-choice-set"><legend>Capas visuales</legend>
-                    <label class="custom-check"><input id="custom-layer-titles" type="checkbox"><span>Títulos y rótulos</span></label>
-                    <label class="custom-check"><input id="custom-layer-accents" type="checkbox"><span>Elementos gráficos de apoyo</span></label>
+                    <label class="custom-check"><input id="custom-layer-titles" type="checkbox" disabled><span>Títulos y rótulos · no disponibles</span></label>
+                    <label class="custom-check"><input id="custom-layer-accents" type="checkbox" disabled><span>Elementos gráficos · no disponibles</span></label>
                   </fieldset>
                   <p class="custom-field-note">Los efectos se aplican solo si el contenido y el encuadre lo permiten.</p>
                 </div>
@@ -187,8 +187,8 @@
                   <label class="range-field" for="custom-original-volume"><span><strong>Volumen del audio original</strong><small>Ajustable de 0 a 100%</small></span><input id="custom-original-volume" type="range" min="0" max="100" value="100"><span class="range-scale"><small>0%</small><small>100%</small></span></label>
                   <div class="custom-check-list">
                     <label class="custom-check"><input id="custom-noise-reduction" type="checkbox"><span>Reducción de ruido</span></label>
-                    <label class="custom-check"><input id="custom-music-enabled" type="checkbox"><span>Añadir música</span></label>
-                    <label class="custom-check"><input id="custom-music-ducking" type="checkbox"><span>Reducir la música durante la voz (ducking)</span></label>
+                    <label class="custom-check"><input id="custom-music-enabled" type="checkbox" disabled><span>Añadir música · sin pista disponible</span></label>
+                    <label class="custom-check"><input id="custom-music-ducking" type="checkbox" disabled><span>Duck de música · sin pista disponible</span></label>
                   </div>
                   <p class="custom-field-note">No se añadirá música automáticamente. La mezcla queda sujeta a la propuesta y revisión.</p>
                 </div>
@@ -202,7 +202,7 @@
                     <span><strong>Vertical · 1080 × 1920</strong><small>Formato de salida fijo para este estudio.</small></span>
                     <span class="locked-label">FIJO</span>
                   </div>
-                  <label class="custom-field" for="custom-image-filter"><span>Filtro de imagen</span><select id="custom-image-filter"><option value="none">Sin filtro</option><option value="natural" selected>Natural</option><option value="warm">Cálido sutil</option><option value="cool">Frío sutil</option><option value="contrast">Contraste suave</option></select></label>
+                  <label class="custom-field" for="custom-image-filter"><span>Filtro de imagen</span><select id="custom-image-filter"><option value="none">Sin filtro adicional</option><option value="natural" selected>Natural · conversión gestionada BT.709</option><option value="warm" disabled>Cálido · pendiente de prueba</option><option value="cool" disabled>Frío · pendiente de prueba</option><option value="contrast" disabled>Contraste · pendiente de prueba</option></select></label>
                 </div>
               </details>
 
@@ -233,7 +233,7 @@
                   <div><dt>Categoría</dt><dd id="creation-summary-category">Pendiente</dd></div>
                   <div><dt>Subtítulos</dt><dd id="creation-summary-captions">Pendiente de vídeo</dd></div>
                 </dl>
-                <div class="engine-summary"><span class="engine-status-dot" aria-hidden="true"></span><div><strong>Modal Cloud Engine</strong><small>Motor previsto · coste cloud variable, no cotizado aquí.</small></div><span class="engine-summary-tag">POR AUTORIZAR</span></div>
+                <div class="engine-summary"><span class="engine-status-dot" aria-hidden="true"></span><div><strong>Modal Cloud Engine</strong><small>Render en Modal; MP4 final privado en Cloudflare R2. Coste variable, no cotizado aquí.</small></div><span class="engine-summary-tag" id="engine-summary-tag">COMPROBANDO</span></div>
               </div>
             </div>
             <p class="summary-transparency"><strong>Sin archivo no hay propuesta.</strong> Selecciona un vídeo para completar los datos reales. No se ha iniciado ninguna subida adicional, transcripción ni render desde este resumen.</p>

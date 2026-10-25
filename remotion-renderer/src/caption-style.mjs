@@ -2,6 +2,9 @@ export const DEFAULT_CAPTION_STYLE = Object.freeze({
   fontFamily: "Montserrat",
   highlightColor: "#FFC0CB",
   textColor: "#202124",
+  fontSize: 54,
+  position: "bottom",
+  maxWordsPerCaption: 2,
 });
 
 const BRIEFING_DIRECTIVES = {
@@ -18,12 +21,18 @@ export function resolveCaptionStyle(style = {}, briefing = "") {
     fontFamily: style.font_family ?? DEFAULT_CAPTION_STYLE.fontFamily,
     highlightColor: style.highlight_color ?? DEFAULT_CAPTION_STYLE.highlightColor,
     textColor: style.font_color ?? DEFAULT_CAPTION_STYLE.textColor,
+    fontSize: Number(style.caption_font_size ?? 54),
+    position: style.caption_position ?? "bottom",
+    maxWordsPerCaption: Number(style.max_words_per_caption ?? 2),
   };
   if (
     typeof result.fontFamily !== "string" ||
     !/^[A-Za-z0-9 ,'"-]{1,80}$/u.test(result.fontFamily) ||
     !/^#[\da-f]{6}$/iu.test(result.highlightColor) ||
-    !/^#[\da-f]{6}$/iu.test(result.textColor)
+    !/^#[\da-f]{6}$/iu.test(result.textColor) ||
+    !Number.isInteger(result.fontSize) || result.fontSize < 32 || result.fontSize > 120 ||
+    !["bottom", "middle", "top"].includes(result.position) ||
+    ![1, 2, 3].includes(result.maxWordsPerCaption)
   ) {
     throw new Error("font_family, highlight_color o font_color no tienen un formato válido.");
   }

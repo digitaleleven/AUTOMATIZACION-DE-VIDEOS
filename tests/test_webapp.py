@@ -1372,8 +1372,11 @@ class VideoPanelApiTests(unittest.TestCase):
         self.assertEqual(proposal["edit"]["style_notes"], style_notes)
         self.assertEqual(proposal["edit"]["caption_style"], {
             "fontFamily": "Montserrat",
-            "highlightColor": "#FF2A85",
+            "highlightColor": "#FFC0CB",
             "textColor": "#000000",
+            "fontSize": 54,
+            "position": "bottom",
+            "maxWordsPerCaption": 2,
         })
         proposal_options = self.panel.pending_proposals[proposal["proposal_id"]]["options"]
         self.assertEqual(proposal_options["style_notes"], style_notes)
@@ -1545,6 +1548,7 @@ class VideoPanelApiTests(unittest.TestCase):
                         "sdk_installed": True,
                         "credentials_configured": True,
                     },
+                    "r2_storage": {"ready": True},
                 },
             ),
             patch.object(self.panel, "drive_status", return_value={"ready": False, "authorized": False}),

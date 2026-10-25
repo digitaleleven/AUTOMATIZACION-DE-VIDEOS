@@ -135,6 +135,8 @@ export function buildMasterFilterComplex({
   sourceAudioStreamIndex,
   colorFilter,
   jumpFrames,
+  originalAudioVolume = 1,
+  noiseReduction = false,
   includeSoundEffects = true,
   width = 1080,
   height = 1920,
@@ -148,6 +150,12 @@ export function buildMasterFilterComplex({
   }
   if (typeof colorFilter !== "string" || !colorFilter.trim()) {
     throw new Error("Falta el filtro de conversión de color.");
+  }
+  if (!Number.isFinite(originalAudioVolume) || originalAudioVolume < 0 || originalAudioVolume > 1) {
+    throw new Error("El volumen original debe estar entre 0 y 1.");
+  }
+  if (typeof noiseReduction !== "boolean") {
+    throw new Error("La reducción de ruido debe ser booleana.");
   }
 
   const graph = [];
@@ -192,8 +200,11 @@ export function buildMasterFilterComplex({
     return `[${label}]`;
   });
   graph.push(
-    `${audioLabels.join("")}concat=n=${clips.length}:v=0:a=1,aresample=48000,asetpts=PTS-STARTPTS[aoriginal]`,
+    `${audioLabels.join("")}concat=n=${clips.length}:v=0:a=1,aresample=48000,asetpts=PTS-STARTPTS[aoriginal_raw]`,
   );
+  const audioFilters = [`volume=${originalAudioVolume.toFixed(3)}`];
+  if (noiseReduction) audioFilters.push("afftdn=nr=12:nf=-25");
+  graph.push(`[aoriginal_raw]${audioFilters.join(",")}[aoriginal]`);
   if (includeSoundEffects) {
     graph.push("[1:a:0]aresample=48000,asetpts=PTS-STARTPTS[asfx]");
     graph.push(

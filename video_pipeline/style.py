@@ -26,6 +26,7 @@ class VideoStyle:
     show_subtitles: bool = True
     caption_position: str = "bottom"
     caption_offset_y: float = 0.22
+    max_words_per_caption: int = 2
     emoji_by_keyword: dict[str, str] | None = None
     logo_path: str | None = None
     logo_position: str = "topRight"
@@ -83,6 +84,8 @@ def load_video_style(path: str | Path = "video_style.json") -> VideoStyle:
         raise StyleConfigError("show_subtitles must be a boolean.")
     if values["caption_position"] not in {"bottom", "middle", "top"}:
         raise StyleConfigError("caption_position must be bottom, middle, or top.")
+    if int(values["max_words_per_caption"]) not in {1, 2, 3}:
+        raise StyleConfigError("max_words_per_caption must be 1, 2, or 3.")
     if not 0 <= float(values["caption_offset_y"]) <= 0.8:
         raise StyleConfigError("caption_offset_y must be between 0 and 0.8.")
     if values["logo_position"] not in {
