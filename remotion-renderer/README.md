@@ -16,22 +16,44 @@ compilación; se declaran los metadatos de entrada explícitamente.
 ffmpeg -y \
   -i "$PWD/generated-artifacts/drive-inspection/IMG_1254.MOV" \
   -map 0:v:0 -map 0:a:0 -t 12 \
-  -vf "fps=30,scale=1080:1920:force_original_aspect_ratio=decrease:flags=lanczos,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,unsharp=5:5:0.8:5:5:0.0,setsar=1,zscale=primariesin=bt2020:transferin=arib-std-b67:matrixin=bt2020nc:rangein=limited:primaries=bt709:transfer=bt709:matrix=bt709:range=limited:npl=1000:c=topleft,eq=contrast=1.05:brightness=0.04:gamma=1.15:saturation=0.92,colorchannelmixer=rr=0.90:gg=0.95:bb=1.10,format=yuv420p" \
+  -vf "fps=30,scale=1080:1920:force_original_aspect_ratio=decrease:flags=lanczos,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,unsharp=5:5:0.8:5:5:0.0,setsar=1,zscale=primariesin=bt2020:transferin=arib-std-b67:matrixin=bt2020nc:rangein=limited:primaries=bt709:transfer=bt709:matrix=bt709:range=limited:npl=1000:c=topleft,eq=contrast=1.05:brightness=0.05:gamma=1.18:saturation=0.92,colorchannelmixer=rr=0.92:gg=0.95:bb=1.08,format=yuv420p" \
   -c:v libx264 -preset ultrafast -crf 17 -g 1 -keyint_min 1 -sc_threshold 0 -pix_fmt yuv420p \
   -color_range tv -colorspace bt709 -color_primaries bt709 -color_trc bt709 \
   -c:a aac -b:a 192k -ac 2 -ar 48000 \
-  "$PWD/generated-artifacts/drive-inspection/q03c-control/proxy_30fps_allintra_1080_npl1000_capcut-test.mp4"
+  "$PWD/generated-artifacts/drive-inspection/remotion/IMG_1254-npl1000-master-proxy.mp4"
 
 ffmpeg -y -ss 2.5 \
-  -i "$PWD/generated-artifacts/drive-inspection/q03c-control/proxy_30fps_allintra_1080_npl1000_capcut-test.mp4" \
+  -i "$PWD/generated-artifacts/drive-inspection/remotion/IMG_1254-npl1000-master-proxy.mp4" \
   -frames:v 1 -update 1 \
-  "$PWD/generated-artifacts/drive-inspection/q03c-control/proxy_npl1000_capcut-test_frame-2.5.png"
+  "$PWD/generated-artifacts/drive-inspection/remotion/IMG_1254-npl1000-master-proxy-frame-2.5.png"
 ```
 
 La conversión directa evita `tonemap` y la etapa RGB lineal, pero conserva la
 declaración correcta de entrada/salida. `npl=1000` fija luminancia nominal, no
 una curva de compresión; puede haber clipping de altas luces. La imagen requiere
 revisión visual y no se integra automáticamente.
+
+## Edición completa con Remotion
+
+La ruta completa conserva los cortes registrados en `mm004-plan.json`, asigna
+las palabras cronometradas a la línea de tiempo de salida, usa zooms de énfasis
+y coloca los SVG existentes durante 1,5–1,8 s. El reproductor toma el vídeo
+del proxy y el audio principal AAC del original.
+
+```sh
+pnpm --dir remotion-renderer run render:full -- \
+  --input "$PWD/generated-artifacts/drive-inspection/IMG_1254.MOV" \
+  --proxy "$PWD/generated-artifacts/drive-inspection/remotion/IMG_1254-npl1000-master-proxy.mp4" \
+  --transcript "$PWD/generated-artifacts/drive-inspection/q03a/transcription-corrected.json" \
+  --plan "$PWD/generated-artifacts/drive-inspection/mm004/mm004-plan.json" \
+  --effects-dir "$PWD/generated-artifacts/drive-inspection/mm004/effects" \
+  --output "$PWD/generated-artifacts/drive-inspection/remotion/IMG_1254-MATRIX-MOTION-Remotion-final.mp4"
+```
+
+El render completo se ejecuta una sola vez, con `maxRetries=0` y concurrencia
+1. El script valida proxy All-Intra, duración, audio, resolución, color y
+decodificación completa antes de informar éxito. Los resultados permanecen en
+`generated-artifacts/`, ignorado por Git.
 
 ## Experimento Mobius anterior (conservado)
 

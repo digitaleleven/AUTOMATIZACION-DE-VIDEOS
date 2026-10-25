@@ -546,3 +546,17 @@ mtime_ms = 1792928867228
 storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/83b643a1-22da-4d22-b845-7f69949a6fa9/421b193c-bcfd-4f42-9d46-fd996579af5c"
 storage_version_token = "1792928929126701"
 content_type = "image/png"
+
+[[outputs]]
+id = "9ijp1SEMIULmZDok4PMHB"
+uri = "file://generated-artifacts/drive-inspection/remotion/IMG_1254-Remotion-overlay-30.8s.png"
+type = "image"
+title = "Fotograma de revisión — 30,8 s"
+description = "Sticker vectorial visible y subtítulos dinámicos con la palabra activa resaltada."
+logical_id = "ce641d04-9370-4eea-ad86-6258a6f10c70"
+content_hash = "sha256:ef4a761940e0cb56aad3a3fe382eb286077ec042ccd90f1082de9205961fca1b"
+size = 2037833
+mtime_ms = 1792930379169
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/ce641d04-9370-4eea-ad86-6258a6f10c70/03c90cbf-97cb-4def-8264-91d6c1a30104"
+storage_version_token = "1792930419411669"
+content_type = "image/png"

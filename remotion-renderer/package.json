@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "render:sample": "node render-sample.mjs",
+    "render:full": "node render-full.mjs",
     "test:captions": "node --test test/*.test.mjs",
     "typecheck": "tsc --noEmit"
   },

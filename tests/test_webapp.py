@@ -282,6 +282,9 @@ class VideoPanelApiTests(unittest.TestCase):
         self.assertIn(b'id="resultado-mm004"', body)
         self.assertIn(b'id="mm004-final-video"', body)
         self.assertIn(b'/media/outputs/IMG_1254-MATRIX-MOTION-MM004.mp4', body)
+        self.assertIn(b'id="resultado-remotion"', body)
+        self.assertIn(b'id="remotion-final-video"', body)
+        self.assertIn(b'/media/outputs/IMG_1254-MATRIX-MOTION-Remotion-final.mp4', body)
         self.assertIn(b'00:56,51', body)
 
     def test_mm004_result_is_authenticated_range_media(self):

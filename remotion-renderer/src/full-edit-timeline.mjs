@@ -1,5 +1,5 @@
 export const FULL_FPS = 30;
-export const FULL_DURATION_IN_FRAMES = 1748;
+export const FULL_DURATION_IN_FRAMES = 1747;
 export const VECTOR_DURATION_IN_FRAMES = 54;
 
 export function buildKeepSegments(sourceFrames, cuts, fps = FULL_FPS) {
