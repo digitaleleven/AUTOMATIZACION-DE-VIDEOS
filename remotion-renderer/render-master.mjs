@@ -35,6 +35,7 @@ import {
 } from "./src/master-assembly.mjs";
 import {
   MASTER_OVERLAY_PROFILE,
+  resolveRenderFrameCount,
   supportsAlphaOverlayPixelFormat,
 } from "./src/master-render-profile.mjs";
 import { buildColorManagedProxyFilter } from "./src/render-profile.mjs";
@@ -84,13 +85,14 @@ const run = (command, args, { cwd } = {}) =>
 
 const parseArguments = (args) => {
   const parsed = {};
-  const allowed = new Set(["--input", "--transcript", "--plan", "--effects-dir", "--output", "--show-subtitles"]);
+  const allowed = new Set(["--input", "--transcript", "--plan", "--effects-dir", "--output", "--show-subtitles", "--render-frames"]);
   for (let index = 0; index < args.length; index += 1) {
     const key = args[index];
     if (!allowed.has(key) || !args[index + 1]) {
       throw new Error(
         "Uso: render-master.mjs [--input MOV] [--transcript JSON] [--plan JSON] " +
-        "[--effects-dir DIR] [--output MP4] [--show-subtitles true|false]",
+        "[--effects-dir DIR] [--output MP4] [--show-subtitles true|false] " +
+        "[--render-frames COUNT]",
       );
     }
     parsed[key] = args[index + 1];
@@ -103,6 +105,7 @@ const parseArguments = (args) => {
     effectsDir: path.resolve(parsed["--effects-dir"] || DEFAULTS.effectsDir),
     output: path.resolve(parsed["--output"] || DEFAULTS.output),
     showSubtitlesArg: parsed["--show-subtitles"],
+    renderFramesArg: parsed["--render-frames"],
   };
 };
 
@@ -255,6 +258,11 @@ try {
       `La duración/cortes no coinciden con el plan: ${durationInFrames} fotogramas frente a ${expectedFrames}.`,
     );
   }
+  const renderFrameCount = resolveRenderFrameCount(
+    options.renderFramesArg,
+    durationInFrames,
+  );
+  const renderDurationSeconds = renderFrameCount / FULL_FPS;
 
   const transcript = JSON.parse(await readFile(transcriptPath, "utf8"));
   const sourceWords = parseWhisperWordTimings(transcript);
@@ -287,6 +295,9 @@ try {
     plan.effect_cues,
     FULL_FPS,
   ).filter((cue) => cue.startFrame + cue.durationFrames <= durationInFrames);
+  const soundEffectsInRender = soundEffects.filter(
+    (cue) => cue.startFrame < renderFrameCount,
+  );
 
   const workRoot = path.join(PROJECT_ROOT, "generated-artifacts/drive-inspection/remotion");
   await mkdir(workRoot, { recursive: true });
@@ -317,7 +328,7 @@ try {
     effects,
     wordTimings,
     showSubtitles,
-    soundEffects,
+    soundEffects: soundEffectsInRender,
   };
   const browserOptions = { enableMultiProcessOnLinux: true };
   const composition = await selectComposition({
@@ -348,7 +359,7 @@ try {
     inputProps,
     ...MASTER_OVERLAY_PROFILE,
     outputLocation: overlayPath,
-    frameRange: [0, durationInFrames - 1],
+    frameRange: [0, renderFrameCount - 1],
     browserExecutable: CHROMIUM,
     chromiumOptions: browserOptions,
     logLevel: "info",
@@ -357,16 +368,21 @@ try {
   const overlayProbe = await probe(overlayPath, true);
   const overlayVideo = overlayProbe.streams?.find((stream) => stream.codec_type === "video");
   const overlayAudio = overlayProbe.streams?.find((stream) => stream.codec_type === "audio");
+  const overlayAudioValid =
+    soundEffectsInRender.length > 0
+      ? overlayAudio?.codec_name === "pcm_s16le" &&
+        overlayAudio.sample_rate === "48000" &&
+        overlayAudio.channels === 2
+      : true;
   if (
     overlayVideo?.codec_name !== "prores" ||
     overlayVideo.width !== FULL_WIDTH ||
     overlayVideo.height !== FULL_HEIGHT ||
     parseRate(overlayVideo.avg_frame_rate) !== FULL_FPS ||
     !supportsAlphaOverlayPixelFormat(overlayVideo.pix_fmt) ||
-    Number(overlayVideo.nb_read_frames) !== durationInFrames ||
-    overlayAudio?.codec_name !== "pcm_s16le" ||
-    overlayAudio.sample_rate !== "48000" ||
-    overlayAudio.channels !== 2
+    Number(overlayVideo.nb_read_frames) !== renderFrameCount ||
+    Math.abs(Number(overlayProbe.format?.duration) - renderDurationSeconds) > 0.06 ||
+    !overlayAudioValid
   ) {
     throw new Error(`La capa Remotion no conserva alpha/audio/formato: ${JSON.stringify(overlayProbe)}`);
   }
@@ -375,12 +391,14 @@ try {
     toneMap: "direct",
     width: FULL_WIDTH,
     height: FULL_HEIGHT,
+    visualPass: renderFrameCount < durationInFrames,
   });
   const filterComplex = buildMasterFilterComplex({
     clips,
     sourceAudioStreamIndex: inputAudio.index,
     colorFilter,
     jumpFrames,
+    includeSoundEffects: soundEffectsInRender.length > 0,
     width: FULL_WIDTH,
     height: FULL_HEIGHT,
     fps: FULL_FPS,
@@ -393,7 +411,8 @@ try {
     "-i", overlayPath,
     "-filter_complex", filterComplex,
     "-map", "[vout]", "-map", "[aout]",
-    "-frames:v", String(durationInFrames),
+    "-t", renderDurationSeconds.toFixed(3),
+    "-frames:v", String(renderFrameCount),
     "-c:v", "libx264", "-preset", "medium", "-crf", "15",
     "-profile:v", "high", "-pix_fmt", "yuv420p",
     "-fps_mode", "cfr",
@@ -410,7 +429,7 @@ try {
   const outputVideo = outputProbe.streams?.find((stream) => stream.codec_type === "video");
   const outputAudio = outputProbe.streams?.find((stream) => stream.codec_type === "audio");
   const outputDuration = Number(outputProbe.format?.duration);
-  const expectedDuration = durationInFrames / FULL_FPS;
+  const expectedDuration = renderDurationSeconds;
   const outputVideoBitrateMbps = Number(outputVideo?.bit_rate) / 1_000_000;
   const outputContainerBitrateMbps =
     (outputStat.size * 8) / (expectedDuration * 1_000_000);
@@ -425,7 +444,7 @@ try {
     outputVideo.color_space === "bt709" &&
     outputVideo.color_transfer === "bt709" &&
     outputVideo.color_primaries === "bt709" &&
-    Number(outputVideo.nb_read_frames) === durationInFrames &&
+    Number(outputVideo.nb_read_frames) === renderFrameCount &&
     Math.abs(outputDuration - expectedDuration) <= 0.06 &&
     outputAudio?.codec_name === "aac" &&
     outputAudio.sample_rate === "48000" &&
@@ -444,6 +463,8 @@ try {
 
   const report = {
     status: "verified",
+    renderMode: renderFrameCount < durationInFrames ? "preview" : "full",
+    requestedFrames: renderFrameCount,
     input: {
       path: inputPath,
       durationSeconds: sourceDuration,
@@ -457,12 +478,14 @@ try {
         purpose: "gráficos transparentes, subtítulos y SFX; sin decodificar el vídeo fuente",
         overlayCodec: "ProRes 4444",
         pixelFormat: overlayVideo.pix_fmt,
-        frames: durationInFrames,
+        frames: renderFrameCount,
+        fullCompositionFrames: durationInFrames,
         seconds: overlaySeconds,
         showSubtitles,
         wordTimings: wordTimings.length,
         effects,
-        soundEffects,
+        soundEffects: soundEffectsInRender,
+        scheduledSoundEffects: soundEffects.length,
         jumpFrames,
         zoom: "instantáneo, una fotograma, máximo 1.06x; sin zoom progresivo",
       },
@@ -480,7 +503,7 @@ try {
         pixelFormat: "yuv420p",
         colorRange: "limited",
         colorSpace: "BT.709",
-        seconds: masterSeconds,
+        seconds: outputDuration,
         videoBitrateMbps: Number.isFinite(outputVideoBitrateMbps)
           ? outputVideoBitrateMbps
           : null,
@@ -500,6 +523,8 @@ try {
   await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
   console.log(`output=${outputPath}`);
   console.log(`report=${reportPath}`);
+  console.log(`render_mode=${renderFrameCount < durationInFrames ? "preview" : "full"}`);
+  console.log(`render_frames=${renderFrameCount}`);
   console.log(`remotion_overlay_seconds=${overlaySeconds.toFixed(2)}`);
   console.log(`ffmpeg_master_seconds=${masterSeconds.toFixed(2)}`);
   console.log(`output_probe=${JSON.stringify(outputProbe)}`);

@@ -182,21 +182,35 @@ test("direct HLG conversion creates a vertical HD proxy with requested sharpenin
     color_space: "bt2020nc",
     color_transfer: "arib-std-b67",
     color_primaries: "bt2020",
-  }, 30, { toneMap: "direct", width: 1080, height: 1920 });
+  }, 30, { toneMap: "direct", width: 1080, height: 1920, visualPass: true });
 
   const fps = filter.indexOf("fps=30");
-  const scale = filter.indexOf("scale=1080:1920");
-  const unsharp = filter.indexOf("unsharp=5:5:0.9:5:5:0.0");
   const zscale = filter.indexOf("zscale=primariesin=bt2020");
-  const eq = filter.indexOf("eq=contrast=1.08:brightness=0.03:gamma=1.12:saturation=0.96");
+  const scale = filter.indexOf("scale=1080:1920");
+  const unsharp = filter.indexOf("unsharp=5:5:0.8:5:5:0.0");
+  const eq = filter.indexOf("eq=contrast=1.05:brightness=0.03:gamma=1.12:saturation=1.08");
   const channelMix = filter.indexOf("colorchannelmixer=rr=0.92:gg=0.95:bb=1.08");
+  const outputMatrix = filter.indexOf("out_color_matrix=bt709");
   const format = filter.indexOf("format=yuv420p");
-  assert.ok(fps >= 0 && fps < scale && scale < unsharp && unsharp < zscale && zscale < eq && eq < channelMix && channelMix < format);
+  assert.ok(fps >= 0 && fps < zscale && zscale < scale && scale < outputMatrix && outputMatrix < unsharp && unsharp < eq && eq < channelMix && channelMix < format);
   assert.match(filter, /primaries=bt709:transfer=bt709:matrix=bt709:range=limited:npl=1000/);
   assert.match(filter, /pad=1080:1920:\(ow-iw\)\/2:\(oh-ih\)\/2/);
   assert.match(filter, /format=yuv420p/);
   assert.doesNotMatch(filter, /tonemap=|gbrpf32le/);
   assert.equal(REMOTION_RENDER_PROFILE.outputCrf, 15);
+});
+
+test("the unapproved visual pass does not change the default full-render color profile", () => {
+  const filter = buildColorManagedProxyFilter({
+    color_range: "tv",
+    color_space: "bt2020nc",
+    color_transfer: "arib-std-b67",
+    color_primaries: "bt2020",
+  }, 30, { toneMap: "direct", width: 1080, height: 1920 });
+
+  assert.match(filter, /unsharp=5:5:0\.9:5:5:0\.0/u);
+  assert.match(filter, /eq=contrast=1\.08:brightness=0\.03:gamma=1\.12:saturation=0\.96/u);
+  assert.doesNotMatch(filter, /out_color_matrix=bt709/u);
 });
 
 test("unsupported or incomplete source color metadata fails explicitly", () => {

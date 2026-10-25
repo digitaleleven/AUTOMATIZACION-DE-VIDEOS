@@ -560,3 +560,17 @@ mtime_ms = 1792930379169
 storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/ce641d04-9370-4eea-ad86-6258a6f10c70/03c90cbf-97cb-4def-8264-91d6c1a30104"
 storage_version_token = "1792930419411669"
 content_type = "image/png"
+
+[[outputs]]
+id = "g2Tny9-omZ-8WSLRmdOKL"
+uri = "file://outputs/IMG_1254-MATRIX-MOTION-QA-VISUAL-02.mp4"
+type = "video"
+title = "MATRIX MOTION — Pase visual de 10 segundos"
+description = "Muestra local con subtítulos palabra a palabra y tratamiento visual de prueba; H.264 1080×1920, 30 FPS, con audio original. Pendiente de aprobación visual humana."
+logical_id = "1efd2316-3856-4053-b4c5-93e9449fc35b"
+content_hash = "sha256:0cecc1a4e1e11e4792cec2be8803d7d4feb92dcc8ec6c96c5c81b77c1747c420"
+size = 40082616
+mtime_ms = 1792935209468
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/1efd2316-3856-4053-b4c5-93e9449fc35b/c6b340ad-e506-45c7-b8d1-498de34dca0f"
+storage_version_token = "1792935257722981"
+content_type = "video/mp4"

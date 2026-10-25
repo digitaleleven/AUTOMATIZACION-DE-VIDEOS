@@ -65,6 +65,7 @@ export function buildMasterFilterComplex({
   sourceAudioStreamIndex,
   colorFilter,
   jumpFrames,
+  includeSoundEffects = true,
   width = 1080,
   height = 1920,
   fps = 30,
@@ -122,10 +123,14 @@ export function buildMasterFilterComplex({
   graph.push(
     `${audioLabels.join("")}concat=n=${clips.length}:v=0:a=1,aresample=48000,asetpts=PTS-STARTPTS[aoriginal]`,
   );
-  graph.push("[1:a:0]aresample=48000,asetpts=PTS-STARTPTS[asfx]");
-  graph.push(
-    "[aoriginal][asfx]amix=inputs=2:duration=first:dropout_transition=0:normalize=0," +
-    "alimiter=limit=0.95[aout]",
-  );
+  if (includeSoundEffects) {
+    graph.push("[1:a:0]aresample=48000,asetpts=PTS-STARTPTS[asfx]");
+    graph.push(
+      "[aoriginal][asfx]amix=inputs=2:duration=first:dropout_transition=0:normalize=0," +
+      "alimiter=limit=0.95[aout]",
+    );
+  } else {
+    graph.push("[aoriginal]anull[aout]");
+  }
   return graph.join(";");
 }

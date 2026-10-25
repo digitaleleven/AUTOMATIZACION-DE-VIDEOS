@@ -1,5 +1,11 @@
+import "@fontsource/montserrat/800.css";
 import { useMemo } from "react";
-import { AbsoluteFill, useCurrentFrame } from "remotion";
+import {
+  AbsoluteFill,
+  Easing,
+  interpolate,
+  useCurrentFrame,
+} from "remotion";
 import type { CSSProperties, FC } from "react";
 import {
   activeCaptionGroup,
@@ -16,7 +22,7 @@ const captionStyle: CSSProperties = {
   position: "absolute",
   left: "7%",
   right: "7%",
-  top: "70%",
+  top: "72%",
   transform: "translateY(-50%)",
   display: "flex",
   flexWrap: "wrap",
@@ -27,6 +33,7 @@ const captionStyle: CSSProperties = {
   fontFamily: "Montserrat, Arial, sans-serif",
   fontSize: 54,
   fontWeight: 800,
+  textTransform: "uppercase",
   lineHeight: 1.12,
   textAlign: "center",
   WebkitTextStroke: "1.5px #101010",
@@ -51,19 +58,43 @@ export const WordSubtitles: FC<{
     <AbsoluteFill style={{ pointerEvents: "none" }} aria-hidden="true">
       <div style={captionStyle}>
         {group.words.map((word, index) => (
-          <span
-            key={`${word.start.toFixed(4)}-${index}`}
-            style={{
-              color: index === activeIndex ? ACTIVE_WORD_COLOR : CAPTION_COLOR,
-              backgroundColor: index === activeIndex
-                ? ACTIVE_WORD_BACKGROUND
-                : "transparent",
-              borderRadius: "0.14em",
-              padding: "0.06em 0.16em",
-            }}
-          >
-            {word.text}
-          </span>
+          (() => {
+            const isActive = index === activeIndex;
+            const wordStartFrame = Math.round(word.start * fps);
+            const popScale = isActive
+              ? interpolate(
+                  frame,
+                  [wordStartFrame, wordStartFrame + 5],
+                  [0.92, 1],
+                  {
+                    easing: Easing.out(Easing.cubic),
+                    extrapolateLeft: "clamp",
+                    extrapolateRight: "clamp",
+                  },
+                )
+              : 1;
+            return (
+              <span
+                key={`${word.start.toFixed(4)}-${index}`}
+                style={{
+                  display: "inline-block",
+                  color: isActive ? ACTIVE_WORD_COLOR : CAPTION_COLOR,
+                  backgroundColor: isActive
+                    ? ACTIVE_WORD_BACKGROUND
+                    : "transparent",
+                  borderRadius: 8,
+                  padding: "0.12em 0.28em",
+                  filter: isActive
+                    ? "drop-shadow(0 3px 8px rgba(0,0,0,0.32))"
+                    : undefined,
+                  transform: `scale(${popScale})`,
+                  transformOrigin: "center center",
+                }}
+              >
+                {word.text}
+              </span>
+            );
+          })()
         ))}
       </div>
     </AbsoluteFill>

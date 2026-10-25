@@ -1,4 +1,3 @@
-import "@fontsource/montserrat/800.css";
 import {
   AbsoluteFill,
   Audio,

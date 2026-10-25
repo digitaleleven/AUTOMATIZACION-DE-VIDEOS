@@ -8,6 +8,7 @@ import {
 } from "../src/master-assembly.mjs";
 import {
   MASTER_OVERLAY_PROFILE,
+  resolveRenderFrameCount,
   supportsAlphaOverlayPixelFormat,
 } from "../src/master-render-profile.mjs";
 
@@ -60,6 +61,13 @@ test("transparent Remotion overlay uses PNG frames with ProRes 4444 alpha and no
   assert.equal(supportsAlphaOverlayPixelFormat("yuv420p"), false);
 });
 
+test("preview renders validate frame range without changing the full master default", () => {
+  assert.equal(resolveRenderFrameCount(undefined, 1747), 1747);
+  assert.equal(resolveRenderFrameCount("300", 1747), 300);
+  assert.throws(() => resolveRenderFrameCount("0", 1747), /entre 1 y 1747/u);
+  assert.throws(() => resolveRenderFrameCount("1748", 1747), /entre 1 y 1747/u);
+});
+
 test("FFmpeg graph trims source video and audio, overlays alpha graphics, and mixes SFX", () => {
   const graph = buildMasterFilterComplex({
     clips,
@@ -77,4 +85,16 @@ test("FFmpeg graph trims source video and audio, overlays alpha graphics, and mi
   assert.match(graph, /\[1:a:0\]aresample=48000/u);
   assert.match(graph, /amix=inputs=2:duration=first:dropout_transition=0:normalize=0/u);
   assert.match(graph, /alimiter=limit=0\.95\[aout\]/u);
+});
+
+test("preview without timed effects preserves source audio without requiring an overlay audio stream", () => {
+  const graph = buildMasterFilterComplex({
+    clips: [clips[0]],
+    sourceAudioStreamIndex: 2,
+    colorFilter: "fps=30,format=yuv420p",
+    jumpFrames: [],
+    includeSoundEffects: false,
+  });
+  assert.match(graph, /\[aoriginal\]anull\[aout\]/u);
+  assert.doesNotMatch(graph, /\[1:a:0\]/u);
 });

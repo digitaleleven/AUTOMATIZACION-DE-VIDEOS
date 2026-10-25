@@ -45,6 +45,7 @@ export const buildColorManagedProxyFilter = (
     mobiusParam = 0.5,
     width = REMOTION_RENDER_PROFILE.width,
     height = REMOTION_RENDER_PROFILE.height,
+    visualPass = false,
   } = {},
 ) => {
   if (!Number.isInteger(width) || width <= 0 || !Number.isInteger(height) || height <= 0) {
@@ -117,9 +118,18 @@ export const buildColorManagedProxyFilter = (
 
   const directEq =
     toneMap === "direct"
-      ? "eq=contrast=1.08:brightness=0.03:gamma=1.12:saturation=0.96"
+      ? visualPass
+        ? "eq=contrast=1.05:brightness=0.03:gamma=1.12:saturation=1.08"
+        : "eq=contrast=1.08:brightness=0.03:gamma=1.12:saturation=0.96"
       : "";
   if (toneMap === "direct") {
+    if (visualPass) {
+      const sdrScaleAndPad =
+        `scale=${width}:${height}:force_original_aspect_ratio=decrease:flags=lanczos:` +
+        "in_color_matrix=bt709:out_color_matrix=bt709," +
+        `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2`;
+      return `fps=${fps},${colorTransform},${sdrScaleAndPad},unsharp=5:5:0.8:5:5:0.0,setsar=1,${directEq},colorchannelmixer=rr=0.92:gg=0.95:bb=1.08,format=${REMOTION_RENDER_PROFILE.pixelFormat}`;
+    }
     return `fps=${fps},${scaleAndPad},unsharp=5:5:0.9:5:5:0.0,setsar=1,${colorTransform},${directEq},colorchannelmixer=rr=0.92:gg=0.95:bb=1.08,format=${REMOTION_RENDER_PROFILE.pixelFormat}`;
   }
   return `${colorTransform},${scaleAndPad}${directEq},setsar=1,fps=${fps},format=${REMOTION_RENDER_PROFILE.pixelFormat}`;

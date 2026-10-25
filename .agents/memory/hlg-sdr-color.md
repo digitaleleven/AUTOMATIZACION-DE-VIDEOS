@@ -15,4 +15,4 @@ La responsable rechazó el primer MP4 Remotion por movimiento de cámara brusco 
 
 **Why:** el 25 de octubre de 2026 la responsable pidió conservar el detalle del original 4K, eliminar los zooms automáticos y reequilibrar nitidez, contraste y color. Estos valores están autorizados para la nueva prueba, no aprobados como calidad final.
 
-**How to apply:** mantener esta configuración en la ruta Remotion, separada de Shotstack; conservar el MOV original y los renders previos, usar concurrencia 1 y cero reintentos. La piel, los blancos, el movimiento y las altas luces requieren aprobación visual humana antes de adoptar el perfil como acabado comercial.
+**How to apply:** mantener esta configuración en la ruta Remotion, separada de Shotstack; conservar el MOV original y los renders previos, usar concurrencia 1 y cero reintentos. Las variantes posteriores de contraste, saturación y enfoque para revisión deben permanecer solo en QA hasta su aprobación visual humana; no tratar metadatos BT.709 ni un MP4 reproducible como aprobación del acabado comercial.

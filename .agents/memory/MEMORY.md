@@ -4,5 +4,6 @@
 - [Envíos inciertos a Shotstack](shotstack-ambiguous-submissions.md) — Una respuesta sin ID puede haber encolado el render; no reintentar hasta reconciliar el estado remoto.
 - [Workspace pnpm anidado](nested-pnpm-workspace.md) — En un workspace aislado bajo la raíz Python, el filtro puede no seleccionar su único paquete; instala desde su propia raíz.
 - [Diagnóstico del proxy Remotion](remotion-proxy-cancellation.md) — En Remotion 4, los recortes son fotogramas; un MP4 puede decodificar bien y mostrar negro, así que inspecciona imagen y proxy.
+- [Audio de overlays parciales](remotion-partial-overlay-audio.md) — Un rango de render sin efectos de sonido puede producir una capa ProRes sin audio; conserva por separado el audio fuente.
 - [Conversión HDR HLG a SDR](hlg-sdr-color.md) — La responsable rechazó Q03E por dominante amarilla; ninguna curva probada la neutralizó sin una referencia blanca fiable.
 - [Semántica de cortes FFmpeg](ffmpeg-cut-timelines.md) — Los intervalos de silencio son rangos que se eliminan; conviértelos a su complemento y verifica duración y fotogramas.
