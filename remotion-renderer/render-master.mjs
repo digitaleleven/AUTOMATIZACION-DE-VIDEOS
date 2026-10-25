@@ -351,6 +351,23 @@ try {
   });
   const productCues = [...creativeOverlays.images, ...creativeOverlays.cards];
   for (const warning of creativeOverlays.warnings) console.warn(`overlay_warning=${warning}`);
+  if (creativeOverlays.brandLogo) {
+    const asset = creativeOverlays.brandLogo;
+    const assetInfo = await stat(path.join(effectsDirectory, asset));
+    if (!assetInfo.isFile() || assetInfo.size === 0 || assetInfo.size > 20 * 1024 * 1024) {
+      throw new Error(`El logotipo debe existir y ocupar entre 1 byte y 20 MB: ${asset}`);
+    }
+    const logoProbe = await probe(path.join(effectsDirectory, asset));
+    const logoStream = logoProbe.streams?.find((stream) => stream.codec_type === "video");
+    if (
+      !logoStream || !["png", "mjpeg", "webp"].includes(logoStream.codec_name) ||
+      !(logoStream.width > 0 && logoStream.height > 0) ||
+      logoStream.width * logoStream.height > 16_000_000 ||
+      Number(logoStream.nb_frames ?? 1) > 1
+    ) {
+      throw new Error(`El logotipo debe ser una imagen estática PNG/JPEG/WebP de máximo 16 megapíxeles: ${asset}`);
+    }
+  }
   for (const image of creativeOverlays.images) {
     const assetInfo = await stat(path.join(effectsDirectory, image.asset));
     if (!assetInfo.isFile() || assetInfo.size === 0 || assetInfo.size > 25 * 1024 * 1024) {
@@ -429,7 +446,10 @@ try {
   }
   const publicOverlaysDirectory = path.join(publicDirectory, "overlays");
   await mkdir(publicOverlaysDirectory, { recursive: true });
-  for (const asset of new Set(creativeOverlays.images.map((cue) => cue.asset))) {
+  for (const asset of new Set([
+    ...creativeOverlays.images.map((cue) => cue.asset),
+    ...(creativeOverlays.brandLogo ? [creativeOverlays.brandLogo] : []),
+  ])) {
     await copyFile(path.join(effectsDirectory, asset), path.join(publicOverlaysDirectory, asset));
   }
   await makeSfxAssets(publicDirectory);
@@ -458,6 +478,7 @@ try {
     captionStyle,
     soundEffects: soundEffectsInRender,
     titleOverlay: creativeOverlays.title,
+    brandLogoAsset: creativeOverlays.brandLogo,
     promoText: creativeOverlays.promo?.text ?? null,
     imageOverlays: creativeOverlays.images,
     cardOverlays: creativeOverlays.cards,

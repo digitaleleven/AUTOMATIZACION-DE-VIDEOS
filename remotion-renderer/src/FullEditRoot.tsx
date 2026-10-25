@@ -9,6 +9,7 @@ import {
   staticFile,
   useCurrentFrame,
 } from "remotion";
+import { CameraMotionBlur } from "@remotion/motion-blur";
 import type { CSSProperties, FC } from "react";
 import { WordSubtitles } from "./WordSubtitles";
 import type { CaptionStyle } from "./WordSubtitles";
@@ -68,6 +69,7 @@ type FullEditProps = {
   soundEffects: SoundEffectCue[];
   captionStyle: CaptionStyle;
   titleOverlay: TimedTitleOverlay | null;
+  brandLogoAsset: string | null;
   promoText: string | null;
   imageOverlays: TimedImageOverlay[];
   cardOverlays: TimedCardOverlay[];
@@ -142,6 +144,47 @@ const TitleOverlay: FC<{ title: TimedTitleOverlay }> = ({ title }) => {
         {title.text}
       </div>
     </AbsoluteFill>
+  );
+};
+
+const ClientBrandLogoOverlay: FC<{ asset: string }> = ({ asset }) => {
+  const frame = useCurrentFrame();
+  return (
+    <CameraMotionBlur shutterAngle={90} samples={3}>
+      <AbsoluteFill style={{ pointerEvents: "none" }} aria-hidden="true">
+        <div
+          style={{
+            position: "absolute",
+            top: "4%",
+            left: "50%",
+            width: "58%",
+            height: 112,
+            padding: "10px 18px",
+            boxSizing: "border-box",
+            display: "flex",
+            justifyContent: "center",
+            alignItems: "center",
+            transform: `translateX(-50%) scale(${overlayScale(frame)})`,
+            transformOrigin: "center top",
+            opacity: overlayOpacity(frame, 18),
+            borderRadius: 16,
+            backgroundColor: "rgba(18,18,18,0.34)",
+            boxShadow: "0 4px 18px rgba(0,0,0,0.2)",
+          }}
+        >
+          <Img
+            src={staticFile(`overlays/${asset}`)}
+            style={{
+              display: "block",
+              width: "100%",
+              height: "100%",
+              objectFit: "contain",
+              filter: "drop-shadow(0 2px 8px rgba(0,0,0,0.3))",
+            }}
+          />
+        </div>
+      </AbsoluteFill>
+    </CameraMotionBlur>
   );
 };
 
@@ -308,12 +351,14 @@ const FullEdit: FC<FullEditProps> = ({
   width,
   height,
   fps,
+  durationInFrames,
   effects,
   wordTimings,
   showSubtitles,
   soundEffects,
   captionStyle,
   titleOverlay,
+  brandLogoAsset,
   promoText,
   imageOverlays,
   cardOverlays,
@@ -334,6 +379,11 @@ const FullEdit: FC<FullEditProps> = ({
     {titleOverlay && (
       <Sequence from={0} durationInFrames={titleOverlay.durationFrames} layout="none">
         <TitleOverlay title={titleOverlay} />
+      </Sequence>
+    )}
+    {brandLogoAsset && (
+      <Sequence from={0} durationInFrames={durationInFrames} layout="none">
+        <ClientBrandLogoOverlay asset={brandLogoAsset} />
       </Sequence>
     )}
     {promoText && <PromoOverlay text={promoText} />}
@@ -395,6 +445,7 @@ export const FullRemotionRoot: FC = () => (
       showSubtitles: true,
       soundEffects: [],
       titleOverlay: null,
+      brandLogoAsset: null,
       promoText: null,
       imageOverlays: [],
       cardOverlays: [],

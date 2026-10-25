@@ -9,6 +9,7 @@ import math
 import os
 from pathlib import Path
 import re
+from shutil import copyfile
 import subprocess
 from typing import Any
 
@@ -135,6 +136,19 @@ def _modal_caption_style(style: VideoStyle) -> dict[str, Any]:
     return {key: value for key, value in values.items() if value is not None}
 
 
+def _validated_brand_logo(style: VideoStyle) -> tuple[Path | None, str | None]:
+    if not style.logo_path:
+        return None, None
+    logo = Path(style.logo_path).expanduser().resolve()
+    if (
+        not logo.is_file()
+        or logo.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp"}
+        or not 0 < logo.stat().st_size <= 20 * 1024 * 1024
+    ):
+        raise ValueError("El logo configurado no es accesible o supera los límites admitidos.")
+    return logo, f"client-brand-logo{logo.suffix.lower()}"
+
+
 def process_local_video_modal(
     input_path: str | Path,
     output_dir: str | Path,
@@ -195,11 +209,7 @@ def process_local_video_modal(
         )
     except StyleConfigError as exc:
         raise ValueError(str(exc)) from None
-    if style.logo_path:
-        raise ValueError(
-            "El render Remotion en Modal no aplica el logo global configurado; "
-            "no se iniciará un render que omita esa opción."
-        )
+    logo_source, logo_asset = _validated_brand_logo(style)
 
     source = Path(input_path).expanduser().resolve()
     destination_dir = Path(output_dir).expanduser().resolve()
@@ -309,7 +319,11 @@ def process_local_video_modal(
         "output_width": expected_style.output_width,
         "output_height": expected_style.output_height,
         "output_fps": expected_style.output_fps,
-        "overlays": {},
+        "overlays": (
+            {"brand_logo": {"asset": logo_asset}}
+            if logo_asset
+            else {}
+        ),
         "render_mode": render_mode,
         "render_settings": render_settings,
     }
@@ -318,6 +332,8 @@ def process_local_video_modal(
     with temporary_work_directory() as work_dir:
         effects_dir = Path(work_dir) / "effects"
         effects_dir.mkdir(parents=True, exist_ok=True)
+        if logo_source and logo_asset:
+            copyfile(logo_source, effects_dir / logo_asset)
         for sticker in plan["stickers"]:
             (effects_dir / f"{sticker['sticker']}.svg").write_text(
                 sticker_svg(sticker["sticker"], sticker["color"]),

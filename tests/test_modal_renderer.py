@@ -157,6 +157,8 @@ class ModalRenderClientTests(unittest.TestCase):
         source, effects, plan, transcript, job_id, output, volume, sdk = _input_bundle(
             self.root, output_bytes
         )
+        logo = effects / "client-brand-logo.png"
+        logo.write_bytes(b"local-logo-asset")
         with patch.object(modal_renderer, "modal_configuration_status", return_value=_modal_status()):
             result = modal_renderer.ModalRenderClient(sdk).render(
                 job_id=job_id,
@@ -182,6 +184,10 @@ class ModalRenderClientTests(unittest.TestCase):
         )
         self.assertIn(f"/jobs/{job_id}/manifest.json", volume.uploads)
         self.assertIn(f"/jobs/{job_id}/source.mov", volume.uploads)
+        self.assertEqual(
+            volume.uploads[f"/jobs/{job_id}/effects/client-brand-logo.png"],
+            b"local-logo-asset",
+        )
 
     def test_render_client_accepts_4k_60_and_passes_profile_to_worker(self):
         source, effects, plan, transcript, job_id, output, volume, sdk = _input_bundle(

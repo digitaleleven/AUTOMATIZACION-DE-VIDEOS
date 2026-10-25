@@ -14,7 +14,24 @@ const defaults = {
 const build = (options = {}) => buildCreativeOverlays({ ...defaults, ...options });
 
 test("empty optional overlay plan adds no invented title, image or brand", () => {
-  assert.deepEqual(build(), { title: null, promo: null, images: [], cards: [], warnings: [] });
+  assert.deepEqual(build(), {
+    title: null, promo: null, brandLogo: null, images: [], cards: [], warnings: [],
+  });
+});
+
+test("a local agency logo is accepted as an explicit asset without inventing one", () => {
+  assert.equal(
+    build({ planOverlays: { brand_logo: { asset: "client-brand-logo.png" } } }).brandLogo,
+    "client-brand-logo.png",
+  );
+  assert.throws(
+    () => build({ planOverlays: { brand_logo: { asset: "../private.png" } } }),
+    /PNG, JPG o WebP local/u,
+  );
+  assert.throws(
+    () => build({ planOverlays: { brand_logo: "brand.png" } }),
+    /recurso de imagen local/u,
+  );
 });
 
 test("explicit briefing schedules title, promo and product by actual word timestamps", () => {

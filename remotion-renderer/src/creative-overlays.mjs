@@ -116,12 +116,24 @@ export function buildCreativeOverlays({
   }
   const titleSpec = planOverlays.title ?? fromBriefing.title;
   const promoSpec = planOverlays.promo ?? fromBriefing.promo;
+  const brandLogoSpec = planOverlays.brand_logo ?? null;
   const titleText = titleSpec && typeof titleSpec === "object"
     ? safeText(titleSpec.text, "El título")
     : titleSpec ? safeText(titleSpec, "El título") : null;
   const promoText = promoSpec && typeof promoSpec === "object"
     ? safeText(promoSpec.text, "La etiqueta promocional")
     : promoSpec ? safeText(promoSpec, "La etiqueta promocional") : null;
+  let brandLogo = null;
+  if (brandLogoSpec !== null) {
+    if (!brandLogoSpec || typeof brandLogoSpec !== "object" || Array.isArray(brandLogoSpec)) {
+      throw new Error("overlays.brand_logo debe indicar un recurso de imagen local.");
+    }
+    const asset = safeText(brandLogoSpec.asset, "El recurso del logotipo", 120);
+    if (!/^[a-z0-9][a-z0-9._-]*\.(?:png|jpe?g|webp)$/iu.test(asset)) {
+      throw new Error("El logotipo debe ser un PNG, JPG o WebP local con nombre simple.");
+    }
+    brandLogo = asset;
+  }
   const titleDurationSeconds = titleSpec && typeof titleSpec === "object"
     ? titleSpec.duration_seconds
     : undefined;
@@ -224,6 +236,7 @@ export function buildCreativeOverlays({
   return {
     title: titleText ? { text: titleText, durationFrames: titleDurationFrames } : null,
     promo: promoText ? { text: promoText } : null,
+    brandLogo,
     images,
     cards,
     warnings,

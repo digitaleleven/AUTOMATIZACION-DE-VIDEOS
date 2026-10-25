@@ -1710,11 +1710,6 @@ class VideoPanel:
             output_fps=output_fps,
             output_quality=output_quality,
         )
-        if render_backend == "modal" and style.logo_path:
-            raise PanelError(
-                "El motor MATRIX no aplica el logo global configurado; "
-                "no se preparó una propuesta que lo omita."
-            )
         try:
             creative_plan = normalize_edit_plan(payload.get("creative_plan"), video.duration)
         except EditPlanError as exc:

@@ -1,9 +1,10 @@
 import "@fontsource/montserrat/800.css";
+import { CameraMotionBlur } from "@remotion/motion-blur";
 import { useMemo } from "react";
 import {
   AbsoluteFill,
-  Easing,
   interpolate,
+  spring,
   useCurrentFrame,
 } from "remotion";
 import type { CSSProperties, FC } from "react";
@@ -86,40 +87,36 @@ export const WordSubtitles: FC<{
     : DEFAULT_CAPTION_STYLE.textColor;
   const activeIndex = activeWordIndex(group, seconds);
   return (
-    <AbsoluteFill style={{ pointerEvents: "none" }} aria-hidden="true">
-      <div style={{
-        ...captionContainerStyle,
-        color: textColor,
-        fontFamily: `${fontFamily}, Arial, sans-serif`,
-        fontSize:
-          Number.isInteger(captionStyle.fontSize) &&
-          (captionStyle.fontSize as number) >= 32 &&
-          (captionStyle.fontSize as number) <= 120
-            ? captionStyle.fontSize
-            : captionContainerStyle.fontSize,
-        top:
-          captionStyle.position === "top"
-            ? "28%"
-            : captionStyle.position === "middle"
-              ? "50%"
-              : "75%",
-      }}>
-        {group.words.map((word, index) => (
-          (() => {
+    <CameraMotionBlur shutterAngle={90} samples={5}>
+      <AbsoluteFill style={{ pointerEvents: "none" }} aria-hidden="true">
+        <div style={{
+          ...captionContainerStyle,
+          color: textColor,
+          fontFamily: `${fontFamily}, Arial, sans-serif`,
+          fontSize:
+            Number.isInteger(captionStyle.fontSize) &&
+            (captionStyle.fontSize as number) >= 32 &&
+            (captionStyle.fontSize as number) <= 120
+              ? captionStyle.fontSize
+              : captionContainerStyle.fontSize,
+          top:
+            captionStyle.position === "top"
+              ? "28%"
+              : captionStyle.position === "middle"
+                ? "50%"
+                : "75%",
+        }}>
+          {group.words.map((word, index) => {
             const isActive = index === activeIndex;
             const wordStartFrame = Math.round(word.start * fps);
-            const popScale = isActive
-              ? interpolate(
-                  frame,
-                  [wordStartFrame, wordStartFrame + 3],
-                  [1.15, 1],
-                  {
-                    easing: Easing.out(Easing.cubic),
-                    extrapolateLeft: "clamp",
-                    extrapolateRight: "clamp",
-                  },
-                )
-              : 1;
+            const bounce = isActive
+              ? spring({
+                  frame: Math.max(0, frame - wordStartFrame),
+                  fps,
+                  config: { damping: 12, stiffness: 250, mass: 0.55 },
+                })
+              : 0;
+            const popScale = isActive ? 0.9 + bounce * 0.2 : 1;
             return (
               <span
                 key={`${word.start.toFixed(4)}-${index}`}
@@ -128,16 +125,17 @@ export const WordSubtitles: FC<{
                   color: isActive ? textColor : "#FFFFFF",
                   WebkitTextStroke: isActive ? "0px transparent" : "1.5px #101010",
                   textShadow: isActive ? "0 1px 2px rgba(0,0,0,0.15)" : "0 3px 8px #101010",
-                  backgroundColor: isActive
-                    ? highlightColor
-                    : "transparent",
+                  backgroundColor: isActive ? highlightColor : "transparent",
                   border: isActive
                     ? "1px solid rgba(20,20,20,0.7)"
                     : "1px solid transparent",
                   borderRadius: 10,
                   padding: "0.16em 0.34em",
+                  boxShadow: isActive
+                    ? "0 0 0 1px rgba(255,255,255,0.72), 0 5px 14px rgba(0,0,0,0.38), 0 0 12px rgba(255,192,203,0.48)"
+                    : undefined,
                   filter: isActive
-                    ? "drop-shadow(0 5px 12px rgba(0,0,0,0.45))"
+                    ? "drop-shadow(0 4px 10px rgba(0,0,0,0.38))"
                     : undefined,
                   transform: `scale(${popScale})`,
                   transformOrigin: "center center",
@@ -146,9 +144,9 @@ export const WordSubtitles: FC<{
                 {word.text}
               </span>
             );
-          })()
-        ))}
-      </div>
-    </AbsoluteFill>
+          })}
+        </div>
+      </AbsoluteFill>
+    </CameraMotionBlur>
   );
 };
