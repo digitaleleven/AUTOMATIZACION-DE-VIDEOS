@@ -22,7 +22,7 @@ const captionStyle: CSSProperties = {
   position: "absolute",
   left: "7%",
   right: "7%",
-  top: "72%",
+  top: "75%",
   transform: "translateY(-50%)",
   display: "flex",
   flexWrap: "wrap",
@@ -48,7 +48,7 @@ export const WordSubtitles: FC<{
   showSubtitles?: boolean;
 }> = ({ words, fps, showSubtitles = true }) => {
   const frame = useCurrentFrame();
-  const groups = useMemo(() => groupTimedWords(words, 1, 3), [words]);
+  const groups = useMemo(() => groupTimedWords(words, 1, 2), [words]);
   const seconds = frame / fps;
   const group = activeCaptionGroup(groups, seconds);
   if (!showSubtitles || !group) return null;
@@ -64,8 +64,8 @@ export const WordSubtitles: FC<{
             const popScale = isActive
               ? interpolate(
                   frame,
-                  [wordStartFrame, wordStartFrame + 5],
-                  [0.92, 1],
+                  [wordStartFrame, wordStartFrame + 3],
+                  [1.15, 1],
                   {
                     easing: Easing.out(Easing.cubic),
                     extrapolateLeft: "clamp",
@@ -82,10 +82,13 @@ export const WordSubtitles: FC<{
                   backgroundColor: isActive
                     ? ACTIVE_WORD_BACKGROUND
                     : "transparent",
-                  borderRadius: 8,
-                  padding: "0.12em 0.28em",
+                  border: isActive
+                    ? "1px solid rgba(20,20,20,0.7)"
+                    : "1px solid transparent",
+                  borderRadius: 10,
+                  padding: "0.16em 0.34em",
                   filter: isActive
-                    ? "drop-shadow(0 3px 8px rgba(0,0,0,0.32))"
+                    ? "drop-shadow(0 5px 12px rgba(0,0,0,0.45))"
                     : undefined,
                   transform: `scale(${popScale})`,
                   transformOrigin: "center center",

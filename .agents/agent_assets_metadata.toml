@@ -574,3 +574,17 @@ mtime_ms = 1792935209468
 storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/1efd2316-3856-4053-b4c5-93e9449fc35b/c6b340ad-e506-45c7-b8d1-498de34dca0f"
 storage_version_token = "1792935257722981"
 content_type = "video/mp4"
+
+[[outputs]]
+id = "e18_gMkNjK8znHB_oLoA3"
+uri = "file://outputs/IMG_1254-MATRIX-MOTION-QA-SUBTITLES-01.mp4"
+type = "video"
+title = "MATRIX MOTION — Muestra de subtítulos 1–2 palabras"
+description = "Muestra local de 10 segundos con cajas neón por palabra activa y pop de 3 fotogramas. MP4 H.264, 1080×1920, 30 FPS, audio original. Pendiente de revisión visual."
+logical_id = "7f35f8f6-8292-4056-9af7-80b6980780a1"
+content_hash = "sha256:e03c9488778ffd2b6d4e2eda768f7fac0a58b441b9f3d3ea4130a1e6062b4037"
+size = 40244640
+mtime_ms = 1792935895456
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/7f35f8f6-8292-4056-9af7-80b6980780a1/63875167-ecb3-43d4-9ccc-cb7bf17d4356"
+storage_version_token = "1792935945039871"
+content_type = "video/mp4"
