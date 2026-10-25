@@ -17,6 +17,15 @@ const API = {
   driveRetryUpload: "/api/drive/retry-upload",
 };
 
+const VIDEO_NICHE_LABELS = {
+  beauty_skincare: "Beauty & Skincare",
+  fashion: "Moda & Fashion",
+  lifestyle_travel: "Lifestyle & Travel",
+  fitness_sport: "Fitness & Sport",
+  ugc_ecommerce: "UGC E-commerce",
+  generic_viral: "Genérico / Viral",
+};
+
 const state = {
   library: [],
   libraryLoaded: false,
@@ -83,12 +92,14 @@ async function loadLibrary() {
   return Array.isArray(result) ? result : (result?.items || result?.library || []);
 }
 
-async function uploadVideo(file) {
+async function uploadVideo(file, niche, styleNotes) {
   return requestJson(API.upload, {
     method: "POST",
     headers: {
       "Content-Type": file.type || "application/octet-stream",
       "X-Upload-Filename": encodeURIComponent(file.name),
+      "X-Video-Niche": niche,
+      "X-Style-Notes": encodeURIComponent(styleNotes),
     },
     body: file,
   });
@@ -456,6 +467,7 @@ function renderEditProposal(proposal) {
   const edit = proposal.edit || {};
   const costs = proposal.costs || {};
   const apiPlan = proposal.api_plan || {};
+  const captionStyle = edit.caption_style || {};
   const creativePlan = edit.creative_plan || { cuts: [], zooms: [], stickers: [] };
   const duration = Number(source.duration_seconds);
   const outputDuration = Number(edit.expected_output_duration_seconds);
@@ -473,6 +485,9 @@ function renderEditProposal(proposal) {
     : "ninguno";
   const lines = [
     `Vídeo: ${proposal.source_name || "No disponible"} · ${Number.isFinite(duration) ? `${duration.toFixed(2)} s` : "duración desconocida"}`,
+    `Nicho: ${edit.niche_label || VIDEO_NICHE_LABELS[edit.niche] || VIDEO_NICHE_LABELS.generic_viral}`,
+    `Subtítulos: fuente ${captionStyle.fontFamily || "Montserrat"} · resaltado ${captionStyle.highlightColor || "#FF2A85"} · texto ${captionStyle.textColor || "#FFFFFF"}`,
+    `Briefing: ${edit.style_notes ? `${edit.style_notes} (las directivas explícitas de tipografía y color se aplican a esta propuesta)` : "ninguna"}`,
     `Origen: ${source.origin || "No identificado"}`,
     `Entrada: ${source.width || "?"} × ${source.height || "?"} · ${source.fps || "?"} FPS · ${source.video_codec || "códec desconocido"}`,
     `Bitrate de entrada medido por FFprobe: ${sourceBitrate > 0 ? `${(sourceBitrate / 1000000).toFixed(2)} Mbps` : "no informado"}`,
@@ -539,6 +554,8 @@ function renderSelectedItem() {
   placeholder.hidden = true;
   byId("selected-status").textContent = statusLabel(item.status).toLocaleUpperCase("es");
   const fields = [
+    ["NICHO", item.niche_label || VIDEO_NICHE_LABELS[item.niche] || VIDEO_NICHE_LABELS.generic_viral],
+    ["NOTAS DE ESTILO", item.style_notes || "Ninguna"],
     ["ORIGEN", item.source_label || "Equipo"],
     ["DURACIÓN", formatDuration(item.duration_seconds)],
     ["TAMAÑO", formatBytes(item.size_bytes)],
@@ -1161,7 +1178,11 @@ byId("video-input").addEventListener("change", async (event) => {
   message.hidden = false;
   message.textContent = `Guardando ${file.name} en la aplicación…`;
   try {
-    const uploaded = await uploadVideo(file);
+    const uploaded = await uploadVideo(
+      file,
+      byId("upload-niche").value,
+      byId("upload-style-notes").value.trim(),
+    );
     const returnedId = uploaded?.id ?? uploaded?.item?.id ?? uploaded?.source_id;
     const freshLibrary = await loadLibrary();
     state.library = freshLibrary;
@@ -1169,6 +1190,7 @@ byId("video-input").addEventListener("change", async (event) => {
     state.selectedId = returnedId ?? freshLibrary.find((item) => item.filename === file.name || item.original_filename === file.name)?.id ?? freshLibrary[0]?.id ?? null;
     renderLibrary();
     renderSelectedItem();
+    byId("upload-style-notes").value = "";
     message.textContent = "Vídeo guardado. Revisa sus datos y el coste estimado antes de iniciar el procesamiento.";
     displayToast("Vídeo añadido a la biblioteca.");
   } catch (error) {

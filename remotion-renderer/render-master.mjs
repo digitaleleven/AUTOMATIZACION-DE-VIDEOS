@@ -38,7 +38,11 @@ import {
   resolveRenderFrameCount,
   supportsAlphaOverlayPixelFormat,
 } from "./src/master-render-profile.mjs";
-import { buildColorManagedProxyFilter } from "./src/render-profile.mjs";
+import {
+  APPROVED_MASTER_COLOR_PROFILE,
+  buildColorManagedProxyFilter,
+} from "./src/render-profile.mjs";
+import { resolveCaptionStyle } from "./src/caption-style.mjs";
 
 const PACKAGE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(PACKAGE_DIR, "..");
@@ -85,14 +89,14 @@ const run = (command, args, { cwd } = {}) =>
 
 const parseArguments = (args) => {
   const parsed = {};
-  const allowed = new Set(["--input", "--transcript", "--plan", "--effects-dir", "--output", "--show-subtitles", "--render-frames"]);
+  const allowed = new Set(["--input", "--transcript", "--plan", "--effects-dir", "--output", "--show-subtitles", "--render-frames", "--briefing"]);
   for (let index = 0; index < args.length; index += 1) {
     const key = args[index];
     if (!allowed.has(key) || !args[index + 1]) {
       throw new Error(
         "Uso: render-master.mjs [--input MOV] [--transcript JSON] [--plan JSON] " +
         "[--effects-dir DIR] [--output MP4] [--show-subtitles true|false] " +
-        "[--render-frames COUNT]",
+        "[--render-frames COUNT] [--briefing TEXT]",
       );
     }
     parsed[key] = args[index + 1];
@@ -106,6 +110,7 @@ const parseArguments = (args) => {
     output: path.resolve(parsed["--output"] || DEFAULTS.output),
     showSubtitlesArg: parsed["--show-subtitles"],
     renderFramesArg: parsed["--render-frames"],
+    briefing: parsed["--briefing"] || "",
   };
 };
 
@@ -143,6 +148,11 @@ const makeSfxAssets = async (publicDirectory) => {
       "aevalsrc=0.4*sin(2*PI*880*t)*exp(-16*t)+0.2*sin(2*PI*1320*t)*exp(-18*t):s=48000:d=0.28",
       "volume=0.16",
     ],
+    [
+      "impact.wav",
+      "sine=frequency=62:sample_rate=48000:duration=0.38",
+      "lowpass=f=150,afade=t=in:st=0:d=0.008,afade=t=out:st=0.035:d=0.345,volume=0.20",
+    ],
   ];
   for (const [filename, source, filter] of outputs) {
     await run("ffmpeg", [
@@ -154,22 +164,30 @@ const makeSfxAssets = async (publicDirectory) => {
   }
 };
 
-const readSubtitlePreference = async (explicit) => {
-  if (explicit !== undefined) {
-    if (explicit !== "true" && explicit !== "false") {
-      throw new Error("--show-subtitles solo acepta true o false.");
-    }
-    return explicit === "true";
-  }
+const readCaptionPreferences = async (explicitSubtitles, briefing) => {
+  let style = {};
   try {
-    const style = JSON.parse(
+    style = JSON.parse(
       await readFile(path.join(PROJECT_ROOT, "video_style.json"), "utf8"),
     );
-    return typeof style.show_subtitles === "boolean" ? style.show_subtitles : true;
   } catch (error) {
-    if (error?.code === "ENOENT") return true;
-    throw error;
+    if (error?.code !== "ENOENT") throw error;
   }
+  if (!style || typeof style !== "object" || Array.isArray(style)) {
+    throw new Error("video_style.json debe ser un objeto JSON.");
+  }
+  if (
+    explicitSubtitles !== undefined &&
+    explicitSubtitles !== "true" &&
+    explicitSubtitles !== "false"
+  ) {
+    throw new Error("--show-subtitles solo acepta true o false.");
+  }
+  const showSubtitles = explicitSubtitles === undefined
+    ? (typeof style.show_subtitles === "boolean" ? style.show_subtitles : true)
+    : explicitSubtitles === "true";
+  const captionStyle = resolveCaptionStyle(style, briefing);
+  return { showSubtitles, captionStyle };
 };
 
 const parseRate = (rate) => {
@@ -198,7 +216,10 @@ try {
   const outputDirectory = path.dirname(outputPath);
   const reportPath = outputPath.replace(/\.mp4$/iu, ".report.json");
   errorLogPath = outputPath.replace(/\.mp4$/iu, ".error.log");
-  const showSubtitles = await readSubtitlePreference(options.showSubtitlesArg);
+  const { showSubtitles, captionStyle } = await readCaptionPreferences(
+    options.showSubtitlesArg,
+    options.briefing,
+  );
 
   await mkdir(outputDirectory, { recursive: true });
   for (const filePath of [inputPath, transcriptPath, planPath]) {
@@ -294,6 +315,7 @@ try {
     wordTimings,
     plan.effect_cues,
     FULL_FPS,
+    { includeCaptionEffects: showSubtitles },
   ).filter((cue) => cue.startFrame + cue.durationFrames <= durationInFrames);
   const soundEffectsInRender = soundEffects.filter(
     (cue) => cue.startFrame < renderFrameCount,
@@ -328,6 +350,7 @@ try {
     effects,
     wordTimings,
     showSubtitles,
+    captionStyle,
     soundEffects: soundEffectsInRender,
   };
   const browserOptions = { enableMultiProcessOnLinux: true };
@@ -388,10 +411,9 @@ try {
   }
 
   const colorFilter = buildColorManagedProxyFilter(inputVideo, FULL_FPS, {
-    toneMap: "direct",
+    ...APPROVED_MASTER_COLOR_PROFILE,
     width: FULL_WIDTH,
     height: FULL_HEIGHT,
-    visualPass: renderFrameCount < durationInFrames,
   });
   const filterComplex = buildMasterFilterComplex({
     clips,
@@ -482,12 +504,13 @@ try {
         fullCompositionFrames: durationInFrames,
         seconds: overlaySeconds,
         showSubtitles,
+        captionStyle,
         wordTimings: wordTimings.length,
         effects,
         soundEffects: soundEffectsInRender,
         scheduledSoundEffects: soundEffects.length,
         jumpFrames,
-        zoom: "instantáneo, una fotograma, máximo 1.06x; sin zoom progresivo",
+        zoom: "gancho inicial 1.08x durante 3 s con salida suave; reencuadres 1.06x suaves en frases y pausas",
       },
       stage2: {
         renderer: "FFmpeg",

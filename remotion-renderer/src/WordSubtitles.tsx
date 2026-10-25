@@ -14,11 +14,19 @@ import {
 } from "./caption-timing.mjs";
 import type { TimedWord } from "./caption-timing.mjs";
 
-const CAPTION_COLOR = "#FFFFFF";
-const ACTIVE_WORD_COLOR = "#111111";
-const ACTIVE_WORD_BACKGROUND = "#FFE600";
+export type CaptionStyle = {
+  fontFamily: string;
+  highlightColor: string;
+  textColor: string;
+};
 
-const captionStyle: CSSProperties = {
+const DEFAULT_CAPTION_STYLE: CaptionStyle = {
+  fontFamily: "Montserrat",
+  highlightColor: "#FF2A85",
+  textColor: "#FFFFFF",
+};
+
+const captionContainerStyle: CSSProperties = {
   position: "absolute",
   left: "7%",
   right: "7%",
@@ -29,8 +37,8 @@ const captionStyle: CSSProperties = {
   justifyContent: "center",
   columnGap: "0.28em",
   rowGap: "0.08em",
-  color: CAPTION_COLOR,
-  fontFamily: "Montserrat, Arial, sans-serif",
+  color: DEFAULT_CAPTION_STYLE.textColor,
+  fontFamily: `${DEFAULT_CAPTION_STYLE.fontFamily}, Arial, sans-serif`,
   fontSize: 54,
   fontWeight: 800,
   textTransform: "uppercase",
@@ -46,17 +54,36 @@ export const WordSubtitles: FC<{
   words: TimedWord[];
   fps: number;
   showSubtitles?: boolean;
-}> = ({ words, fps, showSubtitles = true }) => {
+  captionStyle?: CaptionStyle;
+}> = ({
+  words,
+  fps,
+  showSubtitles = true,
+  captionStyle = DEFAULT_CAPTION_STYLE,
+}) => {
   const frame = useCurrentFrame();
   const groups = useMemo(() => groupTimedWords(words, 1, 2), [words]);
   const seconds = frame / fps;
   const group = activeCaptionGroup(groups, seconds);
   if (!showSubtitles || !group) return null;
 
+  const fontFamily = /^[A-Za-z0-9 ,'"-]{1,80}$/u.test(captionStyle.fontFamily)
+    ? captionStyle.fontFamily
+    : DEFAULT_CAPTION_STYLE.fontFamily;
+  const highlightColor = /^#[\da-f]{6}$/iu.test(captionStyle.highlightColor)
+    ? captionStyle.highlightColor
+    : DEFAULT_CAPTION_STYLE.highlightColor;
+  const textColor = /^#[\da-f]{6}$/iu.test(captionStyle.textColor)
+    ? captionStyle.textColor
+    : DEFAULT_CAPTION_STYLE.textColor;
   const activeIndex = activeWordIndex(group, seconds);
   return (
     <AbsoluteFill style={{ pointerEvents: "none" }} aria-hidden="true">
-      <div style={captionStyle}>
+      <div style={{
+        ...captionContainerStyle,
+        color: textColor,
+        fontFamily: `${fontFamily}, Arial, sans-serif`,
+      }}>
         {group.words.map((word, index) => (
           (() => {
             const isActive = index === activeIndex;
@@ -78,9 +105,9 @@ export const WordSubtitles: FC<{
                 key={`${word.start.toFixed(4)}-${index}`}
                 style={{
                   display: "inline-block",
-                  color: isActive ? ACTIVE_WORD_COLOR : CAPTION_COLOR,
+                  color: textColor,
                   backgroundColor: isActive
-                    ? ACTIVE_WORD_BACKGROUND
+                    ? highlightColor
                     : "transparent",
                   border: isActive
                     ? "1px solid rgba(20,20,20,0.7)"

@@ -16,6 +16,7 @@ import {
   getSourceClipWindow,
 } from "../src/edit-timeline.mjs";
 import {
+  APPROVED_MASTER_COLOR_PROFILE,
   buildColorManagedProxyFilter,
   hasVisualContent,
   parseAllIntraFrameInfo,
@@ -202,17 +203,23 @@ test("direct HLG conversion creates a vertical HD proxy with requested sharpenin
   assert.equal(REMOTION_RENDER_PROFILE.outputCrf, 15);
 });
 
-test("the unapproved visual pass does not change the default full-render color profile", () => {
+test("the approved visual color profile is the default for complete master renders", () => {
   const filter = buildColorManagedProxyFilter({
     color_range: "tv",
     color_space: "bt2020nc",
     color_transfer: "arib-std-b67",
     color_primaries: "bt2020",
-  }, 30, { toneMap: "direct", width: 1080, height: 1920 });
+  }, 30, {
+    ...APPROVED_MASTER_COLOR_PROFILE,
+    width: 1080,
+    height: 1920,
+  });
 
-  assert.match(filter, /unsharp=5:5:0\.9:5:5:0\.0/u);
-  assert.match(filter, /eq=contrast=1\.08:brightness=0\.03:gamma=1\.12:saturation=0\.96/u);
-  assert.doesNotMatch(filter, /out_color_matrix=bt709/u);
+  assert.match(filter, /unsharp=5:5:0\.8:5:5:0\.0/u);
+  assert.match(filter, /eq=contrast=1\.05:brightness=0\.03:gamma=1\.12:saturation=1\.08/u);
+  assert.match(filter, /colorchannelmixer=rr=0\.92:gg=0\.95:bb=1\.08/u);
+  assert.match(filter, /out_color_matrix=bt709/u);
+  assert.equal(APPROVED_MASTER_COLOR_PROFILE.visualPass, true);
 });
 
 test("unsupported or incomplete source color metadata fails explicitly", () => {

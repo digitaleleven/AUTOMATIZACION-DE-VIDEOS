@@ -11,6 +11,7 @@ import {
 } from "remotion";
 import type { CSSProperties, FC } from "react";
 import { WordSubtitles } from "./WordSubtitles";
+import type { CaptionStyle } from "./WordSubtitles";
 import type { TimedWord } from "./caption-timing.mjs";
 import type { TimedVectorEffect } from "./full-edit-timeline.mjs";
 import {
@@ -26,10 +27,11 @@ type FullEditProps = {
   wordTimings: TimedWord[];
   showSubtitles: boolean;
   soundEffects: SoundEffectCue[];
+  captionStyle: CaptionStyle;
 };
 
 export type SoundEffectCue = {
-  kind: "swoosh" | "pop" | "ding";
+  kind: "swoosh" | "pop" | "ding" | "impact";
   startFrame: number;
   durationFrames: number;
 };
@@ -38,6 +40,7 @@ const SOUND_EFFECT_FILES: Record<SoundEffectCue["kind"], string> = {
   swoosh: "swoosh.wav",
   pop: "pop.wav",
   ding: "ding.wav",
+  impact: "impact.wav",
 };
 
 const SoundEffect: FC<{ cue: SoundEffectCue }> = ({ cue }) => (
@@ -118,6 +121,7 @@ const FullEdit: FC<FullEditProps> = ({
   wordTimings,
   showSubtitles,
   soundEffects,
+  captionStyle,
 }) => (
   <AbsoluteFill style={{ backgroundColor: "transparent" }}>
     {effects.map((effect) => (
@@ -134,6 +138,7 @@ const FullEdit: FC<FullEditProps> = ({
       words={wordTimings}
       fps={FULL_FPS}
       showSubtitles={showSubtitles}
+      captionStyle={captionStyle}
     />
     {soundEffects.map((cue, index) => (
       <SoundEffect key={`${cue.kind}-${cue.startFrame}-${index}`} cue={cue} />
@@ -155,6 +160,11 @@ export const FullRemotionRoot: FC = () => (
       wordTimings: [],
       showSubtitles: true,
       soundEffects: [],
+      captionStyle: {
+        fontFamily: "Montserrat",
+        highlightColor: "#FF2A85",
+        textColor: "#FFFFFF",
+      },
     }}
   />
 );

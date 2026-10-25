@@ -16,10 +16,10 @@ class StyleConfigError(ValueError):
 
 @dataclass(frozen=True)
 class VideoStyle:
-    font_family: str = "Roboto"
+    font_family: str = "Montserrat"
     font_size: int = 64
     font_color: str = "#FFFFFF"
-    highlight_color: str = "#FFD84D"
+    highlight_color: str = "#FF2A85"
     stroke_color: str = "#000000"
     stroke_width: int = 4
     animation_style: str = "highlight"

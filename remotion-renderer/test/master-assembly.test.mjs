@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  buildNaturalReframeFrames,
   buildJumpFrames,
   buildMasterFilterComplex,
   buildSoundEffectCues,
@@ -23,25 +24,40 @@ const words = [
 const effects = [{ id: "drop", startFrame: 40, durationFrames: 54 }];
 const effectCues = [{ trigger_word: "tonico" }];
 
-test("one-frame emphasis uses only cut boundaries and timed hook words", () => {
-  assert.deepEqual(buildJumpFrames(clips, words, effectCues), [36, 90]);
+test("reframe events follow natural speech pauses and cuts, not each word", () => {
+  assert.deepEqual(buildNaturalReframeFrames(words), [3, 36]);
+  assert.deepEqual(buildJumpFrames(clips, words, effectCues), [3, 36, 90]);
 });
 
-test("sound design maps swoosh, sticker pop, and hook ding to the edited timeline", () => {
+test("sound design maps a low impact hook, subtle word pops, graphics, and transitions", () => {
   assert.deepEqual(
     buildSoundEffectCues(clips, effects, words, effectCues),
     [
-      { kind: "pop", startFrame: 40, durationFrames: 8 },
+      { kind: "impact", startFrame: 3, durationFrames: 18 },
+      { kind: "swoosh", startFrame: 3, durationFrames: 12 },
+      { kind: "pop", startFrame: 36, durationFrames: 8 },
       { kind: "ding", startFrame: 36, durationFrames: 10 },
+      { kind: "pop", startFrame: 40, durationFrames: 8 },
       { kind: "swoosh", startFrame: 90, durationFrames: 12 },
     ].sort((left, right) => left.startFrame - right.startFrame || left.kind.localeCompare(right.kind)),
   );
 });
 
-test("zoom is a single frame at 1.06x, not progressive camera movement", () => {
-  assert.equal(buildZoompanFilter([5, 10]), "zoompan=z='if(eq(on\\,5)+eq(on\\,10)\\,1.06\\,1)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=1080x1920:fps=30");
-  assert.equal(buildZoompanFilter([]), "null");
+test("camera motion eases out an 8% hook and eases between phrases to 1.06x", () => {
+  const filter = buildZoompanFilter([5, 10, 120]);
+  assert.match(filter, /1\.0800/u);
+  assert.match(filter, /0\.0800\*\(on-90\)\/12/u);
+  assert.match(filter, /1\.0600-/u);
+  assert.match(filter, /between\(on\\,120\\,132\)/u);
+  assert.doesNotMatch(filter, /between\(on\\,5\\,/u);
   assert.throws(() => buildZoompanFilter([-1]), /enteros no negativos/u);
+});
+
+test("caption-linked sound effects stay off when showSubtitles is disabled", () => {
+  assert.deepEqual(
+    buildSoundEffectCues(clips, [], words, [], 30, { includeCaptionEffects: false }),
+    [{ kind: "swoosh", startFrame: 90, durationFrames: 12 }],
+  );
 });
 
 test("transparent Remotion overlay uses PNG frames with ProRes 4444 alpha and no retries", () => {

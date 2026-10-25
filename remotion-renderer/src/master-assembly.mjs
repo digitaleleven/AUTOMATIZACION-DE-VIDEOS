@@ -7,11 +7,34 @@ const normalizeWord = (value) =>
 
 const secondsAtFrame = (frame, fps) => (frame / fps).toFixed(9);
 
+export function buildNaturalReframeFrames(wordTimings, fps = 30, pauseSeconds = 0.65) {
+  if (!Array.isArray(wordTimings) || !Number.isInteger(fps) || fps <= 0) {
+    throw new Error("Las marcas de palabra para el reencuadre no son válidas.");
+  }
+  const frames = [];
+  let previous = null;
+  for (const word of wordTimings) {
+    const start = Number(word?.start);
+    const end = Number(word?.end);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start) continue;
+    const startsPhrase =
+      !previous ||
+      start - previous.end >= pauseSeconds ||
+      /[.!?;:]$/u.test(String(previous.text ?? "").trim());
+    if (startsPhrase) frames.push(Math.round(start * fps));
+    previous = { start, end, text: word.text };
+  }
+  return [...new Set(frames)].sort((left, right) => left - right);
+}
+
 export function buildJumpFrames(clips, wordTimings, effectCues, fps = 30) {
   if (!Array.isArray(clips) || !Array.isArray(wordTimings) || !Array.isArray(effectCues)) {
     throw new Error("Los datos para los cortes de énfasis no son válidos.");
   }
-  const frames = clips.slice(1).map((clip) => Number(clip.outputStart));
+  const frames = [
+    ...clips.slice(1).map((clip) => Number(clip.outputStart)),
+    ...buildNaturalReframeFrames(wordTimings, fps),
+  ];
   for (const cue of effectCues) {
     const trigger = normalizeWord(cue.trigger_word);
     if (!trigger) continue;
@@ -23,7 +46,14 @@ export function buildJumpFrames(clips, wordTimings, effectCues, fps = 30) {
     .sort((left, right) => left - right);
 }
 
-export function buildSoundEffectCues(clips, effects, wordTimings, effectCues, fps = 30) {
+export function buildSoundEffectCues(
+  clips,
+  effects,
+  wordTimings,
+  effectCues,
+  fps = 30,
+  { includeCaptionEffects = true } = {},
+) {
   const cues = [];
   const add = (kind, startFrame, durationFrames) => {
     if (!Number.isInteger(startFrame) || startFrame < 0) return;
@@ -32,6 +62,18 @@ export function buildSoundEffectCues(clips, effects, wordTimings, effectCues, fp
 
   for (const clip of clips.slice(1)) add("swoosh", clip.outputStart, 12);
   for (const effect of effects) add("pop", effect.startFrame, 8);
+  if (includeCaptionEffects) {
+    const firstWord = wordTimings.find(
+      (word) => Number.isFinite(Number(word.start)) && Number(word.start) >= 0,
+    );
+    if (firstWord && firstWord.start <= 3) {
+      const hookFrame = Math.round(firstWord.start * fps);
+      add("impact", hookFrame, 18);
+      add("swoosh", hookFrame, 12);
+    }
+    const phraseFrames = buildNaturalReframeFrames(wordTimings, fps);
+    for (const frame of phraseFrames.slice(1)) add("pop", frame, 8);
+  }
   for (const cue of effectCues) {
     const trigger = normalizeWord(cue.trigger_word);
     const word = wordTimings.find((item) => normalizeWord(item.text) === trigger);
@@ -45,18 +87,51 @@ export function buildSoundEffectCues(clips, effects, wordTimings, effectCues, fp
   );
 }
 
-export function buildZoompanFilter(jumpFrames, { width = 1080, height = 1920, fps = 30 } = {}) {
+export function buildZoompanFilter(
+  jumpFrames,
+  {
+    width = 1080,
+    height = 1920,
+    fps = 30,
+    hookDurationFrames = fps * 3,
+    easingFrames = 12,
+    hookScale = 1.08,
+    reframeScale = 1.06,
+  } = {},
+) {
   if (!Array.isArray(jumpFrames) || !jumpFrames.every((frame) => Number.isInteger(frame) && frame >= 0)) {
     throw new Error("Los fotogramas de énfasis deben ser enteros no negativos.");
   }
-  if (!Number.isInteger(width) || width <= 0 || !Number.isInteger(height) || height <= 0 || !Number.isInteger(fps) || fps <= 0) {
+  if (
+    !Number.isInteger(width) || width <= 0 ||
+    !Number.isInteger(height) || height <= 0 ||
+    !Number.isInteger(fps) || fps <= 0 ||
+    !Number.isInteger(hookDurationFrames) || hookDurationFrames < 0 ||
+    !Number.isInteger(easingFrames) || easingFrames <= 0 ||
+    !Number.isFinite(hookScale) || hookScale < 1 || hookScale > 1.12 ||
+    !Number.isFinite(reframeScale) || reframeScale < 1 || reframeScale > 1.08
+  ) {
     throw new Error("La resolución y tasa de fotogramas deben ser enteras y positivas.");
   }
-  if (jumpFrames.length === 0) return "null";
-  const condition = [...new Set(jumpFrames)]
-    .map((frame) => `eq(on\\,${frame})`)
-    .join("+");
-  return `zoompan=z='if(${condition}\\,1.06\\,1)':` +
+  const reframePulses = [...new Set(jumpFrames)]
+    .filter((frame) => frame > hookDurationFrames + easingFrames)
+    .map((frame) => {
+      const riseEnd = frame + easingFrames;
+      const fallEnd = riseEnd + easingFrames;
+      return `if(between(on\\,${frame}\\,${riseEnd})\\,1+${(reframeScale - 1).toFixed(4)}*(on-${frame})/${easingFrames}` +
+        `\\,if(between(on\\,${riseEnd}\\,${fallEnd})\\,${reframeScale.toFixed(4)}-${(reframeScale - 1).toFixed(4)}*(on-${riseEnd})/${easingFrames}\\,1))`;
+    });
+  const reframeExpression = reframePulses.reduce(
+    (expression, pulse) => `max(${expression}\\,${pulse})`,
+    "1",
+  );
+  const hookFadeEnd = hookDurationFrames + easingFrames;
+  const zoomExpression = hookDurationFrames > 0
+    ? `if(between(on\\,0\\,${hookDurationFrames - 1})\\,${hookScale.toFixed(4)}` +
+      `\\,if(between(on\\,${hookDurationFrames}\\,${hookFadeEnd})\\,${hookScale.toFixed(4)}-` +
+      `${(hookScale - 1).toFixed(4)}*(on-${hookDurationFrames})/${easingFrames}\\,${reframeExpression}))`
+    : reframeExpression;
+  return `zoompan=z='${zoomExpression}':` +
     `x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=${width}x${height}:fps=${fps}`;
 }
 

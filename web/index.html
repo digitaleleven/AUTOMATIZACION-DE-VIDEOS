@@ -22,8 +22,6 @@
           <button class="rail-link active" type="button" data-scroll="inicio"><span class="nav-symbol">⌂</span>Inicio</button>
           <button class="rail-link" type="button" data-scroll="biblioteca"><span class="nav-symbol">▤</span>Biblioteca</button>
           <button class="rail-link" type="button" data-scroll="estudio"><span class="nav-symbol">▣</span>Estudio de edición</button>
-          <button class="rail-link" type="button" data-scroll="muestra-q03c"><span class="nav-symbol">▶</span>Muestra Q-03C</button>
-          <button class="rail-link" type="button" data-scroll="muestra-q03e"><span class="nav-symbol">▶</span>Prueba Q-03E</button>
           <button class="rail-link" type="button" data-scroll="resultado-fase1"><span class="nav-symbol">▶</span>Resultado Fase 1</button>
           <button class="rail-link" type="button" data-scroll="resultado-mm003"><span class="nav-symbol">▶</span>Edición dinámica MM-003</button>
           <button class="rail-link" type="button" data-scroll="resultado-mm004"><span class="nav-symbol">▶</span>Edición dinámica MM-004</button>
@@ -57,6 +55,22 @@
               <p class="intro-copy">De vídeo original a contenido listo para publicar. Prepara tus vídeos verticales, revisa cada resultado y autoriza el procesamiento cuando quieras.</p>
             </div>
             <div class="hero-action">
+              <div class="upload-preferences" aria-label="Preferencias de este vídeo">
+                <label for="upload-niche">Nicho / categoría
+                  <select id="upload-niche" name="niche">
+                    <option value="beauty_skincare">Beauty &amp; Skincare</option>
+                    <option value="fashion">Moda &amp; Fashion</option>
+                    <option value="lifestyle_travel">Lifestyle &amp; Travel</option>
+                    <option value="fitness_sport">Fitness &amp; Sport</option>
+                    <option value="ugc_ecommerce">UGC E-commerce</option>
+                    <option value="generic_viral" selected>Genérico / Viral</option>
+                  </select>
+                </label>
+                <label for="upload-style-notes">Notas o instrucciones de estilo especiales para este vídeo (Opcional)
+                  <textarea id="upload-style-notes" name="style_notes" rows="3" maxlength="500" placeholder="Añade contexto para la revisión de este vídeo"></textarea>
+                </label>
+                <small class="upload-preferences-note">El texto libre queda en el briefing. Para cambiar subtítulos, añade líneas como <code>fontFamily=Montserrat</code>, <code>highlightColor=#FF2A85</code> o <code>textColor=#FFFFFF</code>.</small>
+              </div>
               <button id="upload-trigger" class="hero-upload" type="button"><span class="upload-mark">＋</span><span>Añadir vídeo</span><b>→</b></button>
               <input id="video-input" type="file" accept="video/mp4,video/quicktime,.mp4,.mov" hidden>
               <p>MP4 o MOV <span>·</span> H.264 o HEVC</p>
@@ -179,88 +193,6 @@
                   <video id="output-video" controls playsinline preload="metadata" aria-label="Vídeo editado"></video>
                   <a id="output-link" class="download-link" href="#" download>Descargar resultado <span>↓</span></a>
                 </div>
-              </article>
-            </div>
-          </section>
-
-          <section class="section-block q03c-section" id="muestra-q03c" aria-labelledby="q03c-title">
-            <div class="section-head">
-              <div><p class="eyebrow">Q-03C / EVALUACIÓN LOCAL</p><h2 id="q03c-title">Muestra dinámica · 10,28 s</h2></div>
-              <span class="preview-status q03c-pending">COLOR PENDIENTE DE REVISIÓN</span>
-            </div>
-            <div class="q03c-layout">
-              <article class="preview-card q03c-video-card">
-                <div class="preview-head"><span>REPRODUCCIÓN LOCAL</span><span>H.264 · 1080 × 1920 · 30 FPS</span></div>
-                <video id="q03c-sample-video" class="q03c-video" controls playsinline preload="metadata" aria-describedby="q03c-video-note">
-                  <source src="/media/q03c-sample" type="video/mp4">
-                  Tu navegador no puede reproducir esta muestra MP4.
-                </video>
-                <p class="q03c-video-note" id="q03c-video-note">Audio AAC estéreo de la pista principal. Muestra local con subtítulos dinámicos y un zoom sutil; no es un render completo.</p>
-              </article>
-              <article class="preview-card q03c-review-card">
-                <div class="preview-head"><span>COMPARACIÓN VISUAL</span><span>24,12 s de la fuente</span></div>
-                <img class="q03c-comparison" src="/media/q03c-comparison" alt="Comparación del fotograma original convertido directamente desde HLG y el fotograma de la muestra Q-03C con tone mapping Hable">
-                <p class="q03c-comparison-note">Izquierda: conversión directa HLG a BT.709, sin tone mapping; es una referencia técnica, no una reproducción HDR calibrada. Derecha: fotograma real de la muestra.</p>
-                <p class="q03c-color-warning" role="note"><strong>Color no aprobado:</strong> Hable controla mejor las altas luces visibles, pero la muestra queda demasiado pálida/desaturada en este plano. Hace falta revisar la conversión de color antes de aplicar el estilo al vídeo completo.</p>
-              </article>
-            </div>
-          </section>
-
-          <section class="section-block q03d-section" id="muestra-q03d" aria-labelledby="q03d-title">
-            <div class="section-head">
-              <div><p class="eyebrow">Q-03D / DIAGNÓSTICO LOCAL</p><h2 id="q03d-title">Comparativas HDR → SDR</h2></div>
-              <span class="preview-status q03d-pending">REVISIÓN HUMANA PENDIENTE</span>
-            </div>
-            <p class="q03d-intro">
-              Fotogramas del mismo original HLG, convertidos a BT.709 con etiquetas de color explícitas. No son un render de vídeo ni una aprobación de color.
-              La capa Dolby Vision RPU no se pudo evaluar en este entorno porque FFmpeg no encontró un dispositivo Vulkan.
-            </p>
-            <div class="q03d-grid">
-              <figure class="preview-card q03d-figure">
-                <figcaption>Comparación del fotograma de 25 s: Q03B, MP4 real Q03C y candidatos Q03D</figcaption>
-                <img class="q03d-image" src="/media/q03d/summary" loading="lazy" alt="Comparación a 25 segundos de Q03B, el fotograma real Q03C, Hable sin desaturación, Hable con desaturación baja y Mobius sin desaturación">
-              </figure>
-              <figure class="preview-card q03d-figure">
-                <figcaption>Variantes de tone mapping a los 8 s</figcaption>
-                <img class="q03d-image" src="/media/q03d/candidates-8s" loading="lazy" alt="Fotograma de 8 segundos comparando Hable con desat 0, 0.01, 0.05 y 0.2, y Mobius con desat 0">
-              </figure>
-              <figure class="preview-card q03d-figure">
-                <figcaption>Variantes de tone mapping a los 25 s</figcaption>
-                <img class="q03d-image" src="/media/q03d/candidates-25s" loading="lazy" alt="Fotograma de 25 segundos comparando Hable con desat 0, 0.01, 0.05 y 0.2, y Mobius con desat 0">
-              </figure>
-              <figure class="preview-card q03d-figure">
-                <figcaption>Variantes de tone mapping a los 49 s</figcaption>
-                <img class="q03d-image" src="/media/q03d/candidates-49s" loading="lazy" alt="Fotograma de 49 segundos comparando Hable con desat 0, 0.01, 0.05 y 0.2, y Mobius con desat 0">
-              </figure>
-            </div>
-            <p class="q03d-warning" role="note">
-              <strong>No integrar todavía:</strong> Hable con <code>desat=0</code> es el candidato que mejor conserva piel y altas luces en estas tres muestras, pero necesita aprobación visual humana. Las comparativas usan la capa base HLG; no reproducen el RPU Dolby Vision completo.
-            </p>
-          </section>
-
-          <section class="section-block q03e-section" id="muestra-q03e" aria-labelledby="q03e-title">
-            <div class="section-head">
-              <div><p class="eyebrow">Q-03E / MUESTRA LOCAL</p><h2 id="q03e-title">Validación HDR → SDR · 10 s</h2></div>
-              <span class="preview-status q03e-pending">PENDIENTE DE APROBACIÓN VISUAL</span>
-            </div>
-            <p class="q03e-intro">
-              Tramo 23,42–33,42 s de IMG_1254.MOV. Hable con <code>desat=0</code>, entrada HLG BT.2020 y rango limitado explícitos, intermedio RGB lineal completo, salida BT.709 limitada y un único escalado Lanczos.
-              Muestra de revisión solamente: no cambia el motor ni aprueba la conversión para el pipeline.
-            </p>
-            <div class="q03c-layout q03e-layout">
-              <article class="preview-card q03c-video-card">
-                <div class="preview-head"><span>REPRODUCCIÓN LOCAL</span><span>H.264 · 1080 × 1920 · 30 FPS</span></div>
-                <video id="q03e-sample-video" class="q03c-video" controls playsinline preload="metadata" aria-describedby="q03e-video-note">
-                  <source src="/media/q03e-sample" type="video/mp4">
-                  Tu navegador no puede reproducir esta muestra MP4.
-                </video>
-                <p class="q03c-video-note" id="q03e-video-note">10,00 s · CRF 17 · preset medium · AAC estéreo 48 kHz. Sin subtítulos, zoom ni otros efectos; el audio se recortó al mismo intervalo.</p>
-              </article>
-              <article class="preview-card q03e-review-card">
-                <div class="preview-head"><span>COMPARACIÓN DEL MISMO INSTANTE</span><span>25,00 s de la fuente</span></div>
-                <img class="q03c-comparison" src="/media/q03e-comparison" loading="lazy" alt="Comparación del fotograma de 25 segundos de Q03B, el MP4 Q03C, el fotograma Q03D y el vídeo Q03E">
-                <p class="q03c-comparison-note">Q03B con desat=0.2, fotograma real de Q03C, still Q03D con desat=0 y fotograma del MP4 Q03E. Las tres primeras columnas son referencias existentes; Q03E es el nuevo vídeo local.</p>
-                <p class="q03c-color-warning" role="note"><strong>Sin aprobar todavía:</strong> revise piel, producto y blancos en el vídeo completo de muestra. La fuente incluye Dolby Vision; este resultado convierte la capa base HLG y no aplica el RPU Dolby Vision.</p>
               </article>
             </div>
           </section>

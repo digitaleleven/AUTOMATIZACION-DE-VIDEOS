@@ -32,8 +32,18 @@ El perfil directo de color es una prueba técnica; BT.709 en metadatos no signif
 que el color esté aprobado visualmente.
 
 El panel autenticado conserva `show_subtitles` en la configuración de estilo. La
-casilla nueva afecta las próximas ejecuciones locales, no modifica MP4 existentes.
-El render puede invocar `--show-subtitles false` para una ejecución puntual:
+casilla afecta las próximas ejecuciones locales, no modifica MP4 existentes.
+`font_family`, `font_color` y `highlight_color` alimentan los subtítulos de Remotion.
+El valor por defecto es Montserrat 800, texto blanco y resaltado rosa `#FF2A85`.
+Se puede sobrescribir en una ejecución con directivas por línea en `--briefing`:
+
+```sh
+pnpm run render:full -- --briefing $'fontFamily=Montserrat\nhighlightColor=#FF2A85\ntextColor=#FFFFFF'
+```
+
+La nota libre se conserva en el registro de la propuesta; solo esas directivas
+explícitas cambian fuente o color. El render puede invocar `--show-subtitles false`
+para una ejecución puntual:
 
 ```sh
 pnpm run render:full -- --show-subtitles false
@@ -108,11 +118,12 @@ cubren los segmentos; se extrae únicamente el audio AAC principal a PCM tempora
 El MOV original no se altera.
 
 La composición recibe marcas temporales de palabra existentes en el JSON de
-Whisper, agrupa de 1 a 3 palabras y resalta solo la palabra activa con texto negro
-sobre fondo `#FFE600`. Usa Montserrat 800. Los SVG conservan su entrada/salida
-suave y el audio añade swoosh en los cortes, pop en los stickers y ding en las
-palabras gancho. El zoom es un único fotograma de 1.06× en inicios de segmento y
-palabras gancho temporizadas; no hay zoom progresivo ni por frase. El reproductor
+Whisper, agrupa de 1 a 2 palabras y resalta solo la palabra activa con texto
+configurable sobre fondo rosa `#FF2A85`. Usa Montserrat 800 por defecto. Los SVG
+conservan su entrada/salida suave; el audio añade impacto grave y whoosh al gancho,
+pop en pausas o stickers, swoosh en cortes y ding en palabras gancho. La imagen
+abre a 1.08× durante tres segundos y luego usa reencuadres suaves de hasta 1.06×
+en frases y pausas naturales. El reproductor
 del panel apunta al MP4 final local y sigue protegido por la autenticación actual.
 
 Para verificar los algoritmos y tipos sin renderizar:

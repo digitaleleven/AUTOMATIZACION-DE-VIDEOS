@@ -80,7 +80,48 @@ OUTPUT_PROFILES = {
     "720p": (720, 1280),
     "1080p": (1080, 1920),
 }
+VIDEO_NICHE_LABELS = {
+    "beauty_skincare": "Beauty & Skincare",
+    "fashion": "Moda & Fashion",
+    "lifestyle_travel": "Lifestyle & Travel",
+    "fitness_sport": "Fitness & Sport",
+    "ugc_ecommerce": "UGC E-commerce",
+    "generic_viral": "Genérico / Viral",
+}
+DEFAULT_VIDEO_NICHE = "generic_viral"
+MAX_STYLE_NOTES_CHARS = 500
+CAPTION_BRIEF_DIRECTIVES = {
+    "fontfamily": "font_family",
+    "highlightcolor": "highlight_color",
+    "textcolor": "font_color",
+}
 TERMINAL_STATUSES = {"completed", "failed"}
+
+
+def _parse_caption_style_overrides(style_notes: str) -> dict[str, str]:
+    """Read only explicit, allowlisted caption directives from a per-video brief."""
+    overrides: dict[str, str] = {}
+    for line in style_notes.splitlines():
+        match = re.fullmatch(
+            r"\s*(fontFamily|highlightColor|textColor)\s*[:=]\s*(.*?)\s*",
+            line,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            continue
+        key = CAPTION_BRIEF_DIRECTIVES[match.group(1).lower()]
+        value = match.group(2).strip()
+        if key == "font_family":
+            if not value or len(value) > 80 or not re.fullmatch(r"[A-Za-z0-9 ,'-]+", value):
+                raise PanelError(
+                    "fontFamily en las notas debe ser un nombre de fuente sencillo (máximo 80 caracteres)."
+                )
+            overrides[key] = value
+            continue
+        if not re.fullmatch(r"#[0-9a-fA-F]{6}", value):
+            raise PanelError(f"{match.group(1)} en las notas debe ser un color hexadecimal #RRGGBB.")
+        overrides[key] = value.upper()
+    return overrides
 GOOGLE_OAUTH_STATE_COOKIE = "matrix_motion_google_oauth_state"
 RENDER001_THIRD_RETRY_TARGET = {
     "job_id": "8ec0c6cb1ff84b6f94d8dd0c64a56747",
@@ -1095,9 +1136,29 @@ class VideoPanel:
         except (ValueError, TypeError, OSError) as exc:
             raise PanelError(str(exc), 400) from exc
 
-    def upload(self, filename: str, content_length: int, stream) -> dict[str, Any]:
+    def upload(
+        self,
+        filename: str,
+        content_length: int,
+        stream,
+        *,
+        niche: str = DEFAULT_VIDEO_NICHE,
+        style_notes: str = "",
+    ) -> dict[str, Any]:
         if content_length <= 0:
             raise PanelError("El archivo está vacío.")
+        if niche not in VIDEO_NICHE_LABELS:
+            raise PanelError("La categoría del vídeo no es válida.")
+        if not isinstance(style_notes, str):
+            raise PanelError("Las notas de estilo deben ser texto.")
+        style_notes = style_notes.strip()
+        if len(style_notes) > MAX_STYLE_NOTES_CHARS:
+            raise PanelError(
+                f"Las notas de estilo no pueden superar {MAX_STYLE_NOTES_CHARS} caracteres."
+            )
+        if any(ord(char) < 32 and char not in "\n\t" for char in style_notes):
+            raise PanelError("Las notas de estilo contienen caracteres de control no permitidos.")
+        caption_style_overrides = _parse_caption_style_overrides(style_notes)
         style = load_video_style(self.style_path)
         original_name = filename.replace("\\", "/").rsplit("/", 1)[-1]
         original_name = "".join(char for char in original_name if char.isprintable()).strip()[:180]
@@ -1137,6 +1198,12 @@ class VideoPanel:
             os.replace(temp_path, final_path)
             self._create_thumbnail(final_path, file_id)
             public_metadata = _metadata_dict(metadata)
+            public_metadata.update({
+                "niche": niche,
+                "niche_label": VIDEO_NICHE_LABELS[niche],
+                "style_notes": style_notes,
+                "caption_style_overrides": caption_style_overrides,
+            })
             self.store.add_upload(
                 file_id,
                 filename_on_disk,
@@ -1249,6 +1316,16 @@ class VideoPanel:
             "audio_codec": metadata["audio_codec"],
             "rotation": metadata["rotation"],
             "fps": metadata["fps"],
+            "niche": metadata.get("niche", DEFAULT_VIDEO_NICHE),
+            "niche_label": metadata.get(
+                "niche_label",
+                VIDEO_NICHE_LABELS.get(
+                    metadata.get("niche", DEFAULT_VIDEO_NICHE),
+                    VIDEO_NICHE_LABELS[DEFAULT_VIDEO_NICHE],
+                ),
+            ),
+            "style_notes": metadata.get("style_notes", ""),
+            "caption_style_overrides": metadata.get("caption_style_overrides", {}),
             "status": status,
             "output_id": output_id,
             "error": error,
@@ -1361,6 +1438,18 @@ class VideoPanel:
         upload = self.store.get_upload(source_id)
         if not upload:
             raise PanelError("No se encontró el vídeo seleccionado.", 404)
+        try:
+            upload_metadata = json.loads(upload["metadata_json"])
+        except (TypeError, json.JSONDecodeError):
+            upload_metadata = {}
+        niche = upload_metadata.get("niche", DEFAULT_VIDEO_NICHE)
+        niche_label = upload_metadata.get(
+            "niche_label", VIDEO_NICHE_LABELS.get(niche, VIDEO_NICHE_LABELS[DEFAULT_VIDEO_NICHE])
+        )
+        style_notes = upload_metadata.get("style_notes", "")
+        caption_style_overrides = upload_metadata.get("caption_style_overrides")
+        if not isinstance(caption_style_overrides, dict):
+            caption_style_overrides = _parse_caption_style_overrides(style_notes)
 
         subtitle_mode = str(payload.get("subtitle_mode") or "none")
         if subtitle_mode not in {"dynamic", "simple", "none"}:
@@ -1390,6 +1479,7 @@ class VideoPanel:
 
         style = replace(
             self._style_for_upload(source_id),
+            **caption_style_overrides,
             output_width=output_width,
             output_height=output_height,
             output_fps=output_fps,
@@ -1475,6 +1565,8 @@ class VideoPanel:
         now = time.time()
         options = {
             "subtitle_mode": subtitle_mode,
+            "style_notes": style_notes,
+            "caption_style_overrides": caption_style_overrides,
             "output_profile": output_profile,
             "output_quality": output_quality,
             "output_fps": output_fps,
@@ -1523,6 +1615,15 @@ class VideoPanel:
             },
             "edit": {
                 "subtitle_mode": subtitle_mode,
+                "niche": niche,
+                "niche_label": niche_label,
+                "style_notes": style_notes,
+                "caption_style_overrides": caption_style_overrides,
+                "caption_style": {
+                    "fontFamily": style.font_family,
+                    "highlightColor": style.highlight_color,
+                    "textColor": style.font_color,
+                },
                 "output_width": style.output_width,
                 "output_height": style.output_height,
                 "output_fps": output_fps,
@@ -2676,7 +2777,20 @@ required minlength="16" {disabled}>
                 if not name:
                     raise PanelError("Falta el nombre del archivo.")
                 length = int(self.headers.get("Content-Length", "0"))
-                item = self.server.panel.upload(name, length, self.rfile)
+                try:
+                    style_notes = unquote(
+                        self.headers.get("X-Style-Notes", ""),
+                        errors="strict",
+                    )
+                except UnicodeDecodeError:
+                    raise PanelError("Las notas de estilo no contienen texto UTF-8 válido.") from None
+                item = self.server.panel.upload(
+                    name,
+                    length,
+                    self.rfile,
+                    niche=self.headers.get("X-Video-Niche", DEFAULT_VIDEO_NICHE),
+                    style_notes=style_notes,
+                )
                 self._json({"item": item}, 201)
             elif self.command == "POST" and path == "/api/proposals":
                 self._json(self.server.panel.prepare_proposal(self._read_json()), 200)

@@ -15,7 +15,7 @@ const cuts = [
   { start_seconds: 36.54, end_seconds: 37.07 },
 ];
 
-test("master graphics composition uses vertical HD and disables progressive camera zoom", () => {
+test("legacy full-edit timeline keeps its separate camera helper neutral", () => {
   assert.equal(FULL_WIDTH, 1080);
   assert.equal(FULL_HEIGHT, 1920);
   for (const frame of [0, 1, 30, 908, 1496, 1746]) {

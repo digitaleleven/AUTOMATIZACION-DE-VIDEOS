@@ -14,6 +14,11 @@ export const REMOTION_RENDER_PROFILE = Object.freeze({
   offthreadVideoCacheSizeInBytes: 32 * 1024 * 1024,
 });
 
+export const APPROVED_MASTER_COLOR_PROFILE = Object.freeze({
+  toneMap: "direct",
+  visualPass: true,
+});
+
 export const hasVisualContent = (lumaSamples, threshold = 40) => {
   const values = lumaSamples.filter(
     (value) => Number.isFinite(value) && value >= 0 && value <= 255,

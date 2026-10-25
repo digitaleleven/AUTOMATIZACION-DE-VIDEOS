@@ -1084,3 +1084,50 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .creative-editor { padding: 12px; }
   .timeline-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+.hero-action {
+  width: min(100%, 360px);
+  flex: 0 0 360px;
+}
+.upload-preferences {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 13px;
+  text-align: left;
+}
+.upload-preferences label {
+  display: grid;
+  gap: 6px;
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.45;
+}
+.upload-preferences select,
+.upload-preferences textarea {
+  width: 100%;
+  min-height: 42px;
+  padding: 10px 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+}
+.upload-preferences textarea {
+  min-height: 78px;
+  resize: vertical;
+  line-height: 1.45;
+}
+.upload-preferences-note {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+@media (max-width: 900px) {
+  .hero-action {
+    width: min(100%, 420px);
+    flex: 1 1 100%;
+  }
+}

@@ -177,7 +177,7 @@ class VideoPanelApiTests(unittest.TestCase):
         )
         return path
 
-    def upload(self, path):
+    def upload(self, path, *, niche="generic_viral", style_notes=""):
         data = path.read_bytes()
         status, _, body = self.request(
             "POST",
@@ -187,6 +187,8 @@ class VideoPanelApiTests(unittest.TestCase):
                 "Content-Type": "video/quicktime" if path.suffix.lower() == ".mov" else "video/mp4",
                 "Content-Length": str(len(data)),
                 "X-Upload-Filename": quote(path.name),
+                "X-Video-Niche": niche,
+                "X-Style-Notes": quote(style_notes, safe=""),
             },
         )
         return status, json.loads(body.decode("utf-8"))
@@ -263,15 +265,14 @@ class VideoPanelApiTests(unittest.TestCase):
         self.assertIn(b"summary-pending", body)
         self.assertIn(b'name="emoji_by_keyword"', body)
         self.assertIn(b'name="logo_position"', body)
-        self.assertIn(b'id="q03c-sample-video"', body)
-        self.assertIn(b'/media/q03c-sample', body)
-        self.assertIn(b'COLOR PENDIENTE DE REVISI\xc3\x93N', body)
-        self.assertIn(b'id="muestra-q03d"', body)
-        self.assertIn(b'/media/q03d/summary', body)
-        self.assertIn(b'REVISI\xc3\x93N HUMANA PENDIENTE', body)
-        self.assertIn(b'id="muestra-q03e"', body)
-        self.assertIn(b'id="q03e-sample-video"', body)
-        self.assertIn(b'/media/q03e-sample', body)
+        for old_sample_id in (b"q03c-sample-video", b"muestra-q03d", b"q03e-sample-video"):
+            self.assertNotIn(old_sample_id, body)
+        self.assertIn(b'id="upload-niche"', body)
+        self.assertIn(b'Beauty &amp; Skincare', body)
+        self.assertIn(b'Moda &amp; Fashion', body)
+        self.assertIn(b'id="upload-style-notes"', body)
+        self.assertIn(b'Notas o instrucciones de estilo especiales para este v\xc3\xaddeo (Opcional)', body)
+        self.assertIn(b'id="resultado-fase1"', body)
         self.assertIn(b'id="resultado-fase1"', body)
         self.assertIn(b'id="phase1-final-video"', body)
         self.assertIn(b'/media/outputs/IMG_1254-MATRIX-MOTION-FASE1.mp4', body)
@@ -912,7 +913,12 @@ class VideoPanelApiTests(unittest.TestCase):
 
     def test_uploads_mov_validates_metadata_and_supports_video_ranges(self):
         path = self.create_movie()
-        status, response = self.upload(path)
+        style_notes = "Luz natural y planos de producto; revisar cierre."
+        status, response = self.upload(
+            path,
+            niche="beauty_skincare",
+            style_notes=style_notes,
+        )
         self.assertEqual(status, 201)
         item = response["item"]
         self.assertEqual(item["format"], "MOV")
@@ -920,8 +926,13 @@ class VideoPanelApiTests(unittest.TestCase):
         self.assertEqual(item["status"], "ready")
         self.assertEqual(item["width"], 360)
         self.assertEqual(item["height"], 640)
+        self.assertEqual(item["niche"], "beauty_skincare")
+        self.assertEqual(item["niche_label"], "Beauty & Skincare")
+        self.assertEqual(item["style_notes"], style_notes)
         self.assertIsInstance(item["created_at"], (int, float))
         self.assertTrue(item["thumbnail_url"])
+        stored_upload = self.panel.store.get_upload(item["id"])
+        self.assertEqual(json.loads(stored_upload["metadata_json"])["style_notes"], style_notes)
 
         status, headers, payload = self.request("GET", item["thumbnail_url"])
         self.assertEqual(status, 200)
@@ -938,6 +949,20 @@ class VideoPanelApiTests(unittest.TestCase):
         status, _, body = self.request("GET", "/api/library")
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body.decode("utf-8"))["items"][0]["id"], item["id"])
+
+    def test_upload_rejects_unknown_niches_and_oversized_style_notes(self):
+        path = self.create_movie()
+        status, response = self.upload(path, niche="unknown")
+        self.assertEqual(status, 400)
+        self.assertIn("categoría", response["detail"])
+
+        status, response = self.upload(path, style_notes="x" * 501)
+        self.assertEqual(status, 400)
+        self.assertIn("500 caracteres", response["detail"])
+
+        status, response = self.upload(path, style_notes="highlightColor=rosa")
+        self.assertEqual(status, 400)
+        self.assertIn("color hexadecimal", response["detail"])
 
     def test_paid_processing_requires_both_explicit_authorizations(self):
         status, response = self.upload(self.create_movie(".mp4"))
@@ -1365,7 +1390,17 @@ class VideoPanelApiTests(unittest.TestCase):
         submit.assert_not_called()
 
     def test_local_edit_proposal_defaults_to_no_subtitles_without_provider_calls(self):
-        status, response = self.upload(self.create_movie(".mov"))
+        style_notes = (
+            "Resaltar el producto y conservar un tono limpio.\n"
+            "fontFamily=Montserrat\n"
+            "highlightColor=#FF2A85\n"
+            "textColor=#000000"
+        )
+        status, response = self.upload(
+            self.create_movie(".mov"),
+            niche="beauty_skincare",
+            style_notes=style_notes,
+        )
         self.assertEqual(status, 201)
         source_id = response["item"]["id"]
         with patch.object(self.panel, "health", side_effect=AssertionError("preflight must not inspect providers")):
@@ -1383,6 +1418,20 @@ class VideoPanelApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         proposal = json.loads(body.decode("utf-8"))
         self.assertEqual(proposal["edit"]["subtitle_mode"], "none")
+        self.assertEqual(proposal["edit"]["niche"], "beauty_skincare")
+        self.assertEqual(proposal["edit"]["style_notes"], style_notes)
+        self.assertEqual(proposal["edit"]["caption_style"], {
+            "fontFamily": "Montserrat",
+            "highlightColor": "#FF2A85",
+            "textColor": "#000000",
+        })
+        proposal_options = self.panel.pending_proposals[proposal["proposal_id"]]["options"]
+        self.assertEqual(proposal_options["style_notes"], style_notes)
+        self.assertEqual(proposal_options["caption_style_overrides"], {
+            "font_family": "Montserrat",
+            "highlight_color": "#FF2A85",
+            "font_color": "#000000",
+        })
         self.assertEqual(proposal["edit"]["output_fps"], 50)
         self.assertEqual((proposal["edit"]["output_width"], proposal["edit"]["output_height"]), (1080, 1920))
         self.assertEqual(proposal["edit"]["output_quality"], "high")
