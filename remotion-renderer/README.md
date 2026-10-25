@@ -16,16 +16,16 @@ compilación; se declaran los metadatos de entrada explícitamente.
 ffmpeg -y \
   -i "$PWD/generated-artifacts/drive-inspection/IMG_1254.MOV" \
   -map 0:v:0 -map 0:a:0 -t 12 \
-  -vf "fps=30,scale=1080:1920:force_original_aspect_ratio=decrease:flags=lanczos,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,unsharp=3:3:0.6:3:3:0.0,setsar=1,zscale=primariesin=bt2020:transferin=arib-std-b67:matrixin=bt2020nc:rangein=limited:primaries=bt709:transfer=bt709:matrix=bt709:range=limited:npl=1000:c=topleft,eq=contrast=1.0:brightness=0.03:gamma=1.12:saturation=0.85,colorchannelmixer=rr=0.92:gg=0.96:bb=1.08,format=yuv420p" \
+  -vf "fps=30,scale=1080:1920:force_original_aspect_ratio=decrease:flags=lanczos,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,unsharp=5:5:0.8:5:5:0.0,setsar=1,zscale=primariesin=bt2020:transferin=arib-std-b67:matrixin=bt2020nc:rangein=limited:primaries=bt709:transfer=bt709:matrix=bt709:range=limited:npl=1000:c=topleft,eq=contrast=1.05:brightness=0.04:gamma=1.15:saturation=0.92,colorchannelmixer=rr=0.90:gg=0.95:bb=1.10,format=yuv420p" \
   -c:v libx264 -preset ultrafast -crf 17 -g 1 -keyint_min 1 -sc_threshold 0 -pix_fmt yuv420p \
   -color_range tv -colorspace bt709 -color_primaries bt709 -color_trc bt709 \
   -c:a aac -b:a 192k -ac 2 -ar 48000 \
-  "$PWD/generated-artifacts/drive-inspection/q03c-control/proxy_30fps_allintra_1080_npl1000_eq_wb_unsharp.mp4"
+  "$PWD/generated-artifacts/drive-inspection/q03c-control/proxy_30fps_allintra_1080_npl1000_capcut-test.mp4"
 
 ffmpeg -y -ss 2.5 \
-  -i "$PWD/generated-artifacts/drive-inspection/q03c-control/proxy_30fps_allintra_1080_npl1000_eq_wb_unsharp.mp4" \
+  -i "$PWD/generated-artifacts/drive-inspection/q03c-control/proxy_30fps_allintra_1080_npl1000_capcut-test.mp4" \
   -frames:v 1 -update 1 \
-  "$PWD/generated-artifacts/drive-inspection/q03c-control/proxy_npl1000_eq_wb_unsharp_frame-2.5.png"
+  "$PWD/generated-artifacts/drive-inspection/q03c-control/proxy_npl1000_capcut-test_frame-2.5.png"
 ```
 
 La conversión directa evita `tonemap` y la etapa RGB lineal, pero conserva la

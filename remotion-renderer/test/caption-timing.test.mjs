@@ -186,10 +186,10 @@ test("direct HLG conversion bypasses tone mapping but converts to BT.709 before 
 
   const fps = filter.indexOf("fps=30");
   const scale = filter.indexOf("scale=1080:1920");
-  const unsharp = filter.indexOf("unsharp=3:3:0.6:3:3:0.0");
+  const unsharp = filter.indexOf("unsharp=5:5:0.8:5:5:0.0");
   const zscale = filter.indexOf("zscale=primariesin=bt2020");
-  const eq = filter.indexOf("eq=contrast=1.0:brightness=0.03:gamma=1.12:saturation=0.85");
-  const channelMix = filter.indexOf("colorchannelmixer=rr=0.92:gg=0.96:bb=1.08");
+  const eq = filter.indexOf("eq=contrast=1.05:brightness=0.04:gamma=1.15:saturation=0.92");
+  const channelMix = filter.indexOf("colorchannelmixer=rr=0.90:gg=0.95:bb=1.10");
   const format = filter.indexOf("format=yuv420p");
   assert.ok(fps >= 0 && fps < scale && scale < unsharp && unsharp < zscale && zscale < eq && eq < channelMix && channelMix < format);
   assert.match(filter, /primaries=bt709:transfer=bt709:matrix=bt709:range=limited:npl=1000/);
