@@ -4,6 +4,9 @@ __pycache__/
 /outputs/
 /data/
 /generated-artifacts/
+/MATRIX-MOTION-IMG_1254-FINAL-*.mp4
+/MATRIX-MOTION-IMG_1254-FINAL-*.report.json
+/MATRIX-MOTION-IMG_1254-FINAL-*.error.log
 /remotion-renderer/node_modules/
 /remotion-renderer/generated-artifacts/
 /remotion-renderer/.tmp/
