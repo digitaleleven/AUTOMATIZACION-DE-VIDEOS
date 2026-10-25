@@ -462,3 +462,31 @@ mtime_ms = 1792928249705
 storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/a2707601-7316-4ff6-9ba3-29e02c08025b/a74bb5b3-06e3-4a2f-af8b-b29ae282177b"
 storage_version_token = "1792928308060092"
 content_type = "image/png"
+
+[[outputs]]
+id = "4_w3nahkVvdevsKqqH2zi"
+uri = "file://generated-artifacts/drive-inspection/q03c-control/proxy_30fps_allintra_1080_npl1000_eq_wb.mp4"
+type = "video"
+title = "MATRIX MOTION — muestra de balance RGB"
+description = "Proxy de prueba HLG→BT.709, 12 s, 1080×1920 a 30 FPS, con canal rojo 0,97 y azul 1,03."
+logical_id = "1a91a40f-99b4-4cad-8fc0-ec539e7bcf3a"
+content_hash = "sha256:0b77fbf9002a388ed184ebdb43f98fc42d1561af7ae94b6d7dab86911a231eb4"
+size = 43718729
+mtime_ms = 1792928453586
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/1a91a40f-99b4-4cad-8fc0-ec539e7bcf3a/aff6c967-ca61-4335-8fab-e9bfc7e969a9"
+storage_version_token = "1792928526839103"
+content_type = "video/mp4"
+
+[[outputs]]
+id = "7Rtywv9zj9nGEJmVqyoB-"
+uri = "file://generated-artifacts/drive-inspection/q03c-control/proxy_npl1000_eq_wb_frame-2.5.png"
+type = "image"
+title = "MATRIX MOTION — captura de balance RGB a 2,5 s"
+description = "Fotograma para revisar el balance de blancos; YAVG central medido: 112,548."
+logical_id = "2dc24d22-2c98-49c8-9a4c-1607339350f0"
+content_hash = "sha256:949905f54bdd1256fdc6da2cd2bfd91f044288b81c6e302ce61c13fe0fc2ca91"
+size = 1374714
+mtime_ms = 1792928461030
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/2dc24d22-2c98-49c8-9a4c-1607339350f0/6aced8c4-8109-44fd-b21b-78f5302af117"
+storage_version_token = "1792928527629405"
+content_type = "image/png"
