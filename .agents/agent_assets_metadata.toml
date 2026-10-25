@@ -490,3 +490,31 @@ mtime_ms = 1792928461030
 storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/2dc24d22-2c98-49c8-9a4c-1607339350f0/6aced8c4-8109-44fd-b21b-78f5302af117"
 storage_version_token = "1792928527629405"
 content_type = "image/png"
+
+[[outputs]]
+id = "8rl2NG7x5ZzoXGNjeNWfV"
+uri = "file://generated-artifacts/drive-inspection/q03c-control/proxy_30fps_allintra_1080_npl1000_eq_wb_unsharp.mp4"
+type = "video"
+title = "MATRIX MOTION — muestra Lanczos + Unsharp + RGB"
+description = "Proxy local de 12 s para revisar temperatura y definición; H.264 1080×1920 a 30 FPS."
+logical_id = "29fb814f-2a34-434e-9f61-393a30697a63"
+content_hash = "sha256:5fbc142a7558ac688869f7f82e7f7f763daa1258e02f4cbd089a790a0a23f0d7"
+size = 43362023
+mtime_ms = 1792928676190
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/29fb814f-2a34-434e-9f61-393a30697a63/f496b9ad-fba1-4584-a89f-4402aefd8ee4"
+storage_version_token = "1792928727538664"
+content_type = "video/mp4"
+
+[[outputs]]
+id = "QZoho_kLKAvqC0z80RLFK"
+uri = "file://generated-artifacts/drive-inspection/q03c-control/proxy_npl1000_eq_wb_unsharp_frame-2.5.png"
+type = "image"
+title = "MATRIX MOTION — captura de temperatura y nitidez"
+description = "Fotograma a 2,5 s; YAVG central 109,05. Requiere revisión visual antes de cualquier uso en producción."
+logical_id = "e5b109c0-1406-4d45-9995-9594bcb9ee8d"
+content_hash = "sha256:841fd7fa89db9ae27d44627f1c859f7804fe01d77f11452b028ccd7649ed37d0"
+size = 1325906
+mtime_ms = 1792928683794
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/e5b109c0-1406-4d45-9995-9594bcb9ee8d/c1b6df5c-464a-4887-999a-d5395d6f8e34"
+storage_version_token = "1792928728317761"
+content_type = "image/png"
