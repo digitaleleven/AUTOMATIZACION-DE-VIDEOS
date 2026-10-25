@@ -71,16 +71,19 @@ export function buildTimedVectorEffects(cues, durationInFrames, fps = FULL_FPS) 
 
   return cues.map((cue, index) => {
     const startFrame = Math.round(Number(cue.start_seconds) * fps);
-    const durationFrames = Math.min(
-      VECTOR_DURATION_IN_FRAMES,
-      durationInFrames - startFrame,
-    );
+    const requestedDuration = Number(cue.duration_seconds ?? VECTOR_DURATION_IN_FRAMES / fps);
+    const requestedFrames = Math.round(requestedDuration * fps);
+    const durationFrames = Math.min(requestedFrames, durationInFrames - startFrame);
     const assets = Array.isArray(cue.assets)
       ? cue.assets.map((asset) => `${asset}.svg`)
       : [];
     if (
       !Number.isInteger(startFrame) ||
       startFrame < 0 ||
+      !Number.isFinite(requestedDuration) ||
+      requestedDuration < 1.5 ||
+      requestedDuration > 2.0 ||
+      !Number.isInteger(requestedFrames) ||
       durationFrames < Math.round(fps * 1.5) ||
       assets.length === 0 ||
       !assets.every((asset) => /^[a-z0-9-]+\.svg$/u.test(asset))

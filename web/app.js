@@ -125,7 +125,7 @@ async function uploadVideo(file, niche, styleNotes) {
   });
 }
 
-async function prepareEditProposal(sourceId, subtitleMode, outputFps, outputProfile, outputQuality, creativePlan) {
+async function prepareEditProposal(sourceId, subtitleMode, outputFps, outputProfile, outputQuality, creativePlan, renderBackend) {
   return requestJson(API.proposals, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -136,6 +136,7 @@ async function prepareEditProposal(sourceId, subtitleMode, outputFps, outputProf
       output_profile: outputProfile,
       output_quality: outputQuality,
       creative_plan: creativePlan,
+      render_backend: renderBackend,
     }),
   });
 }
@@ -263,14 +264,16 @@ function collectCreativePlan() {
   };
 }
 
-async function startProcessing(proposalId, authorizePaidApis, unknownCostAcknowledged) {
+async function startProcessing(proposal, authorizePaidApis, unknownCostAcknowledged) {
   return requestJson(API.jobs, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      proposal_id: proposalId,
+      proposal_id: proposal.proposal_id,
       authorize_paid_apis: authorizePaidApis,
       unknown_cost_acknowledged: unknownCostAcknowledged,
+      authorize_modal_compute: proposal.api_plan?.renderer_backend === "modal",
+      authorize_openai_transcription: proposal.api_plan?.openai_transcription === true,
     }),
   });
 }
@@ -502,7 +505,33 @@ function syncEditOptionsForSelectedItem(item) {
   const sourceFps = Math.round(Number(item.fps) || 30);
   byId("edit-output-fps").value = String(supportedFps.includes(sourceFps) ? sourceFps : 30);
   resetCreativePlanControls();
+  syncRenderBackendControls();
   clearEditProposal();
+}
+
+function syncRenderBackendControls() {
+  const modal = byId("edit-render-backend").value === "modal";
+  const fps = byId("edit-output-fps");
+  const profile = byId("edit-output-profile");
+  for (const option of fps.options) option.disabled = modal && option.value !== "30";
+  for (const option of profile.options) option.disabled = modal && option.value !== "1080p";
+  byId("edit-output-quality").disabled = modal;
+  const simpleSubtitles = byId("edit-subtitle-mode").querySelector('option[value="simple"]');
+  if (simpleSubtitles) simpleSubtitles.disabled = modal;
+  byId("add-zoom-button").disabled = modal;
+  for (const field of byId("edit-zooms-list").querySelectorAll("input, select")) {
+    field.disabled = modal;
+  }
+  if (modal) {
+    fps.value = "30";
+    profile.value = "1080p";
+    if (byId("edit-subtitle-mode").value === "simple") byId("edit-subtitle-mode").value = "dynamic";
+    byId("render-backend-note").textContent =
+      "Modal usa Remotion/FFmpeg, salida fija 1080 × 1920 a 30 FPS y coste cloud variable. Admite cortes, subtítulos dinámicos y stickers; los zooms manuales y el logo global no se aplican.";
+  } else {
+    byId("render-backend-note").textContent =
+      "Stage mantiene el flujo actual. Modal ejecuta el motor Remotion en cómputo cloud con coste variable no cotizado; su salida se devuelve al panel.";
+  }
 }
 
 function renderEditProposal(proposal) {
@@ -516,6 +545,7 @@ function renderEditProposal(proposal) {
   const edit = proposal.edit || {};
   const costs = proposal.costs || {};
   const apiPlan = proposal.api_plan || {};
+  const isModal = apiPlan.renderer_backend === "modal";
   const captionStyle = edit.caption_style || {};
   const creativePlan = edit.creative_plan || { cuts: [], zooms: [], stickers: [] };
   const duration = Number(source.duration_seconds);
@@ -534,6 +564,7 @@ function renderEditProposal(proposal) {
     : "ninguno";
   const lines = [
     `Vídeo: ${proposal.source_name || "No disponible"} · ${Number.isFinite(duration) ? `${duration.toFixed(2)} s` : "duración desconocida"}`,
+    `Motor: ${isModal ? "Remotion + FFmpeg en Modal" : "Shotstack Stage"}`,
     `Nicho: ${edit.niche_label || VIDEO_NICHE_LABELS[edit.niche] || VIDEO_NICHE_LABELS.generic_viral}`,
     `Subtítulos: fuente ${captionStyle.fontFamily || "Montserrat"} · resaltado ${captionStyle.highlightColor || "#FF2A85"} · texto ${captionStyle.textColor || "#FFFFFF"}`,
     `Briefing: ${edit.style_notes ? `${edit.style_notes} (las directivas explícitas de tipografía y color se aplican a esta propuesta)` : "ninguna"}`,
@@ -553,7 +584,9 @@ function renderEditProposal(proposal) {
     "El plan creativo de esta propuesta es manual; no se ha pedido a una IA que analice el contenido.",
     `Destino: ${proposal.destination || "no disponible"}`,
     `OpenAI estimado: ${formatCost(costs.openai_usd)}`,
-    `Shotstack Stage estimado: ${formatCost(costs.shotstack_usd)}`,
+    isModal
+      ? `Cómputo Modal: ${formatCost(costs.modal_compute_usd)} (no cotizado)`
+      : `Shotstack Stage estimado: ${formatCost(costs.shotstack_usd)}`,
     `Total estimado: ${formatCost(costs.total_estimate_usd)}`,
   ];
   const warnings = (proposal.warnings || []).filter(Boolean);
@@ -565,9 +598,16 @@ function renderEditProposal(proposal) {
   byId("unknown-cost-wrap").hidden = !unknownCost;
   byId("unknown-cost-consent").checked = false;
   byId("paid-consent").checked = false;
-  byId("paid-consent-copy").textContent = apiPlan.openai_transcription
-    ? "Autorizo enviar este vídeo a OpenAI para transcribirlo y a Shotstack Stage para un único render."
-    : "Autorizo enviar este vídeo a Shotstack Stage para un único render. No se usará OpenAI para transcribirlo.";
+  byId("paid-consent-copy").textContent = isModal
+    ? apiPlan.openai_transcription
+      ? "Autorizo enviar solo el audio a OpenAI para transcribirlo y el vídeo a Modal para un render Remotion."
+      : "Autorizo enviar este vídeo a Modal para un render Remotion. No se usará OpenAI."
+    : apiPlan.openai_transcription
+      ? "Autorizo enviar este vídeo a OpenAI para transcribirlo y a Shotstack Stage para un único render."
+      : "Autorizo enviar este vídeo a Shotstack Stage para un único render. No se usará OpenAI para transcribirlo.";
+  byId("approve-render-button").querySelector("span").textContent = isModal
+    ? "Autorizar y renderizar en Modal"
+    : "Aprobar y renderizar en Stage";
   byId("render-approval").hidden = false;
   updateProcessButton();
 }
@@ -671,6 +711,12 @@ function renderHealth(health) {
   };
   set("health-openai", health?.openai_key_configured);
   set("health-shotstack", health?.shotstack_key_configured);
+  const modal = health?.modal || {};
+  const modalStatus = byId("health-modal");
+  modalStatus.textContent = modal.sdk_installed && modal.credentials_configured
+    ? "SDK y perfil detectados; despliegue no comprobado"
+    : "No configurado en el servidor";
+  modalStatus.className = "health-unknown";
   const env = health?.shotstack_environment;
   byId("health-environment").textContent = env == null || env === "" ? "No disponible" : String(env);
   const drive = health?.drive_connected;
@@ -886,7 +932,10 @@ function updateProcessButton() {
   const item = getSelectedItem();
   const busy = state.activeJob && !["completed", "complete", "failed", "error", "rejected"].includes(String(state.activeJob.status || "").toLowerCase());
   const itemStatus = String(item?.status || "").toLowerCase();
-  const unavailable = ["completed", "processing", "queued", "failed"].includes(itemStatus);
+  const selectedBackend = byId("edit-render-backend").value;
+  const sameBackend = !item?.latest_job_backend || item.latest_job_backend === selectedBackend;
+  const unavailable = ["processing", "queued"].includes(itemStatus)
+    || (sameBackend && ["completed", "failed"].includes(itemStatus));
   const proposal = state.editProposal;
   const unknownCost = !proposal
     || proposal.costs?.total_estimate_usd === null
@@ -894,9 +943,15 @@ function updateProcessButton() {
   const consentOk = byId("paid-consent").checked
     && (!unknownCost || byId("unknown-cost-consent").checked);
   const needsOpenAI = proposal?.api_plan?.openai_transcription === true;
-  const missingApi = proposal
-    && (!proposal.api_plan?.shotstack_key_configured
-      || (needsOpenAI && !proposal.api_plan?.openai_key_configured));
+  const modalBackend = proposal?.api_plan?.renderer_backend === "modal";
+  const missingApi = proposal && (
+    modalBackend
+      ? (!proposal.api_plan?.modal_sdk_installed
+        || !proposal.api_plan?.modal_credentials_configured
+        || (needsOpenAI && !proposal.api_plan?.openai_key_configured))
+      : (!proposal.api_plan?.shotstack_key_configured
+        || (needsOpenAI && !proposal.api_plan?.openai_key_configured))
+  );
   byId("process-button").disabled = !item || Boolean(busy) || unavailable;
   byId("approve-render-button").disabled = !proposal || !consentOk || Boolean(missingApi) || Boolean(busy);
   byId("process-hint").textContent = !item
@@ -978,7 +1033,7 @@ async function refreshWorkspace() {
     else {
       byId("connection-label").textContent = "No se pudo comprobar";
       $(".local-indicator").classList.remove("connected");
-      for (const id of ["health-openai", "health-shotstack", "health-environment", "health-drive"]) {
+      for (const id of ["health-openai", "health-shotstack", "health-modal", "health-environment", "health-drive"]) {
         const status = byId(id);
         status.textContent = "No disponible";
         status.className = "health-unknown";
@@ -1257,8 +1312,10 @@ byId("upload-trigger").addEventListener("click", () => {
 
 byId("paid-consent").addEventListener("change", updateProcessButton);
 byId("unknown-cost-consent").addEventListener("change", updateProcessButton);
-  for (const controlId of ["edit-subtitle-mode", "edit-output-fps", "edit-output-profile", "edit-output-quality"]) {
+syncRenderBackendControls();
+  for (const controlId of ["edit-render-backend", "edit-subtitle-mode", "edit-output-fps", "edit-output-profile", "edit-output-quality"]) {
   byId(controlId).addEventListener("change", () => {
+      if (controlId === "edit-render-backend") syncRenderBackendControls();
       invalidateEditOptions();
   });
 }
@@ -1282,6 +1339,7 @@ byId("process-button").addEventListener("click", async () => {
       byId("edit-output-profile").value,
       byId("edit-output-quality").value,
       collectCreativePlan(),
+      byId("edit-render-backend").value,
     );
     renderEditProposal(result);
     displayToast("Propuesta preparada localmente. No se inició ningún servicio externo.");
@@ -1309,9 +1367,14 @@ byId("approve-render-button").addEventListener("click", async () => {
     return;
   }
   const usesOpenAI = proposal.api_plan?.openai_transcription === true;
-  const providerSummary = usesOpenAI
-    ? "OpenAI para transcribir y Shotstack Stage para un único render."
-    : "Shotstack Stage para un único render; no se llamará a OpenAI.";
+  const usesModal = proposal.api_plan?.renderer_backend === "modal";
+  const providerSummary = usesModal
+    ? usesOpenAI
+      ? "OpenAI para transcribir y Modal para un render Remotion."
+      : "Modal para un render Remotion; no se llamará a OpenAI."
+    : usesOpenAI
+      ? "OpenAI para transcribir y Shotstack Stage para un único render."
+      : "Shotstack Stage para un único render; no se llamará a OpenAI.";
   const costSummary = unknown
     ? "El coste total no está disponible y podría haber cargos."
     : `La estimación total es ${formatCost(proposal.costs.total_estimate_usd)}.`;
@@ -1323,7 +1386,7 @@ byId("approve-render-button").addEventListener("click", async () => {
   button.disabled = true;
   button.querySelector("span").textContent = "Iniciando render…";
   try {
-    const result = await startProcessing(proposal.proposal_id, true, unknown);
+    const result = await startProcessing(proposal, true, unknown);
     const job = result?.job || result;
     state.activeJob = job;
     renderJob(job, item.original_filename || item.filename);
@@ -1338,7 +1401,9 @@ byId("approve-render-button").addEventListener("click", async () => {
     byId("job-status-tag").textContent = "ERROR AL INICIAR";
     byId("job-content").innerHTML = `<div class="job-error">${escapeHtml(error.message)}</div>`;
   } finally {
-    button.querySelector("span").textContent = "Aprobar y renderizar en Stage";
+    button.querySelector("span").textContent = proposal.api_plan?.renderer_backend === "modal"
+      ? "Autorizar y renderizar en Modal"
+      : "Aprobar y renderizar en Stage";
     updateProcessButton();
   }
 });

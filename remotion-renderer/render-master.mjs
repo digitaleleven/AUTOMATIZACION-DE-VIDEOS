@@ -55,6 +55,10 @@ const EFFECT_ASSET_NAMES = new Set([
   "pearl-glints.svg",
   "kiss-lips.svg",
   "kiss-heart.svg",
+  "sparkle.svg",
+  "star.svg",
+  "heart.svg",
+  "bolt.svg",
 ]);
 const DEFAULTS = {
   input: path.join(PROJECT_ROOT, "generated-artifacts/drive-inspection/IMG_1254.MOV"),
@@ -69,7 +73,7 @@ const DEFAULTS = {
 
 const parseArguments = (args) => {
   const parsed = {};
-  const allowed = new Set(["--input", "--transcript", "--plan", "--effects-dir", "--output", "--show-subtitles", "--render-frames", "--briefing"]);
+  const allowed = new Set(["--input", "--transcript", "--plan", "--effects-dir", "--output", "--show-subtitles", "--render-frames", "--briefing", "--caption-style-json"]);
   for (let index = 0; index < args.length; index += 1) {
     const key = args[index];
     if (!allowed.has(key) || !args[index + 1]) {
@@ -91,6 +95,7 @@ const parseArguments = (args) => {
     showSubtitlesArg: parsed["--show-subtitles"],
     renderFramesArg: parsed["--render-frames"],
     briefing: parsed["--briefing"] || "",
+    captionStyleJsonArg: parsed["--caption-style-json"],
   };
 };
 
@@ -144,7 +149,7 @@ const makeSfxAssets = async (publicDirectory) => {
   }
 };
 
-const readCaptionPreferences = async (explicitSubtitles, briefing) => {
+const readCaptionPreferences = async (explicitSubtitles, briefing, captionStyleJsonArg) => {
   let style = {};
   try {
     style = JSON.parse(
@@ -155,6 +160,29 @@ const readCaptionPreferences = async (explicitSubtitles, briefing) => {
   }
   if (!style || typeof style !== "object" || Array.isArray(style)) {
     throw new Error("video_style.json debe ser un objeto JSON.");
+  }
+  if (captionStyleJsonArg !== undefined) {
+    let captionStylePatch;
+    try {
+      captionStylePatch = JSON.parse(captionStyleJsonArg);
+    } catch {
+      throw new Error("--caption-style-json debe contener un objeto JSON válido.");
+    }
+    if (!captionStylePatch || typeof captionStylePatch !== "object" || Array.isArray(captionStylePatch)) {
+      throw new Error("--caption-style-json debe contener un objeto JSON.");
+    }
+    const allowedCaptionKeys = new Set([
+      "font_family",
+      "font_color",
+      "highlight_color",
+      "caption_font_size",
+      "caption_position",
+      "max_words_per_caption",
+    ]);
+    if (Object.keys(captionStylePatch).some((key) => !allowedCaptionKeys.has(key))) {
+      throw new Error("--caption-style-json contiene una opción no permitida.");
+    }
+    style = { ...style, ...captionStylePatch };
   }
   if (
     explicitSubtitles !== undefined &&
@@ -201,6 +229,7 @@ try {
   const { showSubtitles, captionStyle } = await readCaptionPreferences(
     options.showSubtitlesArg,
     options.briefing,
+    options.captionStyleJsonArg,
   );
 
   await mkdir(outputDirectory, { recursive: true });
@@ -251,14 +280,23 @@ try {
   if (!inputVideo || !inputAudio || !Number.isFinite(sourceDuration) || sourceDuration <= 0) {
     throw new Error("Se requiere el MOV original, vídeo detectable y pista AAC estéreo de 48 kHz.");
   }
+  const isHlgInput =
+    inputVideo.color_range === "tv" &&
+    inputVideo.color_space === "bt2020nc" &&
+    inputVideo.color_transfer === "arib-std-b67" &&
+    inputVideo.color_primaries === "bt2020";
+  const isSdrBt709Input =
+    ["tv", "pc"].includes(inputVideo.color_range) &&
+    inputVideo.color_space === "bt709" &&
+    inputVideo.color_transfer === "bt709" &&
+    inputVideo.color_primaries === "bt709";
   if (
-    inputVideo.color_range !== "tv" ||
-    inputVideo.color_space !== "bt2020nc" ||
-    inputVideo.color_transfer !== "arib-std-b67" ||
-    inputVideo.color_primaries !== "bt2020" ||
-    parseRate(inputVideo.avg_frame_rate) < FULL_FPS
+    (!isHlgInput && !isSdrBt709Input) ||
+    parseRate(inputVideo.avg_frame_rate) <= 0
   ) {
-    throw new Error(`El original no coincide con el perfil iPhone HLG esperado: ${JSON.stringify(inputVideo)}`);
+    throw new Error(
+      `Perfil de color no compatible: se admite HLG BT.2020 limitado o SDR BT.709 correctamente etiquetado: ${JSON.stringify(inputVideo)}`,
+    );
   }
 
   const sourceFrames = Math.round(sourceDuration * FULL_FPS);
@@ -280,10 +318,12 @@ try {
   const renderDurationSeconds = renderFrameCount / FULL_FPS;
 
   const transcript = JSON.parse(await readFile(transcriptPath, "utf8"));
-  const sourceWords = parseWhisperWordTimings(transcript);
+  const sourceWords = showSubtitles ? parseWhisperWordTimings(transcript) : [];
   const wordTimings = mapWordTimingsToOutput(sourceWords, clips, FULL_FPS);
-  const captionTrack = prepareCaptionTrack(transcript, clips, FULL_FPS);
-  if (wordTimings.length === 0) {
+  const captionTrack = showSubtitles
+    ? prepareCaptionTrack(transcript, clips, FULL_FPS)
+    : { groups: [] };
+  if (showSubtitles && wordTimings.length === 0) {
     throw new Error("No hay marcas de palabra temporales válidas para la edición.");
   }
   const effects = buildTimedVectorEffects(plan.effect_cues, durationInFrames, FULL_FPS);

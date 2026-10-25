@@ -68,6 +68,9 @@ from .pipeline import (
     process_local_video,
     sync_drive_media,
 )
+from .modal_pipeline import process_local_video_modal
+from .modal_renderer import modal_configuration_status
+from .state import ProcessingLedger
 from .shotstack import ShotstackClient, ShotstackError
 from .state import ProcessingLedger
 from .style import VideoStyle, load_video_style, save_video_style
@@ -536,6 +539,7 @@ class VideoPanel:
 
     def health(self) -> dict[str, Any]:
         drive_status = self.drive_status()
+        modal_status = modal_configuration_status()
         try:
             config = PipelineConfig.from_environment()
             environment = config.shotstack_environment
@@ -545,10 +549,36 @@ class VideoPanel:
             "openai_key_configured": bool(os.getenv("OPENAI_API_KEY")),
             "shotstack_key_configured": bool(os.getenv("SHOTSTACK_API_KEY")),
             "shotstack_environment": environment,
+            "modal": modal_status,
             "drive_connected": bool(drive_status.get("ready") and drive_status.get("verified")),
             "drive_oauth_ready": bool(drive_status.get("ready")),
             "drive_picker_configured": all(picker_configuration().get(key) for key in ("client_id", "api_key", "app_id")),
         }
+
+    def _source_render_state(self, upload: dict[str, Any]) -> tuple[str, str]:
+        """Return the newest state and backend, defaulting historical jobs to Stage."""
+        job = self.store.latest_job_for_source(upload["id"])
+        if job:
+            try:
+                options = json.loads(job.get("edit_options_json") or "{}")
+            except (TypeError, json.JSONDecodeError):
+                options = {}
+            backend = options.get("renderer_backend", "shotstack_stage")
+            if backend not in {"shotstack_stage", "modal"}:
+                backend = "shotstack_stage"
+            return str(job.get("status") or "ready"), backend
+
+        processing = self.store.ledger.get(upload["source_sha256"])
+        if processing:
+            try:
+                options = json.loads(processing.get("edit_options_json") or "{}")
+            except (TypeError, json.JSONDecodeError):
+                options = {}
+            backend = options.get("renderer_backend", "shotstack_stage")
+            if backend not in {"shotstack_stage", "modal"}:
+                backend = "shotstack_stage"
+            return str(processing.get("status") or "ready"), backend
+        return "ready", "shotstack_stage"
 
     def drive_config(self) -> dict[str, Any]:
         return {
@@ -1327,6 +1357,7 @@ class VideoPanel:
             "style_notes": metadata.get("style_notes", ""),
             "caption_style_overrides": metadata.get("caption_style_overrides", {}),
             "status": status,
+            "latest_job_backend": latest_options.get("renderer_backend", "shotstack_stage"),
             "output_id": output_id,
             "error": error,
             "cost_estimate_usd": estimate,
@@ -1454,6 +1485,14 @@ class VideoPanel:
         subtitle_mode = str(payload.get("subtitle_mode") or "none")
         if subtitle_mode not in {"dynamic", "simple", "none"}:
             raise PanelError("Elige subtítulos dinámicos, sencillos o sin subtítulos.")
+        render_backend = str(payload.get("render_backend") or "shotstack_stage")
+        if render_backend not in {"shotstack_stage", "modal"}:
+            raise PanelError("Elige Shotstack Stage o Remotion/FFmpeg en Modal.")
+        if render_backend == "modal" and subtitle_mode == "simple":
+            raise PanelError(
+                "El motor Remotion de Modal admite subtítulos dinámicos o ninguno; "
+                "elige una de esas opciones."
+            )
         output_profile = str(payload.get("output_profile") or "1080p")
         if output_profile not in OUTPUT_PROFILES:
             raise PanelError(
@@ -1470,12 +1509,19 @@ class VideoPanel:
         if not raw_output_fps.is_integer() or raw_output_fps not in {25, 30, 50, 60}:
             raise PanelError("Los FPS de salida deben ser 25, 30, 50 o 60.")
         output_fps = int(raw_output_fps)
+        if render_backend == "modal" and (output_profile != "1080p" or output_fps != 30):
+            raise PanelError("Remotion en Modal está preparado para 1080 × 1920 a 30 FPS.")
 
         item = self._public_library_item(upload)
-        if item["status"] in {"completed", "processing", "queued"}:
-            raise PanelError("Este vídeo ya tiene un resultado o un trabajo activo.", 409)
-        if item["status"] == "failed":
-            raise PanelError("El último intento falló. Revisa el error antes de preparar otra propuesta.", 409)
+        existing_status, existing_backend = self._source_render_state(upload)
+        if existing_status in {"processing", "queued"}:
+            raise PanelError("Este vídeo ya tiene un trabajo activo.", 409)
+        if existing_status in {"completed", "failed"} and existing_backend == render_backend:
+            raise PanelError(
+                "Este motor ya tiene un resultado o un intento fallido para este vídeo. "
+                "No se repetirá automáticamente.",
+                409,
+            )
 
         style = replace(
             self._style_for_upload(source_id),
@@ -1485,11 +1531,21 @@ class VideoPanel:
             output_fps=output_fps,
             output_quality=output_quality,
         )
+        if render_backend == "modal" and style.logo_path:
+            raise PanelError(
+                "El motor Remotion en Modal no aplica el logo global configurado; "
+                "no se preparó una propuesta que lo omita."
+            )
         video = probe_video(self._source_path(upload))
         try:
             creative_plan = normalize_edit_plan(payload.get("creative_plan"), video.duration)
         except EditPlanError as exc:
             raise PanelError(str(exc)) from None
+        if render_backend == "modal" and creative_plan["zooms"]:
+            raise PanelError(
+                "Los zooms manuales aún no están soportados por Remotion en Modal; "
+                "el montaje conserva el reencuadre suave automático."
+            )
         if video.video_codec not in ALLOWED_CODECS:
             raise PanelError("El vídeo debe usar H.264 o HEVC/H.265.")
         if video.duration > style.max_video_duration_seconds:
@@ -1517,14 +1573,18 @@ class VideoPanel:
                 or logo.stat().st_size > 20 * 1024 * 1024
             ):
                 raise PanelError("El logo configurado no es accesible o supera los límites admitidos.")
-        settings = PipelineConfig.from_environment()
-        if settings.shotstack_environment != "stage":
+        settings = PipelineConfig.from_environment() if render_backend == "shotstack_stage" else None
+        if settings and settings.shotstack_environment != "stage":
             raise PanelError("La configuración no permite preparar renders fuera de Shotstack Stage.", 409)
 
-        estimate = _estimate_cost(
-            video.duration,
-            style,
-            include_transcription=transcription_required,
+        estimate = (
+            _estimate_cost(
+                video.duration,
+                style,
+                include_transcription=transcription_required,
+            )
+            if render_backend == "shotstack_stage"
+            else None
         )
         if style.max_estimated_cost_usd is not None:
             if estimate is None:
@@ -1551,9 +1611,11 @@ class VideoPanel:
         )
         shotstack_cost = (
             round(minutes * style.shotstack_price_per_render_minute_usd, 4)
-            if style.shotstack_price_per_render_minute_usd is not None
+            if render_backend == "shotstack_stage"
+            and style.shotstack_price_per_render_minute_usd is not None
             else None
         )
+        modal_status = modal_configuration_status()
         drive_import = (
             self.drive_store.get_import_for_local_upload(source_id)
             if self.drive_store
@@ -1571,6 +1633,7 @@ class VideoPanel:
             "output_quality": output_quality,
             "output_fps": output_fps,
             "creative_plan": creative_plan,
+            "renderer_backend": render_backend,
         }
         proposal = {
             "proposal_id": proposal_id,
@@ -1644,29 +1707,46 @@ class VideoPanel:
                 "creative_plan": creative_plan,
                 "transitions": False,
                 "higher_resolution_note": (
-                    "1440p y 2160p vertical no están habilitados hasta verificar un plan Shotstack con 4K."
+                    "Remotion en Modal está fijado a 1080 × 1920."
+                    if render_backend == "modal"
+                    else "1440p y 2160p vertical no están habilitados hasta verificar un plan Shotstack con 4K."
                 ),
             },
             "api_plan": {
                 "openai_transcription": transcription_required,
                 "openai_transcription_chunks": transcription_chunks,
-                "shotstack_environment": "stage",
-                "shotstack_render_jobs": 1,
+                "renderer_backend": render_backend,
+                "shotstack_environment": "stage" if render_backend == "shotstack_stage" else None,
+                "shotstack_render_jobs": 1 if render_backend == "shotstack_stage" else 0,
                 "shotstack_ingested_assets": (
                     1 + int(transcription_required) + int(bool(style.logo_path))
+                    if render_backend == "shotstack_stage"
+                    else 0
                 ),
                 "max_renders_per_attempt": 1,
                 "openai_key_configured": bool(os.getenv("OPENAI_API_KEY")),
-                "shotstack_key_configured": bool(os.getenv("SHOTSTACK_API_KEY")),
+                "shotstack_key_configured": (
+                    bool(os.getenv("SHOTSTACK_API_KEY"))
+                    if render_backend == "shotstack_stage"
+                    else False
+                ),
+                "modal_sdk_installed": modal_status["sdk_installed"],
+                "modal_credentials_configured": modal_status["credentials_configured"],
+                "modal_deployment_status": modal_status["deployment_status"],
                 "external_services_called_during_proposal": [],
             },
             "costs": {
                 "openai_usd": openai_cost,
                 "shotstack_usd": shotstack_cost,
+                "modal_compute_usd": None if render_backend == "modal" else 0.0,
                 "total_estimate_usd": estimate,
-                "estimate_note": _cost_estimate_note(
-                    style,
-                    include_transcription=transcription_required,
+                "estimate_note": (
+                    "El coste del cómputo Modal depende de duración y recursos; el panel no tiene una tarifa cotizada."
+                    if render_backend == "modal"
+                    else _cost_estimate_note(
+                        style,
+                        include_transcription=transcription_required,
+                    )
                 ),
             },
             "destination": (
@@ -1683,10 +1763,26 @@ class VideoPanel:
                     f"La salida {style.output_width} × {style.output_height} amplía la entrada y no recupera detalle."
                     if video.width < style.output_width or video.height < style.output_height
                     else "",
-                    "1440p y 4K están deshabilitados hasta verificar que el plan de Shotstack incluye 4K.",
-                    "No se ha consultado el saldo/plan de Shotstack; la estimación configurada no confirma créditos ni recargos del proveedor.",
-                    "El preset de calidad no fija un bitrate; el valor real solo se podrá medir después de un render autorizado.",
-                    "Stage añade una marca de agua y requiere créditos; no se inició ningún render al preparar esta propuesta.",
+                    (
+                        "Modal ejecutará Remotion/FFmpeg en cómputo cloud; el panel no puede cotizar el coste final."
+                        if render_backend == "modal"
+                        else "1440p y 4K están deshabilitados hasta verificar que el plan de Shotstack incluye 4K."
+                    ),
+                    (
+                        "No se consultó el saldo ni la tarifa de Modal."
+                        if render_backend == "modal"
+                        else "No se ha consultado el saldo/plan de Shotstack; la estimación configurada no confirma créditos ni recargos del proveedor."
+                    ),
+                    (
+                        "La salida Remotion está fijada a H.264 CRF 15, 1080 × 1920 y 30 FPS."
+                        if render_backend == "modal"
+                        else "El preset de calidad no fija un bitrate; el valor real solo se podrá medir después de un render autorizado."
+                    ),
+                    (
+                        "No se inició ningún render al preparar esta propuesta."
+                        if render_backend == "modal"
+                        else "Stage añade una marca de agua y requiere créditos; no se inició ningún render al preparar esta propuesta."
+                    ),
                     "La estimación usa la duración original, no descuenta los cortes y no representa una tarifa de plan 4K."
                     if creative_plan["cuts"]
                     else "",
@@ -1704,8 +1800,6 @@ class VideoPanel:
     def start_job(self, payload: Any) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise PanelError("La solicitud del trabajo debe ser un objeto JSON.")
-        if payload.get("authorize_paid_apis") is not True:
-            raise PanelError("Falta la autorización explícita para el render de Shotstack Stage.", 403)
         proposal_id = str(payload.get("proposal_id") or "")
         if not re.fullmatch(r"[0-9a-f]{32}", proposal_id):
             raise PanelError("Prepara y revisa una propuesta antes de autorizar el render.", 409)
@@ -1728,15 +1822,25 @@ class VideoPanel:
             raise PanelError("El vídeo de la propuesta ya no coincide con el original.", 409)
         style = VideoStyle(**proposal["style"])
         edit_options = dict(proposal["options"])
-        item = self._public_library_item(upload)
-        if item["status"] in {"completed", "processing", "queued"}:
+        render_backend = edit_options.get("renderer_backend", "shotstack_stage")
+        if render_backend == "modal":
+            if payload.get("authorize_modal_compute") is not True:
+                raise PanelError("Falta la autorización explícita para usar cómputo Modal.", 403)
+            if (
+                edit_options["subtitle_mode"] != "none"
+                and payload.get("authorize_openai_transcription") is not True
+            ):
+                raise PanelError("Falta autorizar el envío del audio a OpenAI para transcribirlo.", 403)
+        elif payload.get("authorize_paid_apis") is not True:
+            raise PanelError("Falta la autorización explícita para el render de Shotstack Stage.", 403)
+
+        existing_status, existing_backend = self._source_render_state(upload)
+        if existing_status in {"processing", "queued"}:
+            raise PanelError("Este vídeo ya tiene un trabajo activo; no se iniciará otro render.", 409)
+        if existing_status in {"completed", "failed"} and existing_backend == render_backend:
             raise PanelError(
-                "Este archivo ya tiene un resultado o un trabajo activo; no se iniciará otro render.",
-                409,
-            )
-        if item["status"] == "failed":
-            raise PanelError(
-                "El último intento falló. El panel no reintenta automáticamente para evitar cargos duplicados.",
+                "Este motor ya tiene un resultado o un intento fallido para este vídeo. "
+                "No se iniciará un duplicado ni un reintento automático.",
                 409,
             )
         estimate = proposal["estimate"]
@@ -1753,13 +1857,17 @@ class VideoPanel:
                 )
         health = self.health()
         needs_openai = edit_options["subtitle_mode"] != "none"
-        if (
-            (needs_openai and not health["openai_key_configured"])
-            or not health["shotstack_key_configured"]
-        ):
-            raise PanelError("Falta una clave de API necesaria en Secrets; no se inició ningún trabajo.", 409)
-        if health["shotstack_environment"] != "stage":
-            raise PanelError("La configuración no permite iniciar trabajos fuera de Shotstack Stage.", 409)
+        if needs_openai and not health["openai_key_configured"]:
+            raise PanelError("Falta OPENAI_API_KEY en Secrets; no se inició ningún trabajo.", 409)
+        if render_backend == "shotstack_stage":
+            if not health["shotstack_key_configured"]:
+                raise PanelError("Falta SHOTSTACK_API_KEY en Secrets; no se inició ningún trabajo.", 409)
+            if health["shotstack_environment"] != "stage":
+                raise PanelError("La configuración no permite iniciar trabajos fuera de Shotstack Stage.", 409)
+        else:
+            modal_status = health.get("modal") or {}
+            if not modal_status.get("sdk_installed") or not modal_status.get("credentials_configured"):
+                raise PanelError("Modal no está instalado o configurado en el servidor.", 409)
         drive_import = (
             self.drive_store.get_import_for_local_upload(source_id)
             if self.drive_store
@@ -2051,6 +2159,8 @@ class VideoPanel:
             if self.drive_store
             else None
         )
+        modal_ledger: ProcessingLedger | None = None
+        modal_ledger_claimed = False
         try:
             source_path = self._source_path(upload)
             def update_phase(phase: str) -> None:
@@ -2070,26 +2180,61 @@ class VideoPanel:
 
                 drive_uploader = upload_drive_output
 
-            result = process_local_video(
-                source_path,
-                self.output_dir,
-                paid_api_authorized=True,
-                upload_to_drive=bool(drive_import),
-                drive_uploader=drive_uploader,
-                drive_source_key=(
-                    hashlib.sha256(drive_import["drive_file_id"].encode("utf-8")).hexdigest()
-                    if drive_import
-                    else None
-                ),
-                config=PipelineConfig.from_environment(),
-                style=style,
-                subtitle_mode=edit_options["subtitle_mode"],
-                creative_plan=edit_options.get("creative_plan"),
-                state_db_path=self.store.database_path,
-                retry_failed=retry_failed,
-                allow_third_attempt=allow_third_attempt,
-                progress_callback=update_phase,
+            drive_source_key = (
+                hashlib.sha256(drive_import["drive_file_id"].encode("utf-8")).hexdigest()
+                if drive_import
+                else None
             )
+            if edit_options.get("renderer_backend", "shotstack_stage") == "modal":
+                if retry_failed or allow_third_attempt:
+                    raise PanelError("Los reintentos de Modal están bloqueados para evitar renders duplicados.", 409)
+                modal_ledger = ProcessingLedger(
+                    self.store.database_path.with_name("modal_processing.sqlite3")
+                )
+                modal_ledger.claim(
+                    upload["source_sha256"],
+                    str(source_path),
+                    max_attempts=1,
+                    edit_options=edit_options,
+                )
+                modal_ledger_claimed = True
+                result = process_local_video_modal(
+                    source_path,
+                    self.output_dir,
+                    job_id=job_id,
+                    paid_api_authorized=True,
+                    upload_to_drive=bool(drive_import),
+                    drive_uploader=drive_uploader,
+                    drive_source_key=drive_source_key,
+                    config=(
+                        PipelineConfig.from_environment()
+                        if drive_import
+                        else PipelineConfig()
+                    ),
+                    style=style,
+                    subtitle_mode=edit_options["subtitle_mode"],
+                    creative_plan=edit_options.get("creative_plan"),
+                    briefing=edit_options.get("style_notes", ""),
+                    progress_callback=update_phase,
+                )
+                modal_ledger.mark_completed(upload["source_sha256"], result["output"])
+            else:
+                result = process_local_video(
+                    source_path,
+                    self.output_dir,
+                    paid_api_authorized=True,
+                    upload_to_drive=bool(drive_import),
+                    drive_uploader=drive_uploader,
+                    drive_source_key=drive_source_key,
+                    config=PipelineConfig.from_environment(),
+                    style=style,
+                    subtitle_mode=edit_options["subtitle_mode"],
+                    creative_plan=edit_options.get("creative_plan"),
+                    state_db_path=self.store.database_path,
+                    retry_failed=retry_failed,
+                    allow_third_attempt=allow_third_attempt,
+                    progress_callback=update_phase,
+                )
             if drive_import and self.drive_store:
                 output = result.get("drive_output") or {}
                 output_file_id = output.get("id") if isinstance(output, dict) else None
@@ -2110,6 +2255,14 @@ class VideoPanel:
             )
         except Exception as exc:
             logger.exception("Video job %s failed", job_id)
+            if modal_ledger is not None and modal_ledger_claimed:
+                try:
+                    modal_ledger.mark_failed(
+                        upload["source_sha256"],
+                        f"{type(exc).__name__}: {exc}",
+                    )
+                except Exception:
+                    logger.exception("Could not persist Modal failure state for job %s", job_id)
             if (
                 drive_import
                 and self.drive_store
