@@ -9,10 +9,10 @@ Para convertir el *base layer* HLG de iPhone con FFmpeg, declara explícitamente
 
 **How to apply:** no integrar ni corregir el balance de blancos por conjetura. Para resolver la dominante, conseguir una referencia neutral fiable o procesar el RPU en un entorno con Vulkan operativo; comparar piel, blancos y producto con revisión humana antes de cambiar el pipeline.
 
-## Perfil Remotion autorizado
+## Perfil Remotion de alta calidad (revisión pendiente)
 
-Para la ruta Remotion de MATRIX MOTION, la responsable autorizó fijar como perfil maestro de normalización HLG→SDR: 30 FPS; escalado Lanczos y padding a 1080×1920; `unsharp=5:5:0.8:5:5:0.0`; entrada BT.2020 HLG de rango limitado y salida BT.709 limitada con `npl=1000`; EQ `contrast=1.05:brightness=0.05:gamma=1.18:saturation=0.92`; mezcla `rr=0.92:gg=0.95:bb=1.08`; YUV420p.
+La responsable rechazó el primer MP4 Remotion por movimiento de cámara brusco y nitidez/contraste insuficientes. Para la nueva versión autorizó una salida nativa vertical 2160×3840 a 30 FPS, sin zoom de cámara, desde un proxy All-Intra 4K derivado del MOV original. El filtro directo usa Lanczos, `unsharp=5:5:1.0:5:5:0.0`, entrada HLG BT.2020 limitada y salida BT.709 limitada con `npl=1000`, EQ `contrast=1.08:brightness=0.03:gamma=1.12:saturation=0.95`, mezcla `rr=0.92:gg=0.95:bb=1.08` y YUV420p. Exportación Remotion: H.264 High, CRF 15, preset medium.
 
-**Why:** el 25 de octubre de 2026 la responsable pidió consolidar esta cadena en el procesamiento Remotion tras revisar las variantes previas.
+**Why:** el 25 de octubre de 2026 la responsable pidió conservar el detalle del original 4K, eliminar los zooms automáticos y reequilibrar nitidez, contraste y color. Estos valores están autorizados para la nueva prueba, no aprobados como calidad final.
 
-**How to apply:** usar este perfil en la ruta Remotion, separado de la compatibilidad Shotstack. La autorización fija la configuración, pero no sustituye la revisión visual humana de piel, blancos y altas luces antes de aprobar el color.
+**How to apply:** mantener esta configuración en la ruta Remotion, separada de Shotstack; conservar el MOV original y los renders previos, usar concurrencia 1 y cero reintentos. La piel, los blancos, el movimiento y las altas luces requieren aprobación visual humana antes de adoptar el perfil como acabado comercial.

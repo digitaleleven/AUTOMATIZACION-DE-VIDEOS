@@ -10,17 +10,22 @@ import {
   staticFile,
   useCurrentFrame,
 } from "remotion";
-import { useMemo } from "react";
 import type { CSSProperties, FC } from "react";
 import { WordSubtitles } from "./WordSubtitles";
-import { keywordWindowsForSegment } from "./caption-timing.mjs";
 import type { TimedWord } from "./caption-timing.mjs";
 import type { KeepSegment, TimedVectorEffect } from "./full-edit-timeline.mjs";
 import { getSourceClipWindow } from "./edit-timeline.mjs";
 import {
+  cameraScaleAtFrame,
   FULL_DURATION_IN_FRAMES,
   FULL_FPS,
+  FULL_HEIGHT,
+  FULL_WIDTH,
 } from "./full-edit-timeline.mjs";
+
+const OVERLAY_BASE_WIDTH = 1080;
+const OVERLAY_BASE_HEIGHT = 1920;
+const OVERLAY_SCALE = FULL_WIDTH / OVERLAY_BASE_WIDTH;
 
 type FullEditProps = {
   sourceFile: string;
@@ -36,33 +41,14 @@ const VideoClip: FC<{
   sourceFile: string;
   sourceDurationInFrames: number;
   clip: KeepSegment;
-  words: TimedWord[];
-}> = ({ sourceFile, sourceDurationInFrames, clip, words }) => {
+}> = ({ sourceFile, sourceDurationInFrames, clip }) => {
   const frame = useCurrentFrame();
   const sourceWindow = getSourceClipWindow(
     clip.sourceStart,
     clip.frames,
     sourceDurationInFrames,
   );
-  const keywordWindows = useMemo(
-    () => keywordWindowsForSegment(words, clip, FULL_FPS),
-    [words, clip],
-  );
-  const scale = keywordWindows.reduce((largest, window) => {
-    const span = Math.max(1, window.endFrame - window.startFrame);
-    const ramp = Math.max(1, Math.min(5, Math.floor(span / 2)));
-    const current = interpolate(
-      frame,
-      [window.startFrame - ramp, window.startFrame, window.endFrame, window.endFrame + ramp],
-      [1, 1.05, 1.12, 1],
-      {
-        easing: Easing.inOut(Easing.quad),
-        extrapolateLeft: "clamp",
-        extrapolateRight: "clamp",
-      },
-    );
-    return Math.max(largest, current);
-  }, 1);
+  const scale = cameraScaleAtFrame(frame);
 
   return (
     <AbsoluteFill style={{ overflow: "hidden", backgroundColor: "#08090b" }}>
@@ -102,6 +88,7 @@ const VectorOverlay: FC<{ effect: TimedVectorEffect }> = ({ effect }) => {
   const fadeOut = Math.min(7, Math.floor(effect.durationFrames / 4));
   const opacity = Math.min(
     interpolate(frame, [0, fadeIn], [0, 1], {
+      easing: Easing.out(Easing.quad),
       extrapolateLeft: "clamp",
       extrapolateRight: "clamp",
     }),
@@ -109,11 +96,15 @@ const VectorOverlay: FC<{ effect: TimedVectorEffect }> = ({ effect }) => {
       frame,
       [effect.durationFrames - fadeOut, effect.durationFrames],
       [1, 0],
-      { extrapolateLeft: "clamp", extrapolateRight: "clamp" },
+      {
+        easing: Easing.in(Easing.quad),
+        extrapolateLeft: "clamp",
+        extrapolateRight: "clamp",
+      },
     ),
   );
-  const scale = interpolate(frame, [0, 9], [0.78, 1], {
-    easing: Easing.out(Easing.back(1.1)),
+  const scale = interpolate(frame, [0, 12], [0.97, 1], {
+    easing: Easing.out(Easing.quad),
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
   });
@@ -171,24 +162,36 @@ const FullEdit: FC<FullEditProps> = ({
           sourceFile={sourceFile}
           sourceDurationInFrames={sourceDurationInFrames}
           clip={clip}
-          words={wordTimings}
         />
       </Sequence>
     ))}
     {clips.map((clip) => (
       <AudioClip key={`audio-${clip.sourceStart}`} audioFile={audioFile} clip={clip} />
     ))}
-    {effects.map((effect) => (
-      <Sequence
-        key={effect.id}
-        from={effect.startFrame}
-        durationInFrames={effect.durationFrames}
-        layout="none"
-      >
-        <VectorOverlay effect={effect} />
-      </Sequence>
-    ))}
-    <WordSubtitles words={wordTimings} fps={FULL_FPS} />
+    <div
+      style={{
+        position: "absolute",
+        left: 0,
+        top: 0,
+        width: OVERLAY_BASE_WIDTH,
+        height: OVERLAY_BASE_HEIGHT,
+        transform: `scale(${OVERLAY_SCALE})`,
+        transformOrigin: "top left",
+        pointerEvents: "none",
+      }}
+    >
+      {effects.map((effect) => (
+        <Sequence
+          key={effect.id}
+          from={effect.startFrame}
+          durationInFrames={effect.durationFrames}
+          layout="none"
+        >
+          <VectorOverlay effect={effect} />
+        </Sequence>
+      ))}
+      <WordSubtitles words={wordTimings} fps={FULL_FPS} />
+    </div>
   </AbsoluteFill>
 );
 
@@ -196,8 +199,8 @@ export const FullRemotionRoot: FC = () => (
   <Composition
     id="MATRIX-MOTION-Remotion-Full"
     component={FullEdit}
-    width={1080}
-    height={1920}
+    width={FULL_WIDTH}
+    height={FULL_HEIGHT}
     fps={FULL_FPS}
     durationInFrames={FULL_DURATION_IN_FRAMES}
     defaultProps={{

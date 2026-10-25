@@ -5,55 +5,50 @@ aplicación Python, el panel ni Shotstack. El navegador de render se ejecuta con
 resolución de hosts externos bloqueada. El render no recibe clave de licencia
 ni llama al servicio de seguimiento de Remotion.
 
-## Prueba directa BT.709 sin tone mapping
+## Perfil maestro 4K para revisión visual
 
-Esta variante conserva una conversión explícita de HLG BT.2020 a BT.709 con
-`zscale`, pero omite el filtro `tonemap`. Aplica `npl=1000` y los valores EQ
-solicitados. `upstream_format=uhd` no aparece entre las opciones de esta
-compilación; se declaran los metadatos de entrada explícitamente.
+El perfil actual conserva la resolución nativa vertical del MOV (2160 × 3840),
+desactiva por completo el zoom de cámara y convierte HLG BT.2020 limitado a
+BT.709 limitado. Esta conversión directa no procesa el RPU Dolby Vision y no
+implica aprobación visual del color.
 
 ```sh
-ffmpeg -y \
+ffmpeg -nostdin -hide_banner -n \
   -i "$PWD/generated-artifacts/drive-inspection/IMG_1254.MOV" \
-  -map 0:v:0 -map 0:a:0 -t 12 \
-  -vf "fps=30,scale=1080:1920:force_original_aspect_ratio=decrease:flags=lanczos,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,unsharp=5:5:0.8:5:5:0.0,setsar=1,zscale=primariesin=bt2020:transferin=arib-std-b67:matrixin=bt2020nc:rangein=limited:primaries=bt709:transfer=bt709:matrix=bt709:range=limited:npl=1000:c=topleft,eq=contrast=1.05:brightness=0.05:gamma=1.18:saturation=0.92,colorchannelmixer=rr=0.92:gg=0.95:bb=1.08,format=yuv420p" \
-  -c:v libx264 -preset ultrafast -crf 17 -g 1 -keyint_min 1 -sc_threshold 0 -pix_fmt yuv420p \
+  -map 0:v:0 \
+  -vf "fps=30,scale=2160:3840:force_original_aspect_ratio=decrease:flags=lanczos,pad=2160:3840:(ow-iw)/2:(oh-ih)/2,unsharp=5:5:1.0:5:5:0.0,setsar=1,zscale=primariesin=bt2020:transferin=arib-std-b67:matrixin=bt2020nc:rangein=limited:primaries=bt709:transfer=bt709:matrix=bt709:range=limited:npl=1000:c=topleft,eq=contrast=1.08:brightness=0.03:gamma=1.12:saturation=0.95,colorchannelmixer=rr=0.92:gg=0.95:bb=1.08,format=yuv420p" \
+  -an -c:v libx264 -preset ultrafast -crf 14 -g 1 -keyint_min 1 -sc_threshold 0 -pix_fmt yuv420p \
   -color_range tv -colorspace bt709 -color_primaries bt709 -color_trc bt709 \
-  -c:a aac -b:a 192k -ac 2 -ar 48000 \
-  "$PWD/generated-artifacts/drive-inspection/remotion/IMG_1254-npl1000-master-proxy.mp4"
-
-ffmpeg -y -ss 2.5 \
-  -i "$PWD/generated-artifacts/drive-inspection/remotion/IMG_1254-npl1000-master-proxy.mp4" \
-  -frames:v 1 -update 1 \
-  "$PWD/generated-artifacts/drive-inspection/remotion/IMG_1254-npl1000-master-proxy-frame-2.5.png"
+  "$PWD/generated-artifacts/drive-inspection/remotion/IMG_1254-master-HQ-4K-proxy-v2.mp4"
 ```
 
-La conversión directa evita `tonemap` y la etapa RGB lineal, pero conserva la
-declaración correcta de entrada/salida. `npl=1000` fija luminancia nominal, no
-una curva de compresión; puede haber clipping de altas luces. La imagen requiere
-revisión visual y no se integra automáticamente.
+La nitidez usa `unsharp=5:5:1.0:5:5:0.0`. El EQ y el canal RGB se mantienen con
+los valores solicitados para esta revisión. El audio se toma aparte de la pista
+AAC principal del original y se recorta en Remotion con los mismos fotogramas.
+No se modifica ni sobrescribe el MOV.
 
 ## Edición completa con Remotion
 
-La ruta completa conserva los cortes registrados en `mm004-plan.json`, asigna
-las palabras cronometradas a la línea de tiempo de salida, usa zooms de énfasis
-y coloca los SVG existentes durante 1,5–1,8 s. El reproductor toma el vídeo
-del proxy y el audio principal AAC del original.
+La ruta completa conserva los cortes de `mm004-plan.json`, asigna las palabras
+cronometradas a la línea de tiempo de salida y no aplica zoom de cámara. Los SVG
+mantienen entradas y salidas suaves. El reproductor toma el vídeo del proxy 4K
+y el audio principal AAC del original.
 
 ```sh
-pnpm --dir remotion-renderer run render:full -- \
+node remotion-renderer/render-full.mjs \
   --input "$PWD/generated-artifacts/drive-inspection/IMG_1254.MOV" \
-  --proxy "$PWD/generated-artifacts/drive-inspection/remotion/IMG_1254-npl1000-master-proxy.mp4" \
+  --proxy "$PWD/generated-artifacts/drive-inspection/remotion/IMG_1254-master-HQ-4K-proxy-v2.mp4" \
   --transcript "$PWD/generated-artifacts/drive-inspection/q03a/transcription-corrected.json" \
   --plan "$PWD/generated-artifacts/drive-inspection/mm004/mm004-plan.json" \
   --effects-dir "$PWD/generated-artifacts/drive-inspection/mm004/effects" \
-  --output "$PWD/generated-artifacts/drive-inspection/remotion/IMG_1254-MATRIX-MOTION-Remotion-final.mp4"
+  --output "$PWD/generated-artifacts/drive-inspection/remotion/IMG_1254-MATRIX-MOTION-Remotion-HQ-4K-v2.mp4"
 ```
 
-El render completo se ejecuta una sola vez, con `maxRetries=0` y concurrencia
-1. El script valida proxy All-Intra, duración, audio, resolución, color y
-decodificación completa antes de informar éxito. Los resultados permanecen en
-`generated-artifacts/`, ignorado por Git.
+La salida es H.264 High Profile, CRF 15/preset `medium`, 2160 × 3840, 30 FPS,
+BT.709 limitado y YUV420p. Cada ejecución usa `maxRetries=0` y concurrencia 1.
+El script valida proxy All-Intra, duración, audio, resolución, perfil H.264,
+color y decodificación completa. Los resultados permanecen en `generated-artifacts/`,
+ignorado por Git.
 
 ## Experimento Mobius anterior (conservado)
 
@@ -117,14 +112,12 @@ El MOV original no se altera.
 La composición recibe solo palabras con marcas temporales reales de Whisper.
 Mapea las palabras completas que caen dentro de los segmentos; omite las que
 cruzan un corte, muestra grupos centrados de 1 a 3 palabras y resalta en amarillo
-corporativo únicamente la palabra activa. El zoom de 105–112 % se limita a
-palabras clave temporizadas. Sustituye el destello por una gota y un beso vectorial
-discretos, cada uno visible 1,8 segundos con entrada fade/pop.
-El render produce 171 fotogramas (5,7 segundos, 1080 × 1920, 30 FPS) en H.264
-CRF 17/preset `medium`, BT.709 limitado y YUV420p. Chromium trabaja con
-concurrencia 1, cero reintentos, dos hilos FFmpeg para OffthreadVideo, un
-máximo de 32 MiB de caché de vídeo y sin codificación paralela; el proxy también
-limita a dos hilos el procesado FFmpeg. Los temporales se eliminan al terminar.
+corporativo únicamente la palabra activa. El zoom de cámara queda desactivado.
+Los stickers tienen una entrada breve con interpolación suave, sin rebote brusco.
+El render completo es 2160 × 3840, 30 FPS, H.264 CRF 15/preset `medium`,
+BT.709 limitado y YUV420p. Chromium trabaja con concurrencia 1, cero reintentos,
+un hilo de decodificación de OffthreadVideo, un máximo de 32 MiB de caché y sin
+codificación paralela. Los temporales se eliminan al terminar.
 FFprobe comprueba duración, dimensiones, FPS, códec, pixel format, etiquetas de
 color y audio, FFmpeg decodifica la salida completa y se verifica que el área
 central no quede negra en la mayoría de los fotogramas. Los registros e informe

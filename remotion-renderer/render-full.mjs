@@ -23,6 +23,8 @@ import {
   buildTimedVectorEffects,
   FULL_DURATION_IN_FRAMES,
   FULL_FPS,
+  FULL_HEIGHT,
+  FULL_WIDTH,
 } from "./src/full-edit-timeline.mjs";
 import {
   buildColorManagedProxyFilter,
@@ -95,7 +97,7 @@ const probe = async (filePath, { countFrames = false } = {}) => {
     "-v", "error",
     ...(countFrames ? ["-count_frames"] : []),
     "-show_entries",
-    "format=duration,size:stream=codec_type,codec_name,width,height,avg_frame_rate,nb_read_frames,sample_rate,channels,pix_fmt,color_range,color_space,color_transfer,color_primaries",
+    "format=duration,size:stream=codec_type,codec_name,profile,width,height,avg_frame_rate,nb_read_frames,sample_rate,channels,pix_fmt,color_range,color_space,color_transfer,color_primaries",
     "-of", "json", filePath,
   ]);
   return JSON.parse(stdout);
@@ -168,8 +170,8 @@ try {
   }
   if (
     proxyVideo?.codec_name !== "h264" ||
-    proxyVideo.width !== 1080 ||
-    proxyVideo.height !== 1920 ||
+    proxyVideo.width !== FULL_WIDTH ||
+    proxyVideo.height !== FULL_HEIGHT ||
     parseRate(proxyVideo.avg_frame_rate) !== FULL_FPS ||
     proxyVideo.pix_fmt !== "yuv420p" ||
     proxyVideo.color_range !== "tv" ||
@@ -279,8 +281,8 @@ try {
     chromiumOptions: browserOptions,
   });
   if (
-    composition.width !== 1080 ||
-    composition.height !== 1920 ||
+      composition.width !== FULL_WIDTH ||
+      composition.height !== FULL_HEIGHT ||
     composition.fps !== FULL_FPS ||
     composition.durationInFrames !== durationInFrames
   ) {
@@ -324,8 +326,9 @@ try {
   const outputDuration = Number(outputProbe.format?.duration);
   const validOutput =
     outputVideo?.codec_name === "h264" &&
-    outputVideo.width === 1080 &&
-    outputVideo.height === 1920 &&
+    outputVideo.profile === "High" &&
+    outputVideo.width === FULL_WIDTH &&
+    outputVideo.height === FULL_HEIGHT &&
     parseRate(outputVideo.avg_frame_rate) === FULL_FPS &&
     outputVideo.pix_fmt === "yuv420p" &&
     outputVideo.color_range === "tv" &&
@@ -356,7 +359,11 @@ try {
       path: proxyPath,
       probe: proxyProbe,
       allIntra,
-      colorFilter: buildColorManagedProxyFilter(inputVideo, FULL_FPS, { toneMap: "direct" }),
+      colorFilter: buildColorManagedProxyFilter(inputVideo, FULL_FPS, {
+        toneMap: "direct",
+        width: FULL_WIDTH,
+        height: FULL_HEIGHT,
+      }),
       encoding: {
         codec: "libx264",
         preset: "ultrafast",
@@ -385,6 +392,7 @@ try {
         codec: "h264",
         crf: REMOTION_RENDER_PROFILE.outputCrf,
         preset: REMOTION_RENDER_PROFILE.x264Preset,
+        profile: outputVideo.profile,
         pixelFormat: REMOTION_RENDER_PROFILE.pixelFormat,
         colorSpace: REMOTION_RENDER_PROFILE.colorSpace,
         concurrency: 1,

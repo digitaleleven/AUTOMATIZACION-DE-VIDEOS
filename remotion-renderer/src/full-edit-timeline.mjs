@@ -1,6 +1,13 @@
 export const FULL_FPS = 30;
+export const FULL_WIDTH = 2160;
+export const FULL_HEIGHT = 3840;
 export const FULL_DURATION_IN_FRAMES = 1747;
 export const VECTOR_DURATION_IN_FRAMES = 54;
+
+export function cameraScaleAtFrame(_frame) {
+  // Camera zoom is disabled; keep the frame scale constant to prevent abrupt motion.
+  return 1;
+}
 
 export function buildKeepSegments(sourceFrames, cuts, fps = FULL_FPS) {
   if (!Number.isInteger(sourceFrames) || sourceFrames <= 0) {

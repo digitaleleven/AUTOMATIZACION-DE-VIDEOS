@@ -3,14 +3,14 @@ export const REMOTION_RENDER_PROFILE = Object.freeze({
   height: 1920,
   fps: 30,
   proxyCrf: 14,
-  outputCrf: 17,
+  outputCrf: 15,
   x264Preset: "medium",
   pixelFormat: "yuv420p",
   colorSpace: "bt709",
   concurrency: 1,
   maxRetries: 0,
   disallowParallelEncoding: true,
-  offthreadVideoThreads: 2,
+  offthreadVideoThreads: 1,
   offthreadVideoCacheSizeInBytes: 32 * 1024 * 1024,
 });
 
@@ -40,8 +40,16 @@ export const parseAllIntraFrameInfo = (ffprobeCsv) => {
 export const buildColorManagedProxyFilter = (
   video,
   fps = REMOTION_RENDER_PROFILE.fps,
-  { toneMap = "hable", mobiusParam = 0.5 } = {},
+  {
+    toneMap = "hable",
+    mobiusParam = 0.5,
+    width = REMOTION_RENDER_PROFILE.width,
+    height = REMOTION_RENDER_PROFILE.height,
+  } = {},
 ) => {
+  if (!Number.isInteger(width) || width <= 0 || !Number.isInteger(height) || height <= 0) {
+    throw new Error("La resolución de salida debe ser positiva y entera.");
+  }
   if (!["hable", "mobius", "direct"].includes(toneMap)) {
     throw new Error(`Curva de mapeo tonal no admitida: ${toneMap}`);
   }
@@ -100,19 +108,19 @@ export const buildColorManagedProxyFilter = (
 
   const scaleAndPad =
     toneMap !== "hable"
-      ? `scale=${REMOTION_RENDER_PROFILE.width}:${REMOTION_RENDER_PROFILE.height}:` +
+      ? `scale=${width}:${height}:` +
         "force_original_aspect_ratio=decrease:flags=lanczos," +
-        `pad=${REMOTION_RENDER_PROFILE.width}:${REMOTION_RENDER_PROFILE.height}:(ow-iw)/2:(oh-ih)/2`
-      : `scale=${REMOTION_RENDER_PROFILE.width}:${REMOTION_RENDER_PROFILE.height}:` +
+        `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2`
+      : `scale=${width}:${height}:` +
         "force_original_aspect_ratio=increase:flags=lanczos," +
-        `crop=${REMOTION_RENDER_PROFILE.width}:${REMOTION_RENDER_PROFILE.height}`;
+        `crop=${width}:${height}`;
 
   const directEq =
     toneMap === "direct"
-      ? "eq=contrast=1.05:brightness=0.05:gamma=1.18:saturation=0.92"
+      ? "eq=contrast=1.08:brightness=0.03:gamma=1.12:saturation=0.95"
       : "";
   if (toneMap === "direct") {
-    return `fps=${fps},${scaleAndPad},unsharp=5:5:0.8:5:5:0.0,setsar=1,${colorTransform},${directEq},colorchannelmixer=rr=0.92:gg=0.95:bb=1.08,format=${REMOTION_RENDER_PROFILE.pixelFormat}`;
+    return `fps=${fps},${scaleAndPad},unsharp=5:5:1.0:5:5:0.0,setsar=1,${colorTransform},${directEq},colorchannelmixer=rr=0.92:gg=0.95:bb=1.08,format=${REMOTION_RENDER_PROFILE.pixelFormat}`;
   }
   return `${colorTransform},${scaleAndPad}${directEq},setsar=1,fps=${fps},format=${REMOTION_RENDER_PROFILE.pixelFormat}`;
 };

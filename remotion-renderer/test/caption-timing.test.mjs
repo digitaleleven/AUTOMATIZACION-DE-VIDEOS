@@ -176,26 +176,27 @@ test("Mobius is applied in linear RGB before BT.709 and outputs a padded 1080p p
   );
 });
 
-test("direct HLG conversion bypasses tone mapping but converts to BT.709 before EQ", () => {
+test("direct HLG conversion creates a 4K proxy with the requested sharpening and color", () => {
   const filter = buildColorManagedProxyFilter({
     color_range: "tv",
     color_space: "bt2020nc",
     color_transfer: "arib-std-b67",
     color_primaries: "bt2020",
-  }, 30, { toneMap: "direct" });
+  }, 30, { toneMap: "direct", width: 2160, height: 3840 });
 
   const fps = filter.indexOf("fps=30");
-  const scale = filter.indexOf("scale=1080:1920");
-  const unsharp = filter.indexOf("unsharp=5:5:0.8:5:5:0.0");
+  const scale = filter.indexOf("scale=2160:3840");
+  const unsharp = filter.indexOf("unsharp=5:5:1.0:5:5:0.0");
   const zscale = filter.indexOf("zscale=primariesin=bt2020");
-  const eq = filter.indexOf("eq=contrast=1.05:brightness=0.05:gamma=1.18:saturation=0.92");
+  const eq = filter.indexOf("eq=contrast=1.08:brightness=0.03:gamma=1.12:saturation=0.95");
   const channelMix = filter.indexOf("colorchannelmixer=rr=0.92:gg=0.95:bb=1.08");
   const format = filter.indexOf("format=yuv420p");
   assert.ok(fps >= 0 && fps < scale && scale < unsharp && unsharp < zscale && zscale < eq && eq < channelMix && channelMix < format);
   assert.match(filter, /primaries=bt709:transfer=bt709:matrix=bt709:range=limited:npl=1000/);
-  assert.match(filter, /pad=1080:1920:\(ow-iw\)\/2:\(oh-ih\)\/2/);
+  assert.match(filter, /pad=2160:3840:\(ow-iw\)\/2:\(oh-ih\)\/2/);
   assert.match(filter, /format=yuv420p/);
   assert.doesNotMatch(filter, /tonemap=|gbrpf32le/);
+  assert.equal(REMOTION_RENDER_PROFILE.outputCrf, 15);
 });
 
 test("unsupported or incomplete source color metadata fails explicitly", () => {

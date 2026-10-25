@@ -3,7 +3,10 @@ import test from "node:test";
 import {
   buildKeepSegments,
   buildTimedVectorEffects,
+  cameraScaleAtFrame,
   FULL_FPS,
+  FULL_HEIGHT,
+  FULL_WIDTH,
 } from "../src/full-edit-timeline.mjs";
 
 const cuts = [
@@ -11,6 +14,14 @@ const cuts = [
   { start_seconds: 33.72, end_seconds: 34.35 },
   { start_seconds: 36.54, end_seconds: 37.07 },
 ];
+
+test("master composition uses native 4K vertical resolution and no camera zoom", () => {
+  assert.equal(FULL_WIDTH, 2160);
+  assert.equal(FULL_HEIGHT, 3840);
+  for (const frame of [0, 1, 30, 908, 1496, 1746]) {
+    assert.equal(cameraScaleAtFrame(frame), 1);
+  }
+});
 
 test("MM-004 cuts preserve all 1799 proxy frames outside cuts on a gapless timeline", () => {
   const clips = buildKeepSegments(1799, cuts);
