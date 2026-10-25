@@ -16,16 +16,16 @@ compilación; se declaran los metadatos de entrada explícitamente.
 ffmpeg -y \
   -i "$PWD/generated-artifacts/drive-inspection/IMG_1254.MOV" \
   -map 0:v:0 -map 0:a:0 -t 12 \
-  -vf "fps=30,scale=1080:1920:force_original_aspect_ratio=decrease:flags=lanczos,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,zscale=primariesin=bt2020:transferin=arib-std-b67:matrixin=bt2020nc:rangein=limited:primaries=bt709:transfer=bt709:matrix=bt709:range=limited:npl=1000:c=topleft,format=yuv420p,eq=contrast=0.92:brightness=-0.05:gamma=0.85:saturation=0.92" \
+  -vf "fps=30,scale=1080:1920:force_original_aspect_ratio=decrease:flags=lanczos,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,zscale=primariesin=bt2020:transferin=arib-std-b67:matrixin=bt2020nc:rangein=limited:primaries=bt709:transfer=bt709:matrix=bt709:range=limited:npl=1000:c=topleft,format=yuv420p,eq=contrast=1.0:brightness=0.03:gamma=1.12:saturation=0.94" \
   -c:v libx264 -preset ultrafast -crf 17 -g 1 -keyint_min 1 -sc_threshold 0 -pix_fmt yuv420p \
   -color_range tv -colorspace bt709 -color_primaries bt709 -color_trc bt709 \
   -c:a aac -b:a 192k -ac 2 -ar 48000 \
-  "$PWD/generated-artifacts/drive-inspection/q03c-control/proxy_30fps_allintra_1080_npl1000_eq.mp4"
+  "$PWD/generated-artifacts/drive-inspection/q03c-control/proxy_30fps_allintra_1080_npl1000_eq_balanced.mp4"
 
 ffmpeg -y -ss 2.5 \
-  -i "$PWD/generated-artifacts/drive-inspection/q03c-control/proxy_30fps_allintra_1080_npl1000_eq.mp4" \
+  -i "$PWD/generated-artifacts/drive-inspection/q03c-control/proxy_30fps_allintra_1080_npl1000_eq_balanced.mp4" \
   -frames:v 1 -update 1 \
-  "$PWD/generated-artifacts/drive-inspection/q03c-control/proxy_npl1000_eq_frame-2.5.png"
+  "$PWD/generated-artifacts/drive-inspection/q03c-control/proxy_npl1000_eq_balanced_frame-2.5.png"
 ```
 
 La conversión directa evita `tonemap` y la etapa RGB lineal, pero conserva la
