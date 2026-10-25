@@ -1,0 +1,38 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const test = require("node:test");
+const vm = require("node:vm");
+
+const appSource = fs.readFileSync(path.join(__dirname, "../web/app.js"), "utf8");
+const helperStart = appSource.indexOf("const HIDDEN_TEST_UPLOAD_IDS = new Set(");
+const helperEnd = appSource.indexOf("\n\nconst state =", helperStart);
+assert.notEqual(helperStart, -1, "test-only visibility IDs should exist in app.js");
+assert.notEqual(helperEnd, -1, "visibility helpers should remain separate from application state");
+
+const context = {};
+vm.runInNewContext(
+  `${appSource.slice(helperStart, helperEnd)}\n`
+    + "globalThis.filterItems = getVisibleLibraryItems;",
+  context,
+);
+
+test("the six known test uploads are hidden without hiding future uploads by filename", () => {
+  const items = [
+    { id: "074e33f3a6004af388135a2e339480c1", original_filename: "IMG_1254.MOV" },
+    { id: "21f0c12763ef425e921e286cd0d12dd8", original_filename: "IMG_1254.MOV" },
+    { id: "2a4f73637d2a4edf86d0e2c91b6ea0c9", original_filename: "IMG_1254.MOV" },
+    { id: "d96ccf90a12e45e79def4ddb6c8e217a", original_filename: "IMG_1254.MOV" },
+    { id: "e263a3e2c522487f9e0cad5f99b7250b", original_filename: "IMG_1254.MOV" },
+    { id: "f8c270f8b2a74f4a88f13990f82af564", original_filename: "IMG_1254.MOV" },
+    { id: "new-upload-id", original_filename: "IMG_1254.MOV" },
+    { id: "ordinary-upload-id", original_filename: "other-video.mp4" },
+  ];
+
+  const visibleIds = Array.from(context.filterItems(items), (item) => item.id);
+  assert.deepEqual(visibleIds, ["new-upload-id", "ordinary-upload-id"]);
+});
+
+test("invalid library values produce an empty visible list", () => {
+  assert.deepEqual(Array.from(context.filterItems(null)), []);
+});

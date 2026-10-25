@@ -26,6 +26,25 @@ const VIDEO_NICHE_LABELS = {
   generic_viral: "Genérico / Viral",
 };
 
+// Presentational filter for the six known test uploads. The API, SQLite rows,
+// media files, and future uploads remain untouched.
+const HIDDEN_TEST_UPLOAD_IDS = new Set([
+  "074e33f3a6004af388135a2e339480c1",
+  "21f0c12763ef425e921e286cd0d12dd8",
+  "2a4f73637d2a4edf86d0e2c91b6ea0c9",
+  "d96ccf90a12e45e79def4ddb6c8e217a",
+  "e263a3e2c522487f9e0cad5f99b7250b",
+  "f8c270f8b2a74f4a88f13990f82af564",
+]);
+
+function isHiddenTestUploadId(id) {
+  return HIDDEN_TEST_UPLOAD_IDS.has(String(id ?? ""));
+}
+
+function getVisibleLibraryItems(items) {
+  return Array.isArray(items) ? items.filter((item) => !isHiddenTestUploadId(item?.id)) : [];
+}
+
 const state = {
   library: [],
   libraryLoaded: false,
@@ -324,7 +343,23 @@ function outputMediaUrl(id) {
 }
 
 function getSelectedItem() {
-  return state.library.find((item) => String(item.id) === String(state.selectedId)) || null;
+  return getVisibleLibraryItems(state.library)
+    .find((item) => String(item.id) === String(state.selectedId)) || null;
+}
+
+function ensureVisibleSelection() {
+  const visibleItems = getVisibleLibraryItems(state.library);
+  if (!visibleItems.some((item) => String(item.id) === String(state.selectedId))) {
+    state.selectedId = visibleItems[0]?.id ?? null;
+  }
+}
+
+function libraryRefreshMessage() {
+  const visibleCount = getVisibleLibraryItems(state.library).length;
+  const hiddenCount = state.library.length - visibleCount;
+  if (visibleCount) return "Estado y biblioteca actualizados.";
+  if (hiddenCount) return `La biblioteca está vacía en esta vista; ${hiddenCount} pruebas se conservan ocultas.`;
+  return "Tu biblioteca está vacía. Añade un vídeo para empezar.";
 }
 
 function formatBytes(value) {
@@ -387,13 +422,22 @@ function statusLabel(status) {
 
 function renderLibrary() {
   const list = byId("library-list");
-  byId("library-count").textContent = state.library.length ? `${state.library.length} ARCHIVO${state.library.length === 1 ? "" : "S"}` : "0 ARCHIVOS";
+  const visibleItems = getVisibleLibraryItems(state.library);
+  const hiddenTestCount = state.library.length - visibleItems.length;
+  byId("library-count").textContent = visibleItems.length
+    ? `${visibleItems.length} ARCHIVO${visibleItems.length === 1 ? "" : "S"}`
+    : "0 ARCHIVOS";
   renderSummary();
-  if (!state.library.length) {
-    list.innerHTML = `<div class="empty-state"><div class="empty-glyph">▧</div><h3>Tu biblioteca está vacía</h3><p>${state.libraryLoaded ? "Todavía no hay vídeos. Añade un archivo MP4 o MOV para empezar." : "Añade tu primer vídeo para empezar a crear contenido."}</p><button class="outline-button" type="button" data-action="upload">Añadir un vídeo</button></div>`;
+  if (!visibleItems.length) {
+    const emptyMessage = hiddenTestCount
+      ? `${hiddenTestCount} vídeos de prueba se conservan, pero están ocultos en esta vista.`
+      : state.libraryLoaded
+        ? "Todavía no hay vídeos. Añade un archivo MP4 o MOV para empezar."
+        : "Añade tu primer vídeo para empezar a crear contenido.";
+    list.innerHTML = `<div class="empty-state"><div class="empty-glyph">▧</div><h3>Tu biblioteca está vacía</h3><p>${escapeHtml(emptyMessage)}</p><button class="outline-button" type="button" data-action="upload">Añadir un vídeo</button></div>`;
     return;
   }
-  list.innerHTML = state.library.map((item) => {
+  list.innerHTML = visibleItems.map((item) => {
     const name = item.original_filename || item.filename || `Archivo ${item.id}`;
     const status = String(item.status || "").toLowerCase();
     const statusClass = ["failed", "error", "rejected"].includes(status) ? "status-error" : ["completed", "complete"].includes(status) ? "status-complete" : "";
@@ -413,15 +457,19 @@ function renderLibrary() {
 
 function renderSummary() {
   if (!state.libraryLoaded) return;
+  const visibleItems = getVisibleLibraryItems(state.library);
+  const hiddenTestCount = state.library.length - visibleItems.length;
   const pendingStatuses = new Set(["ready", "pending", "queued", "processing", "transcribing", "rendering", "downloading", "normalizing", "preparing_captions", "uploading", "uploading_captions", "validating_output"]);
   const processedStatuses = new Set(["completed", "complete"]);
   const errorStatuses = new Set(["failed", "error", "rejected", "interrupted"]);
-  const count = (statuses) => state.library.filter((item) => statuses.has(String(item.status || "").toLowerCase())).length;
+  const count = (statuses) => visibleItems.filter((item) => statuses.has(String(item.status || "").toLowerCase())).length;
   byId("summary-pending").textContent = String(count(pendingStatuses));
   byId("summary-processed").textContent = String(count(processedStatuses));
   byId("summary-errors").textContent = String(count(errorStatuses));
   byId("summary-pending-note").textContent = "Listos o en curso";
-  byId("summary-source").textContent = "Datos actualizados";
+  byId("summary-source").textContent = hiddenTestCount
+    ? `${hiddenTestCount} pruebas ocultas en esta vista; los datos se conservan`
+    : "Datos actualizados";
 }
 
 function clearEditProposal() {
@@ -727,8 +775,19 @@ function canWriteDriveProbe() {
 }
 
 function renderJob(job, sourceName = "") {
+  if (isHiddenTestUploadId(job?.source_id)) {
+    state.activeJob = null;
+    clearInterval(state.pollTimer);
+    state.pollTimer = null;
+    byId("job-status-tag").textContent = "RESULTADO OCULTO";
+    byId("job-content").textContent = "Los datos y archivos de esta prueba se conservan, pero no se muestran en esta vista.";
+    hideOutput();
+    updateProcessButton();
+    return;
+  }
   state.activeJob = job;
-  const source = state.library.find((item) => String(item.id) === String(job.source_id));
+  const source = getVisibleLibraryItems(state.library)
+    .find((item) => String(item.id) === String(job.source_id));
   if (source) {
     source.status = job.status;
     source.error = job.error;
@@ -934,9 +993,7 @@ async function refreshWorkspace() {
     if (libraryResult.status === "fulfilled") {
       state.library = libraryResult.value;
       state.libraryLoaded = true;
-      if (!state.library.some((item) => String(item.id) === String(state.selectedId))) {
-        state.selectedId = state.library[0]?.id ?? null;
-      }
+      ensureVisibleSelection();
       renderLibrary();
       renderSelectedItem();
     } else {
@@ -946,7 +1003,7 @@ async function refreshWorkspace() {
       errors.push(`No se pudo consultar la biblioteca: ${libraryResult.reason.message}`);
     }
     if (errors.length) displayToast(errors.join(" · "), true);
-    else displayToast(state.library.length ? "Estado y biblioteca actualizados." : "Tu biblioteca está vacía. Añade un vídeo para empezar.");
+    else displayToast(libraryRefreshMessage());
   } finally {
     byId("refresh-button").disabled = false;
     byId("refresh-button").innerHTML = 'Actualizar datos <span>↻</span>';
@@ -996,9 +1053,7 @@ byId("drive-scan-button").addEventListener("click", async () => {
     const result = await scanDrive();
     state.library = Array.isArray(result?.items) ? result.items : await loadLibrary();
     state.libraryLoaded = true;
-    if (!state.library.some((item) => String(item.id) === String(state.selectedId))) {
-      state.selectedId = state.library[0]?.id ?? null;
-    }
+    ensureVisibleSelection();
     renderLibrary();
     renderSelectedItem();
     const failures = Array.isArray(result?.failed) ? result.failed.length : 0;
@@ -1614,9 +1669,7 @@ byId("drive-sync-button").addEventListener("click", async () => {
     const result = await postDrive(API.driveSync);
     state.library = await loadLibrary();
     state.libraryLoaded = true;
-    if (!state.library.some((item) => String(item.id) === String(state.selectedId))) {
-      state.selectedId = state.library[0]?.id ?? null;
-    }
+    ensureVisibleSelection();
     renderLibrary();
     renderSelectedItem();
     const items = [...(result.videos || []), ...(result.logos || [])];
