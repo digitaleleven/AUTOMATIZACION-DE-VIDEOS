@@ -9,9 +9,25 @@ import {
 } from "../src/master-assembly.mjs";
 import {
   MASTER_OVERLAY_PROFILE,
+  resolveMasterRenderProfile,
   resolveRenderFrameCount,
   supportsAlphaOverlayPixelFormat,
 } from "../src/master-render-profile.mjs";
+
+test("master render profile supports source-appropriate vertical 4K through 60 FPS", () => {
+  assert.deepEqual(resolveMasterRenderProfile(2160, 3840, 60), {
+    width: 2160,
+    height: 3840,
+    fps: 60,
+  });
+  assert.deepEqual(resolveMasterRenderProfile(1080, 1920, 50), {
+    width: 1080,
+    height: 1920,
+    fps: 50,
+  });
+  assert.throws(() => resolveMasterRenderProfile(1440, 2560, 60), /720p, 1080p o 2160p/u);
+  assert.throws(() => resolveMasterRenderProfile(2160, 3840, 61), /25, 30, 50 o 60/u);
+});
 
 const clips = [
   { sourceStart: 17, frames: 90, outputStart: 0 },

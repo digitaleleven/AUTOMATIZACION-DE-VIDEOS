@@ -447,9 +447,19 @@ function escapeHtml(value) {
   }[char]));
 }
 
+function whiteLabelText(value) {
+  return String(value ?? "")
+    .replace(/\bCloudflare\s*R2\b/giu, "almacenamiento privado")
+    .replace(/\bCloudflare\b/giu, "almacenamiento privado")
+    .replace(/\bR2\b/giu, "almacenamiento privado")
+    .replace(/\bModal\b/giu, "motor MATRIX")
+    .replace(/\bReplit\b/giu, "espacio de trabajo")
+    .replace(/\bFFmpeg\b/giu, "procesamiento de vídeo");
+}
+
 function displayToast(message, isError = false) {
   const toast = byId("toast");
-  toast.textContent = message;
+  toast.textContent = whiteLabelText(message);
   toast.classList.toggle("error", isError);
   toast.hidden = false;
   clearTimeout(displayToast.timer);
@@ -462,15 +472,15 @@ function statusLabel(status) {
     processing: "En curso", transcribing: "Transcribiendo el audio", rendering: "Generando el vídeo",
     downloading: "Descargando el resultado", completed: "Completado", complete: "Completado",
     failed: "Error", error: "Error", rejected: "No admitido",
-    normalizing: "Preparando el formato del vídeo", transcribing_with_whisper: "Transcribiendo audio con Whisper",
+    normalizing: "Preparando el formato del vídeo", transcribing_with_whisper: "Transcribiendo el audio",
     preparing_captions: "Preparando subtítulos",
-    analyzing_with_gemini: "Analizando el proxy con Gemini 3.8 Flash",
+    analyzing_with_gemini: "Analizando el vídeo",
     uploading: "Preparando el vídeo",
     uploading_captions: "Preparando subtítulos",
-    uploading_to_modal: "Subiendo el trabajo a Modal",
-    rendering_on_modal: "Renderizando con Remotion en Modal",
-    downloading_from_modal: "Descargando el MP4 desde Modal",
-    uploading_to_r2: "Guardando el MP4 privado en R2",
+    uploading_to_modal: "Preparando el procesamiento",
+    rendering_on_modal: "Generando el vídeo",
+    downloading_from_modal: "Preparando el resultado",
+    uploading_to_r2: "Guardando el resultado privado",
     validating_output: "Comprobando el resultado", interrupted: "Interrumpido",
   };
   return labels[String(status || "").toLowerCase()] || (status ? String(status) : "No disponible");
@@ -581,11 +591,17 @@ function syncEditOptionsForSelectedItem(item) {
     button.setAttribute("aria-pressed", String(selected));
   });
   byId("edit-subtitle-mode").value = editingStyle === "natural_premium" ? "none" : "dynamic";
-  byId("edit-output-profile").value = "1080p";
+  const is4kSource = Number(item.width) >= 2160 && Number(item.height) >= 3840;
+  byId("edit-output-profile").value = is4kSource ? "2160p" : "1080p";
   byId("edit-output-quality").value = "high";
   const supportedFps = [25, 30, 50, 60];
   const sourceFps = Math.round(Number(item.fps) || 30);
-  byId("edit-output-fps").value = String(supportedFps.includes(sourceFps) ? sourceFps : 30);
+  const selectedFps = supportedFps.includes(sourceFps)
+    ? sourceFps
+    : supportedFps.reduce((best, value) =>
+      Math.abs(value - sourceFps) < Math.abs(best - sourceFps) ? value : best,
+    );
+  byId("edit-output-fps").value = String(selectedFps);
   resetCreativePlanControls();
   syncRenderBackendControls();
   clearEditProposal();
@@ -595,8 +611,14 @@ function syncRenderBackendControls() {
   const modal = byId("edit-render-backend").value === "modal";
   const fps = byId("edit-output-fps");
   const profile = byId("edit-output-profile");
-  for (const option of fps.options) option.disabled = modal && option.value !== "30";
-  for (const option of profile.options) option.disabled = modal && option.value !== "1080p";
+  const selectedItem = getSelectedItem();
+  const is4kSource = Number(selectedItem?.width) >= 2160 && Number(selectedItem?.height) >= 3840;
+  for (const option of fps.options) {
+    option.disabled = Number(option.value) > 60 || ![25, 30, 50, 60].includes(Number(option.value));
+  }
+  for (const option of profile.options) {
+    option.disabled = option.value === "1440p" || (option.value === "2160p" && !is4kSource);
+  }
   byId("edit-output-quality").disabled = modal;
   const simpleSubtitles = byId("edit-subtitle-mode").querySelector('option[value="simple"]');
   if (simpleSubtitles) simpleSubtitles.disabled = modal;
@@ -605,12 +627,13 @@ function syncRenderBackendControls() {
     field.disabled = modal;
   }
   if (modal) {
-    fps.value = "30";
-    profile.value = "1080p";
+    if (!fps.value || Number(fps.value) > 60) fps.value = "30";
+    if (profile.selectedOptions[0]?.disabled) profile.value = is4kSource ? "2160p" : "1080p";
     if (byId("edit-subtitle-mode").value === "simple") byId("edit-subtitle-mode").value = "dynamic";
     byId("render-backend-note").textContent =
-      "Modal usa Remotion/FFmpeg, salida fija 1080 × 1920 a 30 FPS y coste cloud variable. Admite cortes, subtítulos dinámicos y stickers; los zooms manuales y el logo global no se aplican.";
+      "Motor MATRIX: salida vertical hasta 2160 × 3840 y 60 FPS para fuentes compatibles. El coste de procesamiento no está cotizado aquí. Admite cortes, subtítulos dinámicos y stickers; los zooms manuales y el logo global no se aplican.";
   }
+  updateCreationSummary();
 }
 
 function renderEditProposal(proposal) {
@@ -641,35 +664,35 @@ function renderEditProposal(proposal) {
     : "ninguno";
   const lines = [
     `Vídeo: ${proposal.source_name || "No disponible"} · ${Number.isFinite(duration) ? `${duration.toFixed(2)} s` : "duración desconocida"}`,
-    "Motor: Remotion + FFmpeg en Modal",
+    "Motor: MATRIX Engine",
     `Modo: ${edit.render_mode === "quick_demo" ? "muestra de 5 segundos" : "vídeo completo"}`,
     `Nicho: ${edit.niche_label || VIDEO_NICHE_LABELS[edit.niche] || VIDEO_NICHE_LABELS.generic_viral}`,
     `Subtítulos: fuente ${captionStyle.fontFamily || "Montserrat"} · resaltado ${captionStyle.highlightColor || "#FFC0CB"} · texto ${captionStyle.textColor || "#FFFFFF"}`,
     `Briefing: ${edit.style_notes ? `${edit.style_notes} (las directivas explícitas de tipografía y color se aplican a esta propuesta)` : "ninguna"}`,
     `Origen: ${source.origin || "No identificado"}`,
     `Entrada: ${source.width || "?"} × ${source.height || "?"} · ${source.fps || "?"} FPS · ${source.video_codec || "códec desconocido"}`,
-    `Bitrate de entrada medido por FFprobe: ${sourceBitrate > 0 ? `${(sourceBitrate / 1000000).toFixed(2)} Mbps` : "no informado"}`,
+    `Bitrate de entrada medido: ${sourceBitrate > 0 ? `${(sourceBitrate / 1000000).toFixed(2)} Mbps` : "no informado"}`,
     `Salida: MP4 ${edit.output_width || 1080} × ${edit.output_height || 1920} · ${edit.output_fps || "?"} FPS · calidad ${edit.output_quality || "?"}`,
     `Duración final prevista: ${Number.isFinite(outputDuration) ? `${outputDuration.toFixed(2)} s` : "no disponible"}`,
     `Subtítulos: ${modeLabels[edit.subtitle_mode] || "No disponible"}`,
-    `Gemini: análisis de vídeo con ${apiPlan.gemini_model || "modelo no disponible"} tras autorizar`,
-    `Whisper: ${apiPlan.openai_transcription ? `transcripción word-level con ${apiPlan.openai_transcription_chunks} fragmento/s` : "no se llamará"}.`,
+    `Análisis visual: ${apiPlan.gemini_video_analysis ? "previsto tras autorizar" : "no se iniciará"}`,
+    `Transcripción del audio: ${apiPlan.openai_transcription ? `marcas por palabra, ${apiPlan.openai_transcription_chunks} fragmento/s` : "no se iniciará"}.`,
     `Audio: ${edit.keep_original_audio ? "se conserva el audio original (y se recorta junto al vídeo)" : "la entrada no tiene audio"}; no se añade música ni normalización`,
     `Logo: ${edit.logo_enabled ? "se usará el logo ya configurado" : "ninguno configurado"}`,
     `Encuadre: ${edit.framing || "no disponible"}`,
     `Cortes que se quitarán: ${cutsLabel}`,
     `Zooms: ${zoomsLabel}`,
     `Stickers con animación de zoom: ${stickersLabel}`,
-    "Gemini 3.8 Flash analizará el proxy normalizado a 1080p después de autorizar; los cortes se mostrarán como sugerencias y no se aplicarán automáticamente.",
-    `Destino: Cloudflare R2 privado · bucket ${proposal.destination || "matrix-motion-videos"}`,
-    `Whisper (OpenAI): ${formatCost(costs.openai_usd)}`,
-    `Gemini: ${formatCost(costs.gemini_usd)} (no cotizado)`,
-    `Cómputo Modal: ${formatCost(costs.modal_compute_usd)} (no cotizado)`,
+    "El análisis visual y la transcripción requieren autorización; los cortes se muestran como sugerencias y no se aplican automáticamente.",
+    "Destino: almacenamiento privado del proyecto",
+    `Transcripción: ${formatCost(costs.openai_usd)}`,
+    `Análisis visual: ${formatCost(costs.gemini_usd)} (no cotizado)`,
+    `Procesamiento: ${formatCost(costs.modal_compute_usd)} (no cotizado)`,
     `Total estimado: ${formatCost(costs.total_estimate_usd)}`,
   ];
   const warnings = (proposal.warnings || []).filter(Boolean);
   const summary = byId("proposal-summary");
-  summary.innerHTML = `<h3>Propuesta de edición</h3><ul>${lines.map((line) => `<li>${escapeHtml(line)}</li>`).join("")}</ul>${warnings.length ? `<p>${warnings.map(escapeHtml).join(" ")}</p>` : ""}<small>La propuesta se calculó localmente. No se han llamado servicios externos. Caduca en 15 minutos.</small>`;
+  summary.innerHTML = `<h3>Propuesta de edición</h3><ul>${lines.map((line) => `<li>${escapeHtml(whiteLabelText(line))}</li>`).join("")}</ul>${warnings.length ? `<p>${warnings.map((warning) => escapeHtml(whiteLabelText(warning))).join(" ")}</p>` : ""}<small>La propuesta se preparó sin llamadas externas. Caduca en 15 minutos.</small>`;
   summary.hidden = false;
   byId("cost-value").textContent = formatCost(costs.total_estimate_usd);
   byId("cost-note").textContent = costs.estimate_note || "No hay tarifas verificadas para calcular el coste.";
@@ -677,8 +700,8 @@ function renderEditProposal(proposal) {
   byId("unknown-cost-consent").checked = false;
   byId("paid-consent").checked = false;
   byId("paid-consent-copy").textContent =
-    "Autorizo enviar solo el audio a Whisper para transcripción word-level, el proxy 1080p a Gemini 3.8 Flash para momentos/zooms/copy SEO, la fuente máster 4K a Modal y el MP4 final al bucket privado de Cloudflare R2.";
-  byId("approve-render-button").querySelector("span").textContent = "Autorizar y crear en Modal";
+    "Autorizo el procesamiento del audio para transcripción, el análisis visual del vídeo original y el render del máster; el MP4 final se guardará en almacenamiento privado. El coste puede variar.";
+  byId("approve-render-button").querySelector("span").textContent = "Autorizar y crear";
   byId("render-approval").hidden = false;
   updateProcessButton();
 }
@@ -728,7 +751,7 @@ function renderSelectedItem() {
     const costKnown = item.cost_estimate_usd !== null && item.cost_estimate_usd !== undefined;
     byId("cost-value").textContent = formatCost(item.cost_estimate_usd);
     byId("cost-note").textContent = costKnown
-      ? "Estimación local para una edición sin subtítulos; revisa la propuesta exacta antes de autorizar."
+      ? "Estimación calculada para una edición sin subtítulos; revisa la propuesta exacta antes de autorizar."
       : "Prepara una propuesta para ver qué servicios se usarían y qué costes se conocen.";
     byId("unknown-cost-wrap").hidden = true;
   }
@@ -762,6 +785,7 @@ function updateCreationSummary(item = getSelectedItem()) {
   const duration = byId("creation-summary-duration");
   const category = byId("creation-summary-category");
   const captions = byId("creation-summary-captions");
+  const output = byId("creation-summary-output");
   const status = byId("creation-summary-status");
   const image = byId("creation-summary-image");
   const placeholder = $("#creation-summary-thumbnail .summary-thumbnail-empty");
@@ -770,6 +794,7 @@ function updateCreationSummary(item = getSelectedItem()) {
     duration.textContent = "Pendiente";
     category.textContent = "Pendiente";
     captions.textContent = "Pendiente de vídeo";
+    output.textContent = "Pendiente de vídeo";
     status.textContent = "PENDIENTE DE VÍDEO";
     image.hidden = true;
     image.removeAttribute("src");
@@ -785,6 +810,13 @@ function updateCreationSummary(item = getSelectedItem()) {
   captions.textContent = byId("custom-captions-enabled").checked
     ? `Activados · ${byId("custom-caption-color").selectedOptions[0]?.textContent || "Rosa pastel"}`
     : "Desactivados";
+  const outputDimensions = {
+    "720p": "720 × 1280",
+    "1080p": "1080 × 1920",
+    "2160p": "2160 × 3840",
+  };
+  output.textContent =
+    `${outputDimensions[byId("edit-output-profile").value] || "Perfil pendiente"} · ${byId("edit-output-fps").value || "—"} FPS`;
   status.textContent = "VÍDEO SELECCIONADO";
   byId("create-video-button").disabled = false;
   byId("quick-demo-button").disabled = false;
@@ -826,18 +858,24 @@ function renderHealth(health) {
   const modal = health?.modal || {};
   const modalStatus = byId("health-modal");
   modalStatus.textContent = modal.sdk_installed && modal.credentials_configured
-    ? "SDK y perfil detectados; worker comprobado antes de procesar"
-    : "No configurado en el servidor";
-  modalStatus.className = "health-unknown";
-  byId("health-environment").textContent = "Modal exclusivo";
+    ? "Configuración detectada; prueba remota pendiente"
+    : "Configuración pendiente";
+  modalStatus.className = modal.sdk_installed && modal.credentials_configured ? "health-ok" : "health-unknown";
+  byId("health-environment").textContent = "Hasta 2160 × 3840 · hasta 60 FPS; sin render de prueba";
   const r2 = health?.r2_storage || {};
   const engineTag = byId("engine-summary-tag");
+  const engineTitle = byId("engine-summary-title");
   if (engineTag) {
     const configured = modal.sdk_installed && modal.credentials_configured && r2.ready === true;
-    engineTag.textContent = configured ? "CONFIGURACIÓN DETECTADA" : "FALTA CONFIGURACIÓN";
+    engineTag.textContent = configured ? "CONFIGURACIÓN LISTA" : "FALTA CONFIGURACIÓN";
+    if (engineTitle) {
+      engineTitle.textContent = configured
+        ? "Motor MATRIX Engine: Configuración lista"
+        : "Motor MATRIX Engine: Configuración pendiente";
+    }
     engineTag.setAttribute("aria-label", configured
-      ? "Modal y R2 tienen configuración detectada; no se ha realizado una prueba real."
-      : "Falta configurar Modal o R2.");
+      ? "Configuración detectada; el despliegue del worker y un render real siguen pendientes."
+      : "Falta completar la configuración del motor o el almacenamiento privado.");
   }
   const drive = health?.drive_connected;
   const driveReady = health?.drive_oauth_ready;
@@ -987,17 +1025,18 @@ function renderJob(job, sourceName = "") {
   const copySeo = gemini.copy_and_seo || {};
   const transcription = job.transcription || {};
   const geminiMarkup = gemini.model
-    ? `<div class="job-output-metadata"><strong>Whisper + Gemini 3.8 Flash</strong><span>Whisper ${escapeHtml(transcription.model || "whisper-1")}: ${escapeHtml(transcription.word_count ?? 0)} palabras con marcas word-level. Gemini: ${escapeHtml(gemini.summary || "Sin resumen disponible")}</span><span>Archivo temporal de Gemini eliminado: ${gemini.remote_file_deleted === true ? "sí" : "no confirmado"} · tokens informados: ${escapeHtml(gemini.usage?.total_tokens ?? "no disponibles")}</span><span>Momentos visuales: ${moments.length}; zooms sugeridos ${zooms.length}, aplicados ${gemini.suggested_zooms_applied === true ? "sí" : "no"}. Los cortes no se aplicaron y requieren revisión humana.</span>${moments.length ? `<ul>${moments.map((item) => `<li>${Number(item.start_seconds).toFixed(2)}–${Number(item.end_seconds).toFixed(2)} s · ${escapeHtml(item.label || "")}: ${escapeHtml(item.reason || "")}</li>`).join("")}</ul>` : ""}${suggestedCuts.length ? `<ul>${suggestedCuts.map((cut) => `<li>Corte sugerido ${Number(cut.start_seconds).toFixed(2)}–${Number(cut.end_seconds).toFixed(2)} s · ${escapeHtml(cut.reason || "")}</li>`).join("")}</ul>` : "<span>Sin cortes sugeridos.</span>"}${copySeo.hook ? `<span>Hook: ${escapeHtml(copySeo.hook)}</span>` : ""}${copySeo.caption ? `<span>Copy: ${escapeHtml(copySeo.caption)}</span>` : ""}${copySeo.seo_title ? `<span>SEO: ${escapeHtml(copySeo.seo_title)}</span>` : ""}${Array.isArray(copySeo.hashtags) && copySeo.hashtags.length ? `<span>${copySeo.hashtags.map(escapeHtml).join(" ")}</span>` : ""}</div>`
+    ? `<div class="job-output-metadata"><strong>Estrategia Copywriting &amp; SEO</strong><span>Transcripción: ${escapeHtml(transcription.word_count ?? 0)} palabras con marcas temporales. Análisis visual: ${escapeHtml(whiteLabelText(gemini.summary || "Sin resumen disponible"))}</span><span>Archivo temporal eliminado: ${gemini.remote_file_deleted === true ? "sí" : "no confirmado"} · unidades informadas: ${escapeHtml(gemini.usage?.total_tokens ?? "no disponibles")}</span><span>Momentos visuales: ${moments.length}; reencuadres sugeridos ${zooms.length}, aplicados ${gemini.suggested_zooms_applied === true ? "sí" : "no"}. Los cortes no se aplicaron y requieren revisión humana.</span>${moments.length ? `<ul>${moments.map((item) => `<li>${Number(item.start_seconds).toFixed(2)}–${Number(item.end_seconds).toFixed(2)} s · ${escapeHtml(item.label || "")}: ${escapeHtml(whiteLabelText(item.reason || ""))}</li>`).join("")}</ul>` : ""}${suggestedCuts.length ? `<ul>${suggestedCuts.map((cut) => `<li>Corte sugerido ${Number(cut.start_seconds).toFixed(2)}–${Number(cut.end_seconds).toFixed(2)} s · ${escapeHtml(whiteLabelText(cut.reason || ""))}</li>`).join("")}</ul>` : "<span>Sin cortes sugeridos.</span>"}</div>`
     : "";
   const r2 = job.r2_storage || {};
   const r2Markup = r2.object_key
-    ? `<div class="job-output-metadata"><strong>Cloudflare R2 privado</strong><span>${escapeHtml(r2.object_key)} · ${Number.isFinite(Number(r2.size_bytes)) ? `${(Number(r2.size_bytes) / 1048576).toFixed(1)} MiB` : "tamaño no disponible"} · verificación ${r2.verified === true ? "confirmada" : "pendiente"}</span></div>`
+    ? `<div class="job-output-metadata"><strong>Almacenamiento privado</strong><span>${escapeHtml(whiteLabelText(r2.object_key))} · ${Number.isFinite(Number(r2.size_bytes)) ? `${(Number(r2.size_bytes) / 1048576).toFixed(1)} MiB` : "tamaño no disponible"} · verificación ${r2.verified === true ? "confirmada" : "pendiente"}</span></div>`
     : "";
+  renderSeoStrategy(copySeo);
   byId("job-status-tag").textContent = statusLabel(job.status).toLocaleUpperCase("es");
   byId("job-content").innerHTML = `<div class="job-live">
     <div><strong>${escapeHtml(sourceName || "Procesamiento")}</strong><p>${escapeHtml(phase)} · Identificador ${escapeHtml(job.id ?? "No disponible")}</p>${progressMarkup}</div>
-    <span class="job-progress-label">${escapeHtml(progressText)}</span>
-    ${job.error ? `<div class="job-error">${escapeHtml(job.error)}</div>` : ""}
+    <span class="job-progress-label">${escapeHtml(whiteLabelText(progressText))}</span>
+    ${job.error ? `<div class="job-error">${escapeHtml(whiteLabelText(job.error))}</div>` : ""}
     ${geminiMarkup}
     ${outputMetadataMarkup}
     ${r2Markup}
@@ -1021,6 +1060,64 @@ function showOutput(outputId) {
   byId("output-link").href = url;
   byId("output-empty").hidden = true;
   panel.hidden = false;
+}
+
+function renderSeoStrategy(copySeo = {}) {
+  const container = byId("step5-seo-content");
+  const button = byId("copy-seo-button");
+  if (!container || !button) return;
+  const hook = typeof copySeo.hook === "string" ? copySeo.hook.trim() : "";
+  const caption = typeof copySeo.caption === "string" ? copySeo.caption.trim() : "";
+  const seoTitle = typeof copySeo.seo_title === "string" ? copySeo.seo_title.trim() : "";
+  const hashtags = Array.isArray(copySeo.hashtags)
+    ? copySeo.hashtags.filter((tag) => typeof tag === "string" && tag.trim()).map((tag) => tag.trim())
+    : [];
+  const hasContent = Boolean(hook || caption || seoTitle || hashtags.length);
+  button.disabled = !hasContent;
+  button.dataset.copySeo = "";
+  if (!hasContent) {
+    container.innerHTML = '<p class="step5-seo-empty">Hook, caption y hashtags aparecerán aquí cuando exista un análisis real.</p>';
+    return;
+  }
+  const copyText = [
+    hook ? `Hook: ${hook}` : "",
+    caption ? `Caption: ${caption}` : "",
+    seoTitle ? `SEO: ${seoTitle}` : "",
+    hashtags.length ? `Hashtags: ${hashtags.join(" ")}` : "",
+  ].filter(Boolean).join("\n");
+  button.dataset.copySeo = copyText;
+  container.innerHTML = `<dl class="step5-seo-values">
+    <div><dt>Hook</dt><dd>${hook ? escapeHtml(hook) : "No disponible"}</dd></div>
+    <div><dt>Caption</dt><dd>${caption ? escapeHtml(caption) : "No disponible"}</dd></div>
+    ${seoTitle ? `<div><dt>Título SEO</dt><dd>${escapeHtml(seoTitle)}</dd></div>` : ""}
+    <div><dt>Hashtags</dt><dd>${hashtags.length ? hashtags.map(escapeHtml).join(" ") : "No disponibles"}</dd></div>
+  </dl>`;
+}
+
+async function copySeoStrategy(button) {
+  const text = button.dataset.copySeo || "";
+  if (!text) return;
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const field = document.createElement("textarea");
+      field.value = text;
+      field.setAttribute("readonly", "");
+      field.style.position = "fixed";
+      field.style.opacity = "0";
+      document.body.append(field);
+      field.select();
+      const copied = document.execCommand("copy");
+      field.remove();
+      if (!copied) throw new Error("No se pudo copiar el texto.");
+    }
+    const originalLabel = button.textContent;
+    button.textContent = "Copiado";
+    setTimeout(() => { button.textContent = originalLabel; }, 1800);
+  } catch {
+    displayToast("No se pudo copiar la estrategia. Selecciona el texto y cópialo manualmente.", true);
+  }
 }
 
 function hideOutput() {
@@ -1424,6 +1521,7 @@ syncRenderBackendControls();
   byId(controlId).addEventListener("change", () => {
       if (controlId === "edit-render-backend") syncRenderBackendControls();
       invalidateEditOptions();
+      updateCreationSummary();
   });
 }
 for (const controlId of [
@@ -1454,7 +1552,7 @@ async function prepareProposalForMode(renderMode = "full") {
   button.textContent = "Preparando propuesta…";
   const summary = byId("proposal-summary");
   summary.hidden = false;
-  summary.textContent = "Validando el vídeo localmente y calculando el plan; no se llamará a ningún proveedor.";
+  summary.textContent = "Validando el vídeo y calculando el plan; no se llamará a ningún proveedor.";
   try {
     const result = await prepareEditProposal(
       item.id,
@@ -1470,7 +1568,7 @@ async function prepareProposalForMode(renderMode = "full") {
     renderEditProposal(result);
     updateCreationSummary(item);
     displayToast(
-      `${renderMode === "quick_demo" ? "Prueba de 5 segundos" : "Propuesta completa"} preparada localmente. Revisa los permisos y el coste antes de iniciar servicios.`,
+      `${renderMode === "quick_demo" ? "Prueba de 5 segundos" : "Propuesta completa"} preparada sin llamadas externas. Revisa los permisos y el coste antes de iniciar servicios.`,
     );
   } catch (error) {
     summary.hidden = false;
@@ -1518,7 +1616,7 @@ byId("approve-render-button").addEventListener("click", async () => {
     return;
   }
   const providerSummary =
-    "Whisper transcribirá solo el audio; Gemini 3.8 Flash analizará el proxy 1080p y sugerirá momentos/zooms/copy SEO; Modal renderizará desde la fuente máster 4K y Cloudflare R2 guardará el MP4 privado.";
+    "Se procesará solo el audio necesario para la transcripción; el vídeo se analizará para sugerir momentos y estrategia de contenido; el render usará la fuente maestra y el MP4 se guardará en almacenamiento privado.";
   const costSummary = unknown
     ? "El coste total no está disponible y podría haber cargos."
     : `La estimación total es ${formatCost(proposal.costs.total_estimate_usd)}.`;
@@ -1545,7 +1643,7 @@ byId("approve-render-button").addEventListener("click", async () => {
     byId("job-status-tag").textContent = "ERROR AL INICIAR";
     byId("job-content").innerHTML = `<div class="job-error">${escapeHtml(error.message)}</div>`;
   } finally {
-    button.querySelector("span").textContent = "Autorizar y renderizar en Modal";
+    button.querySelector("span").textContent = "Autorizar y crear";
     updateProcessButton();
   }
 });
@@ -1628,7 +1726,7 @@ async function listDriveFiles(role, token = null) {
 async function getDriveAccessToken() {
   if (state.driveToken && Date.now() < state.driveTokenExpiresAt - 60_000) return state.driveToken;
     const clientId = state.drive?.picker?.client_id;
-  if (!clientId) throw new Error("Falta configurar GOOGLE_DRIVE_CLIENT_ID en Replit Secrets.");
+  if (!clientId) throw new Error("Falta configurar GOOGLE_DRIVE_CLIENT_ID en las variables protegidas.");
   await loadScript("https://accounts.google.com/gsi/client");
   return new Promise((resolve, reject) => {
     state.googleTokenClient = google.accounts.oauth2.initTokenClient({
@@ -1678,7 +1776,7 @@ function loadScript(src) {
 async function openDrivePicker(role, selectFiles = false) {
   const pickerSettings = state.drive?.picker;
   if (!pickerSettings?.client_id || !pickerSettings?.api_key || !pickerSettings?.app_id) {
-    throw new Error("Configura primero las credenciales de Google Picker en Replit Secrets.");
+    throw new Error("Configura primero las credenciales de Google Picker en las variables protegidas.");
   }
   const accessToken = await getDriveAccessToken();
   await loadScript("https://apis.google.com/js/api.js");
@@ -1865,6 +1963,10 @@ document.querySelectorAll(".drive-list-button").forEach((button) => {
         || !(state.drive?.files?.[role]?.length);
     }
   });
+});
+
+byId("copy-seo-button")?.addEventListener("click", (event) => {
+  void copySeoStrategy(event.currentTarget);
 });
 
 byId("drive-sync-button").addEventListener("click", async () => {

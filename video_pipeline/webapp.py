@@ -1875,9 +1875,7 @@ class VideoPanel:
                 "creative_plan": creative_plan,
                 "transitions": False,
                 "higher_resolution_note": (
-                    "Remotion en Modal está fijado a 1080 × 1920."
-                    if render_backend == "modal"
-                    else "La salida de Modal está limitada a 1080 × 1920."
+                    "El perfil 2160 × 3840 se permite únicamente con una fuente máster 4K."
                 ),
             },
             "api_plan": {
@@ -1934,7 +1932,8 @@ class VideoPanel:
                         else ""
                     ),
                     (
-                        "La salida Remotion está fijada a H.264 CRF 15, 1080 × 1920 y 30 FPS."
+                        f"Salida MATRIX prevista: H.264 CRF 15, {style.output_width} × "
+                        f"{style.output_height} a {style.output_fps} FPS."
                         if render_backend == "modal"
                         else ""
                     ),

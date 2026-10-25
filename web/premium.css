@@ -1837,6 +1837,52 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .final-summary-meta div { display: grid; gap: 5px; min-width: 0; }
 .final-summary-meta dt { color: #819298; font-size: 9px; }
 .final-summary-meta dd { margin: 0; color: #425a61; font-size: 10px; font-weight: 650; overflow-wrap: anywhere; }
+.step5-seo-card {
+  display: grid;
+  gap: 13px;
+  margin-top: 15px;
+  padding: 16px;
+  border: 1px solid #d9e8e8;
+  border-radius: 13px;
+  background: linear-gradient(145deg, #fbfdfc, #f1f8f7);
+}
+.step5-seo-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.step5-seo-heading .eyebrow { margin: 0 0 5px; }
+.step5-seo-heading h3 { margin: 0; color: #34545b; font-size: 13px; }
+.step5-seo-values {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin: 0;
+}
+.step5-seo-values > div {
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid #e0ebea;
+  border-radius: 9px;
+  background: #fff;
+}
+.step5-seo-values dt {
+  margin-bottom: 6px;
+  color: #819298;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .07em;
+}
+.step5-seo-values dd {
+  margin: 0;
+  color: #425a61;
+  font-size: 10px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.step5-seo-empty { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
 .engine-summary {
   display: flex;
   align-items: center;

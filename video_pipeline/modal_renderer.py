@@ -15,6 +15,7 @@ import tempfile
 import time
 from typing import Any, Callable
 
+from .style import StyleConfigError, validate_output_profile
 
 logger = logging.getLogger(__name__)
 MODAL_APP_NAME = "matrix-motion-remotion"
@@ -57,6 +58,7 @@ class ModalRenderResult:
     sha256: str
     width: int
     height: int
+    fps: int
     elapsed_seconds: float
     remote_job_id: str
     temporary_storage_cleaned: bool
@@ -130,6 +132,14 @@ class ModalRenderClient:
             raise FileExistsError("Se rechaza sobrescribir un MP4 de salida existente.")
         if not isinstance(transcript, dict) or not isinstance(plan, dict):
             raise ValueError("La transcripción y el plan deben ser objetos JSON.")
+        try:
+            expected_width, expected_height, expected_fps = validate_output_profile(
+                plan.get("output_width"),
+                plan.get("output_height"),
+                plan.get("output_fps"),
+            )
+        except StyleConfigError as exc:
+            raise ValueError(str(exc)) from None
         if not isinstance(show_subtitles, bool):
             raise ValueError("La opción de subtítulos debe ser booleana.")
         if not isinstance(briefing, str) or len(briefing) > 4000:
@@ -212,6 +222,20 @@ class ModalRenderClient:
             raise RuntimeError("Modal devolvió un tamaño de MP4 fuera de los límites permitidos.")
         if not isinstance(expected_hash, str) or not re.fullmatch(r"[a-f0-9]{64}", expected_hash):
             raise RuntimeError("Modal devolvió un checksum no válido para el MP4.")
+        try:
+            actual_width = int(result.get("width") or 0)
+            actual_height = int(result.get("height") or 0)
+            actual_fps = int(result.get("fps") or 0)
+        except (TypeError, ValueError):
+            actual_width = actual_height = actual_fps = 0
+        if (actual_width, actual_height, actual_fps) != (
+            expected_width,
+            expected_height,
+            expected_fps,
+        ):
+            raise RuntimeError(
+                "La respuesta del motor no coincide con la resolución y los FPS aprobados."
+            )
 
         if progress_callback:
             progress_callback("downloading_from_modal")
@@ -256,6 +280,7 @@ class ModalRenderClient:
             sha256=digest.hexdigest(),
             width=int(result.get("width") or 0),
             height=int(result.get("height") or 0),
+            fps=int(result.get("fps") or 0),
             elapsed_seconds=time.monotonic() - started,
             remote_job_id=job_id,
             temporary_storage_cleaned=temporary_storage_cleaned,

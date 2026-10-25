@@ -58,6 +58,9 @@ export type TimedTitleOverlay = {
 };
 
 type FullEditProps = {
+  width: number;
+  height: number;
+  fps: number;
   durationInFrames: number;
   effects: TimedVectorEffect[];
   wordTimings: TimedWord[];
@@ -302,6 +305,9 @@ const VectorOverlay: FC<{ effect: TimedVectorEffect }> = ({ effect }) => {
 };
 
 const FullEdit: FC<FullEditProps> = ({
+  width,
+  height,
+  fps,
   effects,
   wordTimings,
   showSubtitles,
@@ -313,7 +319,18 @@ const FullEdit: FC<FullEditProps> = ({
   cardOverlays,
   captionGroups,
 }) => (
-  <AbsoluteFill style={{ backgroundColor: "transparent" }}>
+  <AbsoluteFill style={{ backgroundColor: "transparent", overflow: "hidden" }}>
+    <div
+      style={{
+        position: "absolute",
+        left: 0,
+        top: 0,
+        width: FULL_WIDTH,
+        height: FULL_HEIGHT,
+        transform: `scale(${width / FULL_WIDTH})`,
+        transformOrigin: "top left",
+      }}
+    >
     {titleOverlay && (
       <Sequence from={0} durationInFrames={titleOverlay.durationFrames} layout="none">
         <TitleOverlay title={titleOverlay} />
@@ -342,7 +359,7 @@ const FullEdit: FC<FullEditProps> = ({
     ))}
     <WordSubtitles
       words={wordTimings}
-      fps={FULL_FPS}
+      fps={fps}
       showSubtitles={showSubtitles}
       captionStyle={captionStyle}
       captionGroups={captionGroups}
@@ -350,6 +367,7 @@ const FullEdit: FC<FullEditProps> = ({
     {soundEffects.map((cue, index) => (
       <SoundEffect key={`${cue.kind}-${cue.startFrame}-${index}`} cue={cue} />
     ))}
+    </div>
   </AbsoluteFill>
 );
 
@@ -361,8 +379,16 @@ export const FullRemotionRoot: FC = () => (
     height={FULL_HEIGHT}
     fps={FULL_FPS}
     durationInFrames={FULL_DURATION_IN_FRAMES}
-    calculateMetadata={({ props }) => ({ durationInFrames: props.durationInFrames })}
+    calculateMetadata={({ props }) => ({
+      width: props.width,
+      height: props.height,
+      fps: props.fps,
+      durationInFrames: props.durationInFrames,
+    })}
     defaultProps={{
+      width: FULL_WIDTH,
+      height: FULL_HEIGHT,
+      fps: FULL_FPS,
       durationInFrames: FULL_DURATION_IN_FRAMES,
       effects: [],
       wordTimings: [],

@@ -290,6 +290,22 @@ try {
   if (!inputVideo || !inputAudio || !Number.isFinite(sourceDuration) || sourceDuration <= 0) {
     throw new Error("Se requiere el MOV original, vídeo detectable y pista AAC estéreo de 48 kHz.");
   }
+  let displayedWidth = Number(inputVideo.width || 0);
+  let displayedHeight = Number(inputVideo.height || 0);
+  const rotation = Number(
+    inputVideo.side_data_list?.find((item) => item.rotation !== undefined)?.rotation ??
+      inputVideo.tags?.rotate ??
+      0,
+  );
+  if (Math.abs(rotation) % 180 === 90) {
+    [displayedWidth, displayedHeight] = [displayedHeight, displayedWidth];
+  }
+  if (
+    FULL_WIDTH === 2160 &&
+    (displayedWidth < 2160 || displayedHeight < 3840)
+  ) {
+    throw new Error("La salida 2160p requiere una fuente maestra vertical de 2160 × 3840 o superior.");
+  }
   const isHlgInput =
     inputVideo.color_range === "tv" &&
     inputVideo.color_space === "bt2020nc" &&

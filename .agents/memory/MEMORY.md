@@ -10,4 +10,4 @@
 - [Semántica de cortes FFmpeg](ffmpeg-cut-timelines.md) — Los intervalos de silencio son rangos que se eliminan; conviértelos a su complemento y verifica duración y fotogramas.
 - [Entrega de vídeos grandes](large-video-delivery.md) — Adjuntos limitados a 100 MiB; entregar másteres grandes por enlace autenticado, sin recomprimirlos.
 - [Disco efímero de Modal](modal-ephemeral-disk.md) — La cuota predeterminada es 512 GiB; pedir menos se rechaza y pedir más escala la memoria facturable 20:1.
-- [Modal como motor único](modal-rendering-scope.md) — MATRIX MOTION usa Modal para renders; no habilitar Shotstack ni reintentos de renders antiguos.
+- [Modal como motor único](modal-rendering-scope.md) — Salida vertical según el máster hasta 4K/60; despliegues y renders siguen requiriendo autorización expresa.

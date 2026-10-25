@@ -1628,7 +1628,7 @@ class VideoPanelApiTests(unittest.TestCase):
                 "creative_plan": {"cuts": [], "zooms": [], "stickers": []},
             })
 
-    def test_4k_profile_is_rejected_until_account_plan_is_verified(self):
+    def test_4k_profile_requires_a_4k_source(self):
         status, response = self.upload(self.create_movie(".mp4"))
         self.assertEqual(status, 201)
         with self.assertRaises(PanelError) as blocked:
@@ -1638,7 +1638,37 @@ class VideoPanelApiTests(unittest.TestCase):
                 "output_fps": 50,
                 "output_profile": "2160p",
             })
-        self.assertIn("1080 × 1920", str(blocked.exception))
+        self.assertIn("2160 × 3840", str(blocked.exception))
+
+    def test_4k_source_defaults_to_4k_and_60_fps_without_external_calls(self):
+        status, response = self.upload(self.create_movie(".mp4"))
+        self.assertEqual(status, 201)
+        source = SimpleNamespace(
+            width=2160,
+            height=3840,
+            duration=18.82,
+            video_codec="hevc",
+            audio_codec="aac",
+            fps=60.0,
+            video_bit_rate_bps=20_000_000,
+            format_bit_rate_bps=22_000_000,
+            has_audio=True,
+            rotation=0,
+        )
+        with patch("video_pipeline.webapp.probe_video", return_value=source):
+            proposal = self.panel.prepare_proposal({
+                "source_id": response["item"]["id"],
+                "subtitle_mode": "none",
+            })
+        self.assertEqual(proposal["edit"]["output_profile"], "2160p")
+        self.assertEqual(
+            (proposal["edit"]["output_width"], proposal["edit"]["output_height"]),
+            (2160, 3840),
+        )
+        self.assertEqual(proposal["edit"]["output_fps"], 60)
+        self.assertIn("2160 × 3840", proposal["edit"]["higher_resolution_note"])
+        self.assertTrue(any("2160 × 3840 a 60 FPS" in item for item in proposal["warnings"]))
+        self.assertEqual(proposal["api_plan"]["external_services_called_during_proposal"], [])
 
     def test_render_requires_approved_single_use_local_proposal(self):
         status, response = self.upload(self.create_movie(".mp4"))

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#102326">
     <meta name="description" content="MATRIX MOTION · VIDEO AUTOMATION STUDIO. De vídeo original a contenido listo para publicar.">
-    <title>MATRIX MOTION — VIDEO AUTOMATION STUDIO</title>
+    <title>MATRIX MOTION | VIDEO AUTOMATION STUDIO • PRO EDITION</title>
     <link rel="icon" href="data:,">
     <link rel="stylesheet" href="/premium.css">
   </head>
@@ -14,7 +14,7 @@
       <aside class="sidebar" aria-label="Navegación principal">
         <a class="brand" href="/" aria-label="MATRIX MOTION, inicio">
           <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 40 40" focusable="false"><path d="M8 10v20M8 20h8l4-7 4 14 4-7h4" /><path d="M29 10h4v20h-4" /></svg></span>
-          <span class="brand-copy"><strong>MATRIX MOTION</strong><small>VIDEO AUTOMATION STUDIO</small></span>
+          <span class="brand-copy"><strong>MATRIX MOTION</strong><small>VIDEO AUTOMATION STUDIO • PRO EDITION</small></span>
         </a>
         <div class="sidebar-divider"></div>
         <p class="nav-caption">ESPACIO DE TRABAJO</p>
@@ -34,9 +34,9 @@
       <main class="main">
         <header class="topbar">
           <div class="mobile-brand"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 40 40" focusable="false"><path d="M8 10v20M8 20h8l4-7 4 14 4-7h4" /><path d="M29 10h4v20h-4" /></svg></span><strong>MATRIX MOTION</strong></div>
-          <div class="breadcrumb"><span>MATRIX MOTION</span><b>/</b><span>VIDEO AUTOMATION STUDIO</span></div>
+          <div class="breadcrumb"><span>MATRIX MOTION</span><b>/</b><span>VIDEO AUTOMATION STUDIO • PRO EDITION</span></div>
           <div class="topbar-right">
-            <span class="local-pill"><i></i> Entorno local</span>
+            <span class="local-pill"><i></i> Espacio protegido</span>
             <button id="refresh-button" class="quiet-button" type="button">Actualizar datos <span>↻</span></button>
             <button id="logout-button" class="quiet-button" type="button">Cerrar sesión</button>
             <span class="topbar-date" id="today-label"></span>
@@ -84,14 +84,14 @@
 
           <div class="notice-band" role="note" data-page-section="home">
             <span class="notice-icon" aria-hidden="true">i</span>
-            <p><strong>El original no se modifica.</strong> OpenAI y Modal solo se usan tras una autorización explícita; no se inicia ningún render en segundo plano.</p>
+            <p><strong>El original no se modifica.</strong> El procesamiento de audio y vídeo requiere autorización explícita; no se inicia ningún render en segundo plano.</p>
             <span class="notice-local">SIN ENVÍOS AUTOMÁTICOS</span>
           </div>
 
           <section class="section-block create-upload-section" id="crear-video" data-page-section="create" aria-labelledby="create-title">
             <div class="section-head">
               <div><p class="eyebrow">01 / NUEVO PROYECTO</p><h2 id="create-title">Crear vídeo</h2><p class="section-description">Sube el original, define su categoría y elige el estilo de subtítulos.</p></div>
-              <span class="status-pill">Motor disponible: Modal</span>
+              <span class="status-pill">Motor disponible: MATRIX</span>
             </div>
             <div class="create-steps" aria-label="Flujo de creación de cinco pasos">
               <span class="create-step active"><b>1</b> Vídeo</span><span class="step-connector"></span>
@@ -199,8 +199,8 @@
                 <div class="accordion-content">
                   <div class="format-lock" aria-label="Formato de salida fijo">
                     <span class="format-lock-mark" aria-hidden="true">9:16</span>
-                    <span><strong>Vertical · 1080 × 1920</strong><small>Formato de salida fijo para este estudio.</small></span>
-                    <span class="locked-label">FIJO</span>
+                    <span><strong>Vertical · 9:16</strong><small>Salida 1080 × 1920 o 2160 × 3840 según el máster.</small></span>
+                    <span class="locked-label">9:16</span>
                   </div>
                   <label class="custom-field" for="custom-image-filter"><span>Filtro de imagen</span><select id="custom-image-filter"><option value="none">Sin filtro adicional</option><option value="natural" selected>Natural · conversión gestionada BT.709</option><option value="warm" disabled>Cálido · pendiente de prueba</option><option value="cool" disabled>Frío · pendiente de prueba</option><option value="contrast" disabled>Contraste · pendiente de prueba</option></select></label>
                 </div>
@@ -232,10 +232,17 @@
                   <div><dt>Duración</dt><dd id="creation-summary-duration">Pendiente</dd></div>
                   <div><dt>Categoría</dt><dd id="creation-summary-category">Pendiente</dd></div>
                   <div><dt>Subtítulos</dt><dd id="creation-summary-captions">Pendiente de vídeo</dd></div>
+                  <div><dt>Perfil de salida</dt><dd id="creation-summary-output">Pendiente de vídeo</dd></div>
                 </dl>
-                <div class="engine-summary"><span class="engine-status-dot" aria-hidden="true"></span><div><strong>Modal Cloud Engine</strong><small>Render en Modal; MP4 final privado en Cloudflare R2. Coste variable, no cotizado aquí.</small></div><span class="engine-summary-tag" id="engine-summary-tag">COMPROBANDO</span></div>
+                <div class="engine-summary"><span class="engine-status-dot" aria-hidden="true"></span><div><strong id="engine-summary-title">Motor MATRIX Engine: Configuración pendiente</strong><small>Perfiles verticales 4K y hasta 60 FPS preparados en el código; el despliegue y render remoto aún no se han verificado.</small></div><span class="engine-summary-tag" id="engine-summary-tag">PENDIENTE</span></div>
               </div>
             </div>
+            <section class="step5-seo-card" aria-labelledby="step5-seo-title">
+              <div class="step5-seo-heading"><div><p class="eyebrow">ESTRATEGIA DE CONTENIDO</p><h3 id="step5-seo-title">Estrategia Copywriting &amp; SEO</h3></div><button class="outline-button copy-seo-button" id="copy-seo-button" type="button" disabled>Copiar estrategia</button></div>
+              <div id="step5-seo-content" class="step5-seo-content" aria-live="polite">
+                <p class="step5-seo-empty">Hook, caption y hashtags aparecerán aquí cuando exista un análisis real.</p>
+              </div>
+            </section>
             <p class="summary-transparency"><strong>Sin archivo no hay propuesta.</strong> Selecciona un vídeo para completar los datos reales. No se ha iniciado ninguna subida adicional, transcripción ni render desde este resumen.</p>
             <div class="creation-actions" aria-label="Acciones de creación">
               <button class="primary-button creation-submit" id="create-video-button" type="button"><span>Crear mi vídeo</span><b aria-hidden="true">→</b></button>
@@ -337,7 +344,7 @@
             </p>
             <div class="q03c-layout">
               <article class="preview-card q03c-video-card">
-                <div class="preview-head"><span>REPRODUCCIÓN LOCAL</span><span>H.264 · CRF 17 · AAC estéreo</span></div>
+                <div class="preview-head"><span>REPRODUCCIÓN DE REVISIÓN</span><span>H.264 · CRF 17 · AAC estéreo</span></div>
                 <video id="phase1-final-video" class="q03c-video" controls playsinline preload="metadata" aria-describedby="phase1-final-video-note">
                   <source src="/media/outputs/IMG_1254-MATRIX-MOTION-FASE1.mp4" type="video/mp4">
                   Tu navegador no puede reproducir este vídeo MP4.
@@ -361,7 +368,7 @@
             </p>
             <div class="q03c-layout">
               <article class="preview-card q03c-video-card">
-                <div class="preview-head"><span>REPRODUCCIÓN LOCAL</span><span>H.264 · 1080 × 1920 · 30 FPS</span></div>
+                <div class="preview-head"><span>REPRODUCCIÓN DE REVISIÓN</span><span>H.264 · 1080 × 1920 · 30 FPS</span></div>
                 <video id="mm003-final-video" class="q03c-video" controls playsinline preload="metadata" aria-describedby="mm003-final-video-note">
                   <source src="/media/outputs/IMG_1254-MATRIX-MOTION-MM003.mp4" type="video/mp4">
                   Tu navegador no puede reproducir este vídeo MP4.
@@ -384,7 +391,7 @@
             </p>
             <div class="q03c-layout">
               <article class="preview-card q03c-video-card">
-                <div class="preview-head"><span>REPRODUCCIÓN LOCAL</span><span>H.264 · CRF 17 · AAC estéreo · 30 FPS</span></div>
+                <div class="preview-head"><span>REPRODUCCIÓN DE REVISIÓN</span><span>H.264 · CRF 17 · AAC estéreo · 30 FPS</span></div>
                 <video id="mm004-final-video" class="q03c-video" controls playsinline preload="metadata" aria-describedby="mm004-final-video-note">
                   <source src="/media/outputs/IMG_1254-MATRIX-MOTION-MM004.mp4" type="video/mp4">
                   Tu navegador no puede reproducir este vídeo MP4.
@@ -398,11 +405,11 @@
 
           <section class="section-block q03e-section" id="resultado-remotion" aria-labelledby="remotion-final-title" hidden>
             <div class="section-head">
-              <div><p class="eyebrow">REMOTION + FFMPEG / HLG → SDR</p><h2 id="remotion-final-title">IMG_1254.MOV · máster local de revisión</h2></div>
+              <div><p class="eyebrow">MATRIX MOTION / HLG → SDR</p><h2 id="remotion-final-title">IMG_1254.MOV · máster de revisión</h2></div>
               <span class="preview-status q03e-pending">PENDIENTE DE REVISIÓN HUMANA</span>
             </div>
             <p class="q03e-intro">
-              Remotion genera solo la capa gráfica transparente a 1080 × 1920; FFmpeg procesa el MOV 4K original, aplica cortes y color, y compone el resultado. El zoom progresivo de cámara está desactivado.
+              La composición mantiene el MOV 4K original como fuente maestra, aplica los cortes y el tratamiento de color, y conserva el reencuadre suave.
             </p>
             <div class="q03c-layout">
               <article class="preview-card q03c-video-card">
@@ -412,7 +419,7 @@
                   Tu navegador no puede reproducir este vídeo MP4.
                 </video>
                 <p class="q03c-video-note" id="remotion-final-video-status" role="status" aria-live="polite">
-                  Comprobando si el máster local está disponible…
+                  Comprobando si el máster está disponible…
                 </p>
                 <p class="q03c-video-note" id="remotion-final-video-note">
                   La ruta requiere sesión de propietaria y admite solicitudes parciales. El color final sigue pendiente de revisión humana; el bitrate real se mide en el informe del render.
@@ -440,7 +447,7 @@
                 <div class="edit-options" aria-labelledby="edit-options-title">
                   <h3 id="edit-options-title">Edición para este vídeo</h3>
                   <input id="edit-render-backend" type="hidden" value="modal">
-                  <p class="field-help engine-note" id="render-backend-note">Motor exclusivo: Remotion + FFmpeg en Modal. El coste cloud es variable y no está cotizado aquí.</p>
+                  <p class="field-help engine-note" id="render-backend-note">Motor MATRIX: perfiles verticales hasta 2160 × 3840 y 60 FPS. El coste de procesamiento no está cotizado aquí.</p>
                   <label for="edit-subtitle-mode">Subtítulos</label>
                   <select id="edit-subtitle-mode" aria-describedby="edit-options-note">
                     <option value="none" selected>Sin subtítulos</option>
@@ -457,15 +464,15 @@
                   <select id="edit-output-profile" aria-describedby="edit-options-note">
                     <option value="720p">720 × 1280 (720p)</option>
                     <option value="1080p" selected>1080 × 1920 (1080p)</option>
-                    <option value="1440p" disabled>1440 × 2560 (requiere plan 4K; no verificado)</option>
-                    <option value="2160p" disabled>2160 × 3840 (4K; requiere plan 4K no verificado)</option>
+                    <option value="1440p" disabled>1440 × 2560 (no disponible)</option>
+                    <option value="2160p" disabled>2160 × 3840 (4K · requiere máster 4K)</option>
                   </select>
                   <label for="edit-output-quality">Calidad de salida</label>
                   <select id="edit-output-quality" aria-describedby="edit-quality-note">
                     <option value="high" selected>Alta · CRF 15</option>
                   </select>
-                  <p class="field-help" id="edit-quality-note">Modal fija H.264, CRF 15, preset medium y salida 1080 × 1920 a 30 FPS.</p>
-                  <p class="field-help" id="edit-options-note">La propuesta se prepara localmente. No llama a OpenAI ni a Google. La transcripción y el render solo comienzan tras autorización expresa.</p>
+                  <p class="field-help" id="edit-quality-note">Salida H.264 de calidad alta; la resolución y los FPS se ajustan al perfil seleccionado.</p>
+                  <p class="field-help" id="edit-options-note">La propuesta no llama a servicios externos. La transcripción y el render solo comienzan tras autorización expresa.</p>
                   <fieldset class="creative-editor" aria-describedby="creative-editor-note">
                     <legend>Plan creativo manual</legend>
                     <p class="field-help" id="creative-editor-note">Los tiempos se refieren al vídeo original. Estos cambios se aplican sin depender de los subtítulos. No se generan recomendaciones con IA en esta fase.</p>
@@ -486,16 +493,16 @@
                     </section>
                   </fieldset>
                 </div>
-                <button class="outline-button" id="process-button" type="button" disabled>Preparar propuesta local</button>
+                <button class="outline-button" id="process-button" type="button" disabled>Preparar propuesta</button>
                 <div class="proposal-summary" id="proposal-summary" aria-live="polite" hidden></div>
                 <div class="health-list" aria-label="Estado de los servicios">
                   <div><span>OpenAI</span><b id="health-openai" class="health-unknown">Pendiente de actualizar</b></div>
-                  <div><span>Modal</span><b id="health-modal" class="health-unknown">Pendiente de actualizar</b></div>
-                  <div><span>Entorno</span><b id="health-environment" class="health-unknown">Pendiente de actualizar</b></div>
+                  <div><span>Motor MATRIX Engine</span><b id="health-modal" class="health-unknown">Pendiente de actualizar</b></div>
+                  <div><span>Procesamiento</span><b id="health-environment" class="health-unknown">Pendiente de actualizar</b></div>
                   <div><span>Google Drive</span><b id="health-drive" class="health-unknown">Pendiente de actualizar</b></div>
                 </div>
                 <div id="render-approval" hidden>
-                  <label class="consent-check"><input id="paid-consent" type="checkbox"><span id="paid-consent-copy">Autorizo el envío del vídeo a Modal.</span></label>
+                  <label class="consent-check"><input id="paid-consent" type="checkbox"><span id="paid-consent-copy">Autorizo el procesamiento del audio y vídeo y el almacenamiento privado del resultado.</span></label>
                   <label class="consent-check unknown-check" id="unknown-cost-wrap" hidden><input id="unknown-cost-consent" type="checkbox"><span>Entiendo que el coste es desconocido y podría haber cargos.</span></label>
                   <button class="primary-button" id="approve-render-button" type="button" disabled><span>Aprobar y renderizar</span><b>→</b></button>
                 </div>
@@ -524,7 +531,7 @@
                     <div class="field-pair"><label>Color del texto<input name="font_color" type="color"></label><label>Color del contorno<input name="stroke_color" type="color"></label></div>
                     <label>Color de resaltado<input name="highlight_color" type="color"></label>
                     <label>Animación de subtítulos<select name="animation_style"><option value="highlight">Resaltar palabra</option><option value="karaoke">Karaoke</option></select></label>
-                    <label class="toggle-line"><input name="show_subtitles" type="checkbox"><span>Mostrar subtítulos en nuevas salidas locales de Remotion</span></label>
+                    <label class="toggle-line"><input name="show_subtitles" type="checkbox"><span>Mostrar subtítulos en nuevas salidas</span></label>
                     <small class="field-help">Se aplica a nuevas propuestas; no cambia vídeos ya procesados.</small>
                     <label>Emojis asociados a subtítulos<textarea name="emoji_by_keyword" rows="3" placeholder='{"palabra":"carácter Unicode"}' aria-describedby="emoji-help"></textarea></label>
                     <small class="field-help" id="emoji-help">Solo se aplica al texto de los subtítulos. No crea stickers ni emojis independientes.</small>
@@ -533,11 +540,11 @@
                     <h3>Composición y logo</h3>
                     <label>Posición de subtítulos<select name="caption_position"><option value="bottom">Inferior</option><option value="middle">Centro</option><option value="top">Superior</option></select></label>
                     <label>Ajuste vertical del subtítulo<input name="caption_offset_y" type="number" min="0" max="0.8" step="0.01"></label>
-                    <label>Ubicación del logo en Replit<input name="logo_path" type="text" placeholder="Sin logo configurado"></label>
+                    <label>Ubicación del logo<input name="logo_path" type="text" placeholder="Sin logo configurado"></label>
                     <label>Posición del logo<select name="logo_position"><option value="top">Arriba</option><option value="topRight">Arriba a la derecha</option><option value="right">Derecha</option><option value="bottomRight">Abajo a la derecha</option><option value="bottom">Abajo</option><option value="bottomLeft">Abajo a la izquierda</option><option value="left">Izquierda</option><option value="topLeft">Arriba a la izquierda</option><option value="center">Centro</option></select></label>
                     <div class="field-pair"><label>Tamaño del logo<input name="logo_scale" type="number" min="0.02" max="0.4" step="0.01"></label><label>Fotogramas por segundo<select name="output_fps"><option value="25">25 FPS</option><option value="30">30 FPS</option><option value="50">50 FPS</option><option value="60">60 FPS</option></select></label></div>
                     <div class="field-pair"><label>Ajuste horizontal X del logo<input name="logo_offset_x" type="number" min="-1" max="1" step="0.01"></label><label>Ajuste vertical Y del logo<input name="logo_offset_y" type="number" min="-1" max="1" step="0.01"></label></div>
-                    <p class="field-help">El archivo del logo debe estar disponible en el entorno de Replit.</p>
+                    <p class="field-help">El archivo del logo debe estar disponible en el espacio de procesamiento.</p>
                   </div>
                   <div class="style-group">
                     <h3>Límites y costes</h3>
@@ -545,7 +552,7 @@
                     <label>Fragmentos máximos por transcripción<input name="max_transcription_chunks" type="number" min="1" step="1"></label>
                     <label>OpenAI · coste por minuto de audio (USD)<input name="openai_price_per_audio_minute_usd" type="number" min="0" step="0.0001" placeholder="Desconocido"></label>
                     <label>Límite estimado total (USD)<input name="max_estimated_cost_usd" type="number" min="0" step="0.01" placeholder="Sin límite configurado"></label>
-                    <p class="field-help">El coste de Modal no está cotizado por el panel y debe revisarse antes de cada render.</p>
+                    <p class="field-help">El coste de procesamiento no está cotizado por el panel y debe revisarse antes de cada render.</p>
                   </div>
                 </div>
               </fieldset>
@@ -567,7 +574,7 @@
               </div>
             </section>
           </section>
-          <footer><span>MATRIX MOTION / ENTORNO LOCAL</span><span>Los precios y las claves de acceso no se comprueban desde esta pantalla.</span></footer>
+          <footer><span>MATRIX MOTION / PRO EDITION</span><span>Los precios y las claves de acceso no se comprueban desde esta pantalla.</span></footer>
         </div>
       </main>
     </div>

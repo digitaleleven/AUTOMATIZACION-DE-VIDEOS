@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -8,6 +9,35 @@ import unittest
 from unittest.mock import patch
 
 from video_pipeline import modal_renderer
+from video_pipeline.modal_render_app import validate_worker_render_profile
+
+
+class ModalWorkerProfileTests(unittest.TestCase):
+    def test_accepts_4k_60_for_a_4k_master(self):
+        self.assertEqual(
+            validate_worker_render_profile(
+                {
+                    "output_width": 2160,
+                    "output_height": 3840,
+                    "output_fps": 60,
+                },
+                source_width=2160,
+                source_height=3840,
+            ),
+            (2160, 3840, 60),
+        )
+
+    def test_rejects_4k_upscale_and_fps_above_60(self):
+        profile = {
+            "output_width": 2160,
+            "output_height": 3840,
+            "output_fps": 60,
+        }
+        with self.assertRaisesRegex(ValueError, "requiere una fuente maestra vertical"):
+            validate_worker_render_profile(profile, source_width=1080, source_height=1920)
+        profile["output_fps"] = 61
+        with self.assertRaisesRegex(ValueError, "25, 30, 50 o 60"):
+            validate_worker_render_profile(profile, source_width=2160, source_height=3840)
 
 
 class FakeBatch:
@@ -74,12 +104,19 @@ class FakeSDK:
         return self._FunctionFactory(self)
 
 
-def _input_bundle(tmp_path: Path, output_bytes: bytes):
+def _input_bundle(tmp_path: Path, output_bytes: bytes, profile=(1080, 1920, 30)):
     source = tmp_path / "source.MOV"
     source.write_bytes(b"unmodified original bytes")
     effects = tmp_path / "effects"
     effects.mkdir()
-    plan = {"cuts": [], "effect_cues": [], "expected_output_duration_seconds": 1.0}
+    plan = {
+        "cuts": [],
+        "effect_cues": [],
+        "expected_output_duration_seconds": 1.0,
+        "output_width": profile[0],
+        "output_height": profile[1],
+        "output_fps": profile[2],
+    }
     transcript = {"words": []}
     job_id = "a" * 32
     output = tmp_path / "outputs" / "result.mp4"
@@ -89,8 +126,9 @@ def _input_bundle(tmp_path: Path, output_bytes: bytes):
         "output_size_bytes": len(output_bytes),
         "output_sha256": hashlib.sha256(output_bytes).hexdigest(),
         "duration_seconds": 1.0,
-        "width": 1080,
-        "height": 1920,
+        "width": profile[0],
+        "height": profile[1],
+        "fps": profile[2],
     }
     volume = FakeVolume(output_bytes)
     volume.job_id = job_id
@@ -135,6 +173,7 @@ class ModalRenderClientTests(unittest.TestCase):
         self.assertEqual(result.size_bytes, len(output_bytes))
         self.assertEqual(result.sha256, hashlib.sha256(output_bytes).hexdigest())
         self.assertEqual((result.width, result.height), (1080, 1920))
+        self.assertEqual(result.fps, 30)
         self.assertTrue(result.temporary_storage_cleaned)
         self.assertEqual(volume.removals, [(f"jobs/{job_id}", True)])
         self.assertEqual(
@@ -143,6 +182,29 @@ class ModalRenderClientTests(unittest.TestCase):
         )
         self.assertIn(f"/jobs/{job_id}/manifest.json", volume.uploads)
         self.assertIn(f"/jobs/{job_id}/source.mov", volume.uploads)
+
+    def test_render_client_accepts_4k_60_and_passes_profile_to_worker(self):
+        source, effects, plan, transcript, job_id, output, volume, sdk = _input_bundle(
+            self.root,
+            b"verified-4k-mp4",
+            profile=(2160, 3840, 60),
+        )
+        with patch.object(modal_renderer, "modal_configuration_status", return_value=_modal_status()):
+            result = modal_renderer.ModalRenderClient(sdk).render(
+                job_id=job_id,
+                input_path=source,
+                transcript=transcript,
+                plan=plan,
+                effects_dir=effects,
+                output_path=output,
+                show_subtitles=False,
+            )
+        self.assertEqual((result.width, result.height, result.fps), (2160, 3840, 60))
+        worker_plan = json.loads(volume.uploads[f"/jobs/{job_id}/plan.json"])
+        self.assertEqual(
+            (worker_plan["output_width"], worker_plan["output_height"], worker_plan["output_fps"]),
+            (2160, 3840, 60),
+        )
 
     def test_rejects_invalid_job_and_existing_output_without_calling_modal(self):
         source, effects, plan, transcript, job_id, output, _volume, sdk = _input_bundle(

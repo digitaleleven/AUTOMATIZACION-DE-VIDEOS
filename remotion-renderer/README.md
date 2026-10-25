@@ -1,15 +1,17 @@
 # MATRIX MOTION — prueba local aislada de Remotion
 
-Este directorio solo contiene una prueba experimental. No se importa desde la
-aplicación Python, el panel ni Shotstack. El navegador de render se ejecuta con
+Este directorio contiene el motor de composición. No se importa desde la
+aplicación Python ni usa Shotstack. El navegador de render se ejecuta con
 resolución de hosts externos bloqueada. El render no recibe clave de licencia
 ni llama al servicio de seguimiento de Remotion.
 
 ## Máster local: Remotion para gráficos + FFmpeg para vídeo
 
-La ruta actual es de dos etapas: Remotion dibuja una capa transparente 1080 ×
-1920 con subtítulos de 1–3 palabras, títulos, tarjetas/PIP, SVG y efectos de sonido,
-sin abrir ni decodificar el MOV.
+La ruta actual es de dos etapas: Remotion dibuja una capa transparente con
+subtítulos de 1–3 palabras, títulos, tarjetas/PIP, SVG y efectos de sonido, sin
+abrir ni decodificar el MOV. La composición usa una base de 1080 × 1920 y se escala
+al perfil vertical solicitado: 720 × 1280, 1080 × 1920 o 2160 × 3840. El perfil 4K
+requiere una fuente máster de al menos 2160 × 3840.
 FFmpeg lee el original como fuente maestra, ejecuta los cortes de
 `mm004-plan.json`, aplica la conversión HLG BT.2020 → SDR BT.709 y compone la
 capa. El original y los resultados previos no se sobrescriben.
@@ -21,8 +23,11 @@ pnpm run render:full
 
 Salida: `outputs/IMG_1254-MATRIX-MOTION-v3-PRO-MASTER.mp4`. El informe FFprobe y
 los registros quedan junto al trabajo bajo `generated-artifacts/`. La codificación
-final es H.264 High, CRF 15/preset `medium`, 1080 × 1920, 30 FPS, rango limitado,
-BT.709 y YUV420p; el audio AAC estéreo se conserva y se mezcla con efectos locales.
+final es H.264 High, CRF 15/preset `medium`, rango limitado, BT.709 y YUV420p; el
+ancho, alto y FPS son seleccionables entre los perfiles admitidos (25, 30, 50 o 60
+FPS). En la interfaz web se elige 4K para másteres 4K; la CLI conserva 1080 × 1920
+a 30 FPS como valor por defecto. El audio AAC estéreo se conserva y se mezcla con
+efectos locales.
 FFprobe y una decodificación completa se ejecutan antes de informar éxito.
 
 La capa Remotion usa ProRes 4444 con alfa, concurrencia 1 y cero reintentos.

@@ -53,13 +53,22 @@ test("legacy result sections stay hidden without removing their media sources", 
   }
 });
 
-test("the visible navigation has the four requested pages and Modal-only render UI", () => {
+test("the visible panel is white-labeled and exposes the 4K render and SEO summary controls", () => {
   for (const page of ["home", "create", "library", "settings"]) {
     assert.match(indexSource, new RegExp(`data-page="${page}"`));
     assert.match(indexSource, new RegExp(`data-page-section="${page}"`));
   }
+  assert.match(indexSource, /MATRIX MOTION \| VIDEO AUTOMATION STUDIO • PRO EDITION/);
+  assert.match(indexSource, /Motor MATRIX Engine: Configuración pendiente/);
+  assert.match(indexSource, /Estrategia Copywriting &amp; SEO/);
+  assert.match(indexSource, /id="copy-seo-button"/);
+  assert.match(indexSource, /value="2160p"/);
+  assert.match(indexSource, /value="60"/);
   assert.match(indexSource, /Mis últimos vídeos/);
   assert.match(indexSource, /Conectar Google Drive \(OAuth\)/);
-  assert.doesNotMatch(indexSource, /Shotstack/i);
+  const visibleText = indexSource.replace(/<[^>]*>/g, " ");
+  assert.doesNotMatch(visibleText, /Modal|Replit|Cloudflare|FFmpeg|Entorno local/i);
   assert.doesNotMatch(indexSource, /retry-render-button|retry-final-render-button/);
+  assert.match(appSource, /copy-seo-button"\)\?\.addEventListener\("click"/);
+  assert.match(appSource, /async function copySeoStrategy/);
 });

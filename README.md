@@ -13,7 +13,7 @@
 - Captions SRT de 2–4 palabras sincronizados con el audio.
 - Edición Shotstack con `rich-caption`, animación/highlight por palabra, trazo legible y subtítulos en zona inferior segura.
 - Estilo configurable en `video_style.json`: fuente, colores, animación, posición, emojis asociados manualmente y logo local opcional.
-- Salida MP4 1080 × 1920 a 30 fps. Las fuentes con otra relación de aspecto usan `contain` para no cortar caras; solo se usa crop si el formato ya es prácticamente 9:16.
+- Perfiles verticales MP4 de 720 × 1280, 1080 × 1920 y 2160 × 3840. El perfil 4K se habilita solo para una fuente maestra de al menos 2160 × 3840; se admiten 25, 30, 50 o 60 FPS. La validación 4K está preparada en el código, pero aún no se ha comprobado con un render remoto.
 - Ingest de MP4, SRT y, opcionalmente, logo a Shotstack. Resultado descargado como archivo nuevo; el original no se modifica ni sobrescribe.
 - Carga del render validado a Drive en fragmentos de 8 MB como archivo nuevo, con consulta del avance y reanudación tras cortes. El estado local de la sesión se conserva con permisos restrictivos y no incluye el token OAuth.
 - SQLite local (`data/processing.sqlite3`) para detectar vídeos ya completados, reanudar un render existente y permitir como máximo un reintento manual. Cada ejecución conserva una clave estable que combina el hash del original y la configuración exacta.
