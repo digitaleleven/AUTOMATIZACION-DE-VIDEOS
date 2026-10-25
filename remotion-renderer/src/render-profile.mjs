@@ -1,7 +1,7 @@
 export const REMOTION_RENDER_PROFILE = Object.freeze({
   width: 1080,
   height: 1920,
-  fps: 50,
+  fps: 30,
   proxyCrf: 14,
   outputCrf: 17,
   x264Preset: "medium",
@@ -109,10 +109,10 @@ export const buildColorManagedProxyFilter = (
 
   const directEq =
     toneMap === "direct"
-      ? "eq=contrast=1.05:brightness=0.04:gamma=1.15:saturation=0.92"
+      ? "eq=contrast=1.05:brightness=0.05:gamma=1.18:saturation=0.92"
       : "";
   if (toneMap === "direct") {
-    return `fps=${fps},${scaleAndPad},unsharp=5:5:0.8:5:5:0.0,setsar=1,${colorTransform},${directEq},colorchannelmixer=rr=0.90:gg=0.95:bb=1.10,format=${REMOTION_RENDER_PROFILE.pixelFormat}`;
+    return `fps=${fps},${scaleAndPad},unsharp=5:5:0.8:5:5:0.0,setsar=1,${colorTransform},${directEq},colorchannelmixer=rr=0.92:gg=0.95:bb=1.08,format=${REMOTION_RENDER_PROFILE.pixelFormat}`;
   }
   return `${colorTransform},${scaleAndPad}${directEq},setsar=1,fps=${fps},format=${REMOTION_RENDER_PROFILE.pixelFormat}`;
 };
