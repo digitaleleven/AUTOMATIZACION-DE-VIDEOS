@@ -98,6 +98,23 @@ VIDEO_EDIT_STYLE_LABELS = {
     "natural_premium": "Natural Premium",
     "dynamic": "Dinámico",
 }
+
+
+def _prepare_modal_render_plan(base_plan, duration, gemini_zoom_suggestions):
+    """Keep Gemini zoom windows as proposals; Modal currently renders its smooth auto-zoom."""
+    render_plan = {
+        "cuts": list((base_plan or {}).get("cuts") or []),
+        "zooms": list((base_plan or {}).get("zooms") or []),
+        "stickers": list((base_plan or {}).get("stickers") or []),
+    }
+    if render_plan["zooms"]:
+        raise PanelError(
+            "El motor Modal solo admite el auto-zoom suave integrado, no zooms temporizados."
+        )
+    normalized = normalize_edit_plan(render_plan, duration)
+    return normalized, list(gemini_zoom_suggestions or []), []
+
+
 DEFAULT_VIDEO_NICHE = "generic_viral"
 MAX_STYLE_NOTES_CHARS = 500
 CAPTION_BRIEF_DIRECTIVES = {
@@ -544,10 +561,13 @@ def _public_job(job: dict[str, Any]) -> dict[str, Any]:
     public_gemini = {
         "model": gemini_result.get("model"),
         "summary": gemini_result.get("summary"),
-        "spoken_language": gemini_result.get("spoken_language"),
-        "words": gemini_result.get("words", []),
+        "key_moments": gemini_result.get("key_moments", []),
+        "suggested_zooms": gemini_result.get("suggested_zooms", []),
+        "suggested_zooms_applied": gemini_result.get("suggested_zooms_applied", False),
+        "applied_zooms": gemini_result.get("applied_zooms", []),
         "suggested_cuts": gemini_result.get("suggested_cuts", []),
         "suggested_cuts_applied": gemini_result.get("suggested_cuts_applied", False),
+        "copy_and_seo": gemini_result.get("copy_and_seo", {}),
         "warnings": gemini_result.get("warnings", []),
         "usage": gemini_result.get("usage"),
         "processing_seconds": gemini_result.get("processing_seconds"),
@@ -569,6 +589,11 @@ def _public_job(job: dict[str, Any]) -> dict[str, Any]:
         "edit_options": edit_options if isinstance(edit_options, dict) else {},
         "output_metadata": output_metadata,
         "gemini_analysis": public_gemini,
+        "transcription": {
+            "provider": result.get("transcription_provider"),
+            "model": result.get("transcription_model"),
+            "word_count": result.get("transcription_word_count"),
+        },
         "r2_storage": public_r2,
         "output_id": job["output_id"],
         "attempt_number": int(job.get("attempt_number") or 1),
@@ -1721,7 +1746,18 @@ class VideoPanel:
                     409,
                 )
 
-        openai_cost = 0.0
+        transcription_minutes = (
+            min(video.duration, 5.0) if render_mode == "quick_demo" else video.duration
+        ) / 60
+        openai_cost = (
+            0.0
+            if not transcription_required
+            else (
+                round(transcription_minutes * style.openai_price_per_audio_minute_usd, 4)
+                if style.openai_price_per_audio_minute_usd is not None
+                else None
+            )
+        )
         gemini_cost = None
         shotstack_cost = None
         modal_status = modal_configuration_status()
@@ -1829,8 +1865,8 @@ class VideoPanel:
                 ),
             },
             "api_plan": {
-                "openai_transcription": False,
-                "openai_transcription_chunks": 0,
+                "openai_transcription": transcription_required,
+                "openai_transcription_chunks": transcription_chunks,
                 "gemini_video_analysis": True,
                 "gemini_model": "gemini-3.8-flash",
                 "gemini_key_configured": bool(os.getenv("GEMINI_API_KEY")),
@@ -1854,7 +1890,7 @@ class VideoPanel:
                 "r2_storage_usd": None,
                 "total_estimate_usd": estimate,
                 "estimate_note": (
-                    "No hay una tarifa total cotizada ni verificada: Gemini depende de tokens de vídeo, Modal de cómputo "
+                    "No hay tarifa cotizada ni total verificado: Gemini depende de tokens de vídeo, Modal de cómputo "
                     "y R2 de almacenamiento/egress. Se requiere confirmación de coste desconocido antes de iniciar."
                 ),
             },
@@ -1958,6 +1994,11 @@ class VideoPanel:
                     409,
                 )
         health = self.health()
+        needs_openai = edit_options["subtitle_mode"] != "none"
+        if needs_openai and not health.get("openai_key_configured"):
+            raise PanelError("Falta OPENAI_API_KEY en Secrets; no se inició ningún trabajo.", 409)
+        if needs_openai and payload.get("authorize_openai_transcription") is not True:
+            raise PanelError("Falta autorizar la transcripción de audio con Whisper.", 403)
         if not health.get("gemini_key_configured"):
             raise PanelError("Falta GEMINI_API_KEY en Secrets; no se inició ningún trabajo.", 409)
         if payload.get("authorize_gemini_analysis") is not True:
@@ -2340,16 +2381,28 @@ class VideoPanel:
                 modal_ledger_claimed = True
                 modal_renderer = ModalRenderClient()
                 modal_renderer.ensure_worker_available()
+                whisper_words = []
+                if edit_options["subtitle_mode"] != "none":
+                    update_phase("transcribing_with_whisper")
+                    whisper_words = transcribe_video(
+                        analysis_source,
+                        Path(normalization_dir) / "whisper-audio",
+                        model="whisper-1",
+                    )
+                transcript_text = " ".join(word.text for word in whisper_words)
                 update_phase("analyzing_with_gemini")
                 gemini_analysis = analyze_video(
                     normalized_video.path,
                     duration_seconds=normalized_video.duration,
                     briefing=edit_options.get("style_notes", ""),
+                    transcript_text=transcript_text,
                 )
-                gemini_words = [
-                    WordTiming(text=word["text"], start=word["start"], end=word["end"])
-                    for word in gemini_analysis["words"]
-                ]
+                render_plan, suggested_zooms, applied_zooms = _prepare_modal_render_plan(
+                    edit_options.get("creative_plan") or {},
+                    original_video.duration,
+                    gemini_analysis["suggested_zooms"],
+                )
+                gemini_analysis["suggested_zooms"] = suggested_zooms
                 result = process_local_video_modal(
                     source_path,
                     self.output_dir,
@@ -2368,14 +2421,18 @@ class VideoPanel:
                     render_mode=edit_options.get("render_mode", "full"),
                     modal_client=modal_renderer,
                     render_settings=edit_options.get("render_settings"),
-                    creative_plan=edit_options.get("creative_plan"),
-                    subtitle_words=gemini_words if edit_options["subtitle_mode"] == "dynamic" else None,
+                    creative_plan=render_plan,
+                    subtitle_words=whisper_words if edit_options["subtitle_mode"] == "dynamic" else None,
                     briefing=edit_options.get("style_notes", ""),
                     progress_callback=update_phase,
                 )
                 result["gemini_analysis"] = gemini_analysis
                 result["gemini_analysis"]["suggested_cuts_applied"] = False
-                result["transcription_provider"] = "gemini-3.8-flash"
+                result["gemini_analysis"]["suggested_zooms_applied"] = bool(applied_zooms)
+                result["gemini_analysis"]["applied_zooms"] = applied_zooms
+                result["transcription_provider"] = "OpenAI"
+                result["transcription_model"] = "whisper-1"
+                result["transcription_word_count"] = len(whisper_words)
                 result["analysis_proxy_duration_seconds"] = normalized_video.duration
                 update_phase("uploading_to_r2")
                 result["r2_storage"] = upload_mp4_to_r2(result["output"], job_id)

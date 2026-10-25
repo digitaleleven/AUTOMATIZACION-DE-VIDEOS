@@ -23,7 +23,35 @@ from video_pipeline.webapp import (
     VideoPanel,
     VideoPanelHandler,
     VideoPanelServer,
+    _prepare_modal_render_plan,
 )
+
+
+class ModalZoomCompatibilityTests(unittest.TestCase):
+    def test_gemini_zoom_windows_remain_suggestions_for_modal_auto_zoom(self):
+        suggestions = [{
+            "start_seconds": 1.0,
+            "end_seconds": 2.5,
+            "reason": "momento clave",
+        }]
+
+        plan, retained_suggestions, applied = _prepare_modal_render_plan(
+            {},
+            5.0,
+            suggestions,
+        )
+
+        self.assertEqual(plan["zooms"], [])
+        self.assertEqual(retained_suggestions, suggestions)
+        self.assertEqual(applied, [])
+
+    def test_explicit_timed_zoom_stays_blocked_for_modal(self):
+        with self.assertRaisesRegex(PanelError, "solo admite el auto-zoom suave"):
+            _prepare_modal_render_plan(
+                {"zooms": [{"start_seconds": 1.0, "end_seconds": 2.0}]},
+                5.0,
+                [],
+            )
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg tools are required")

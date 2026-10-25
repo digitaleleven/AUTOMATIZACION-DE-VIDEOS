@@ -174,7 +174,7 @@ class ShotstackPayloadTests(unittest.TestCase):
         self.assertEqual(len(tracks), 2)
         self.assertEqual(tracks[0]["clips"][0]["asset"]["type"], "rich-caption")
         self.assertEqual(tracks[0]["clips"][0]["asset"]["animation"]["style"], "highlight")
-        self.assertEqual(tracks[0]["clips"][0]["asset"]["active"]["font"]["color"], "#FF2A85")
+        self.assertEqual(tracks[0]["clips"][0]["asset"]["active"]["font"]["color"], "#FFC0CB")
         self.assertEqual(tracks[0]["clips"][0]["position"], "bottom")
         self.assertEqual(tracks[1]["clips"][0]["fit"], "crop")
 

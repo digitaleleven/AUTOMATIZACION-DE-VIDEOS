@@ -319,6 +319,7 @@ async function startProcessing(proposal, unknownCostAcknowledged) {
       unknown_cost_acknowledged: unknownCostAcknowledged,
       authorize_paid_apis: byId("paid-consent").checked,
       authorize_modal_compute: proposal.api_plan?.renderer_backend === "modal",
+      authorize_openai_transcription: proposal.api_plan?.openai_transcription === true,
       authorize_gemini_analysis: proposal.api_plan?.gemini_video_analysis === true,
     }),
   });
@@ -461,7 +462,8 @@ function statusLabel(status) {
     processing: "En curso", transcribing: "Transcribiendo el audio", rendering: "Generando el vídeo",
     downloading: "Descargando el resultado", completed: "Completado", complete: "Completado",
     failed: "Error", error: "Error", rejected: "No admitido",
-    normalizing: "Preparando el formato del vídeo", preparing_captions: "Preparando subtítulos",
+    normalizing: "Preparando el formato del vídeo", transcribing_with_whisper: "Transcribiendo audio con Whisper",
+    preparing_captions: "Preparando subtítulos",
     analyzing_with_gemini: "Analizando el proxy con Gemini 3.8 Flash",
     uploading: "Preparando el vídeo",
     uploading_captions: "Preparando subtítulos",
@@ -537,7 +539,7 @@ function renderRecentVideos() {
 function renderSummary() {
   if (!state.libraryLoaded) return;
   const visibleItems = getVisibleLibraryItems(state.library);
-  const pendingStatuses = new Set(["ready", "pending", "queued", "processing", "transcribing", "rendering", "downloading", "normalizing", "preparing_captions", "analyzing_with_gemini", "uploading", "uploading_captions", "uploading_to_modal", "rendering_on_modal", "downloading_from_modal", "uploading_to_r2", "validating_output"]);
+  const pendingStatuses = new Set(["ready", "pending", "queued", "processing", "transcribing", "transcribing_with_whisper", "rendering", "downloading", "normalizing", "preparing_captions", "analyzing_with_gemini", "uploading", "uploading_captions", "uploading_to_modal", "rendering_on_modal", "downloading_from_modal", "uploading_to_r2", "validating_output"]);
   const processedStatuses = new Set(["completed", "complete"]);
   const errorStatuses = new Set(["failed", "error", "rejected", "interrupted"]);
   const count = (statuses) => visibleItems.filter((item) => statuses.has(String(item.status || "").toLowerCase())).length;
@@ -642,7 +644,7 @@ function renderEditProposal(proposal) {
     "Motor: Remotion + FFmpeg en Modal",
     `Modo: ${edit.render_mode === "quick_demo" ? "muestra de 5 segundos" : "vídeo completo"}`,
     `Nicho: ${edit.niche_label || VIDEO_NICHE_LABELS[edit.niche] || VIDEO_NICHE_LABELS.generic_viral}`,
-    `Subtítulos: fuente ${captionStyle.fontFamily || "Montserrat"} · resaltado ${captionStyle.highlightColor || "#FF2A85"} · texto ${captionStyle.textColor || "#FFFFFF"}`,
+    `Subtítulos: fuente ${captionStyle.fontFamily || "Montserrat"} · resaltado ${captionStyle.highlightColor || "#FFC0CB"} · texto ${captionStyle.textColor || "#FFFFFF"}`,
     `Briefing: ${edit.style_notes ? `${edit.style_notes} (las directivas explícitas de tipografía y color se aplican a esta propuesta)` : "ninguna"}`,
     `Origen: ${source.origin || "No identificado"}`,
     `Entrada: ${source.width || "?"} × ${source.height || "?"} · ${source.fps || "?"} FPS · ${source.video_codec || "códec desconocido"}`,
@@ -651,7 +653,7 @@ function renderEditProposal(proposal) {
     `Duración final prevista: ${Number.isFinite(outputDuration) ? `${outputDuration.toFixed(2)} s` : "no disponible"}`,
     `Subtítulos: ${modeLabels[edit.subtitle_mode] || "No disponible"}`,
     `Gemini: análisis de vídeo con ${apiPlan.gemini_model || "modelo no disponible"} tras autorizar`,
-    "OpenAI: no se llamará; los timestamps del demo se obtienen del análisis Gemini.",
+    `Whisper: ${apiPlan.openai_transcription ? `transcripción word-level con ${apiPlan.openai_transcription_chunks} fragmento/s` : "no se llamará"}.`,
     `Audio: ${edit.keep_original_audio ? "se conserva el audio original (y se recorta junto al vídeo)" : "la entrada no tiene audio"}; no se añade música ni normalización`,
     `Logo: ${edit.logo_enabled ? "se usará el logo ya configurado" : "ninguno configurado"}`,
     `Encuadre: ${edit.framing || "no disponible"}`,
@@ -660,7 +662,7 @@ function renderEditProposal(proposal) {
     `Stickers con animación de zoom: ${stickersLabel}`,
     "Gemini 3.8 Flash analizará el proxy normalizado a 1080p después de autorizar; los cortes se mostrarán como sugerencias y no se aplicarán automáticamente.",
     `Destino: Cloudflare R2 privado · bucket ${proposal.destination || "matrix-motion-videos"}`,
-    `OpenAI: ${formatCost(costs.openai_usd)} (no se usa en este pipeline)`,
+    `Whisper (OpenAI): ${formatCost(costs.openai_usd)}`,
     `Gemini: ${formatCost(costs.gemini_usd)} (no cotizado)`,
     `Cómputo Modal: ${formatCost(costs.modal_compute_usd)} (no cotizado)`,
     `Total estimado: ${formatCost(costs.total_estimate_usd)}`,
@@ -675,7 +677,7 @@ function renderEditProposal(proposal) {
   byId("unknown-cost-consent").checked = false;
   byId("paid-consent").checked = false;
   byId("paid-consent-copy").textContent =
-    "Autorizo enviar el proxy normalizado 1080p a Gemini 3.8 Flash, la fuente original 4K a Modal para el render y guardar el MP4 en el bucket privado de Cloudflare R2.";
+    "Autorizo enviar solo el audio a Whisper para transcripción word-level, el proxy 1080p a Gemini 3.8 Flash para momentos/zooms/copy SEO, la fuente máster 4K a Modal y el MP4 final al bucket privado de Cloudflare R2.";
   byId("approve-render-button").querySelector("span").textContent = "Autorizar y crear en Modal";
   byId("render-approval").hidden = false;
   updateProcessButton();
@@ -980,8 +982,12 @@ function renderJob(job, sourceName = "") {
     : "";
   const gemini = job.gemini_analysis || {};
   const suggestedCuts = Array.isArray(gemini.suggested_cuts) ? gemini.suggested_cuts : [];
+  const moments = Array.isArray(gemini.key_moments) ? gemini.key_moments : [];
+  const zooms = Array.isArray(gemini.suggested_zooms) ? gemini.suggested_zooms : [];
+  const copySeo = gemini.copy_and_seo || {};
+  const transcription = job.transcription || {};
   const geminiMarkup = gemini.model
-    ? `<div class="job-output-metadata"><strong>Análisis de Gemini 3.8 Flash</strong><span>${escapeHtml(gemini.summary || "Sin resumen disponible")} · ${escapeHtml(gemini.spoken_language || "idioma no detectado")} · ${Array.isArray(gemini.words) ? gemini.words.length : 0} palabras temporizadas</span><span>Archivo temporal en Gemini eliminado: ${gemini.remote_file_deleted === true ? "sí" : "no confirmado"} · tokens: ${escapeHtml(gemini.usage?.total_tokens ?? "no informados")}</span><span>Los cortes sugeridos no se aplicaron; necesitan revisión humana.</span>${suggestedCuts.length ? `<ul>${suggestedCuts.map((cut) => `<li>${Number(cut.start_seconds).toFixed(2)}–${Number(cut.end_seconds).toFixed(2)} s · ${escapeHtml(cut.reason || "")}</li>`).join("")}</ul>` : "<span>Sin cortes sugeridos.</span>"}</div>`
+    ? `<div class="job-output-metadata"><strong>Whisper + Gemini 3.8 Flash</strong><span>Whisper ${escapeHtml(transcription.model || "whisper-1")}: ${escapeHtml(transcription.word_count ?? 0)} palabras con marcas word-level. Gemini: ${escapeHtml(gemini.summary || "Sin resumen disponible")}</span><span>Archivo temporal de Gemini eliminado: ${gemini.remote_file_deleted === true ? "sí" : "no confirmado"} · tokens informados: ${escapeHtml(gemini.usage?.total_tokens ?? "no disponibles")}</span><span>Momentos visuales: ${moments.length}; zooms sugeridos ${zooms.length}, aplicados ${gemini.suggested_zooms_applied === true ? "sí" : "no"}. Los cortes no se aplicaron y requieren revisión humana.</span>${moments.length ? `<ul>${moments.map((item) => `<li>${Number(item.start_seconds).toFixed(2)}–${Number(item.end_seconds).toFixed(2)} s · ${escapeHtml(item.label || "")}: ${escapeHtml(item.reason || "")}</li>`).join("")}</ul>` : ""}${suggestedCuts.length ? `<ul>${suggestedCuts.map((cut) => `<li>Corte sugerido ${Number(cut.start_seconds).toFixed(2)}–${Number(cut.end_seconds).toFixed(2)} s · ${escapeHtml(cut.reason || "")}</li>`).join("")}</ul>` : "<span>Sin cortes sugeridos.</span>"}${copySeo.hook ? `<span>Hook: ${escapeHtml(copySeo.hook)}</span>` : ""}${copySeo.caption ? `<span>Copy: ${escapeHtml(copySeo.caption)}</span>` : ""}${copySeo.seo_title ? `<span>SEO: ${escapeHtml(copySeo.seo_title)}</span>` : ""}${Array.isArray(copySeo.hashtags) && copySeo.hashtags.length ? `<span>${copySeo.hashtags.map(escapeHtml).join(" ")}</span>` : ""}</div>`
     : "";
   const r2 = job.r2_storage || {};
   const r2Markup = r2.object_key
@@ -1074,6 +1080,7 @@ function updateProcessButton() {
     proposal.api_plan?.renderer_backend !== "modal"
     || !proposal.api_plan?.modal_sdk_installed
     || !proposal.api_plan?.modal_credentials_configured
+    || (proposal.api_plan?.openai_transcription && !proposal.api_plan?.openai_key_configured)
     || (needsGemini && !proposal.api_plan?.gemini_key_configured)
   );
   byId("process-button").disabled = !item || Boolean(busy) || unavailable;
@@ -1511,7 +1518,7 @@ byId("approve-render-button").addEventListener("click", async () => {
     return;
   }
   const providerSummary =
-    "Gemini 3.8 Flash analizará el proxy 1080p, Modal procesará la fuente original 4K y Cloudflare R2 guardará el MP4 de forma privada.";
+    "Whisper transcribirá solo el audio; Gemini 3.8 Flash analizará el proxy 1080p y sugerirá momentos/zooms/copy SEO; Modal renderizará desde la fuente máster 4K y Cloudflare R2 guardará el MP4 privado.";
   const costSummary = unknown
     ? "El coste total no está disponible y podría haber cargos."
     : `La estimación total es ${formatCost(proposal.costs.total_estimate_usd)}.`;

@@ -19,7 +19,7 @@ class VideoStyle:
     font_family: str = "Montserrat"
     font_size: int = 64
     font_color: str = "#FFFFFF"
-    highlight_color: str = "#FF2A85"
+    highlight_color: str = "#FFC0CB"
     stroke_color: str = "#000000"
     stroke_width: int = 4
     animation_style: str = "highlight"
