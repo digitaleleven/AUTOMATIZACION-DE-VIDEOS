@@ -138,6 +138,7 @@ export function buildMasterFilterComplex({
   originalAudioVolume = 1,
   noiseReduction = false,
   includeSoundEffects = true,
+  precomposedVideo = false,
   width = 1080,
   height = 1920,
   fps = 30,
@@ -148,7 +149,7 @@ export function buildMasterFilterComplex({
   if (!Number.isInteger(sourceAudioStreamIndex) || sourceAudioStreamIndex < 0) {
     throw new Error("No se ha seleccionado una pista AAC estéreo principal válida.");
   }
-  if (typeof colorFilter !== "string" || !colorFilter.trim()) {
+  if (!precomposedVideo && (typeof colorFilter !== "string" || !colorFilter.trim())) {
     throw new Error("Falta el filtro de conversión de color.");
   }
   if (!Number.isFinite(originalAudioVolume) || originalAudioVolume < 0 || originalAudioVolume > 1) {
@@ -170,16 +171,22 @@ export function buildMasterFilterComplex({
     previousEnd = clip.sourceStart + clip.frames;
     outputStart += clip.frames;
   }
-  // One decoded video stream, not N split/concat branches buffering full 4K frames.
-  const selection = clips.map(
-    (clip) => `between(n\\,${clip.sourceStart}\\,${clip.sourceStart + clip.frames - 1})`,
-  ).join("+");
-  graph.push(`[0:v]fps=${fps},select='${selection}',setpts=N/(${fps}*TB)[vcut]`);
-  const colorStages = colorFilter.replace(/^fps=\d+,/u, "");
-  graph.push(`[vcut]${colorStages}[vcolor]`);
-  graph.push(`[vcolor]${buildZoompanFilter(jumpFrames, { width, height, fps })}[vzoom]`);
-  graph.push("[1:v]format=rgba[graphics]");
-  graph.push("[vzoom][graphics]overlay=0:0:shortest=1:eof_action=pass:format=auto,format=yuv420p[vout]");
+  if (precomposedVideo) {
+    // Remotion now supplies the full-resolution scene track and graphics.
+    // Keep FFmpeg responsible for the original audio edit and final mux only.
+    graph.push(`[1:v]fps=${fps},setpts=PTS-STARTPTS,format=yuv420p[vout]`);
+  } else {
+    // Legacy path retained for existing local assembly tests and migrations.
+    const selection = clips.map(
+      (clip) => `between(n\\,${clip.sourceStart}\\,${clip.sourceStart + clip.frames - 1})`,
+    ).join("+");
+    graph.push(`[0:v]fps=${fps},select='${selection}',setpts=N/(${fps}*TB)[vcut]`);
+    const colorStages = colorFilter.replace(/^fps=\d+,/u, "");
+    graph.push(`[vcut]${colorStages}[vcolor]`);
+    graph.push(`[vcolor]${buildZoompanFilter(jumpFrames, { width, height, fps })}[vzoom]`);
+    graph.push("[1:v]format=rgba[graphics]");
+    graph.push("[vzoom][graphics]overlay=0:0:shortest=1:eof_action=pass:format=auto,format=yuv420p[vout]");
+  }
 
   const audioSource = `0:${sourceAudioStreamIndex}`;
   const audioSplitLabels = clips.map((_, index) => `asrc${index}`);

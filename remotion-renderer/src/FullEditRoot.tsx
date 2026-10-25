@@ -4,6 +4,7 @@ import {
   Composition,
   Easing,
   Img,
+  OffthreadVideo,
   Sequence,
   interpolate,
   staticFile,
@@ -20,6 +21,8 @@ import {
   FULL_FPS,
   FULL_HEIGHT,
   FULL_WIDTH,
+  cameraScaleAtFrame,
+  isSceneCutBlurFrame,
 } from "./full-edit-timeline.mjs";
 
 export type SoundEffectCue = {
@@ -58,6 +61,12 @@ export type TimedTitleOverlay = {
   durationFrames: number;
 };
 
+export type SourceVideoSegment = {
+  sourceStart: number;
+  frames: number;
+  outputStart: number;
+};
+
 type FullEditProps = {
   width: number;
   height: number;
@@ -70,6 +79,10 @@ type FullEditProps = {
   captionStyle: CaptionStyle;
   titleOverlay: TimedTitleOverlay | null;
   brandLogoAsset: string | null;
+  sourceVideoAsset: string | null;
+  videoSegments: SourceVideoSegment[];
+  sceneCutFrames: number[];
+  reframeFrames: number[];
   promoText: string | null;
   imageOverlays: TimedImageOverlay[];
   cardOverlays: TimedCardOverlay[];
@@ -186,6 +199,53 @@ const ClientBrandLogoOverlay: FC<{ asset: string }> = ({ asset }) => {
       </AbsoluteFill>
     </CameraMotionBlur>
   );
+};
+
+const SourceVideoBackground: FC<{
+  asset: string;
+  segments: SourceVideoSegment[];
+  sceneCutFrames: number[];
+  reframeFrames: number[];
+  fps: number;
+}> = ({ asset, segments, sceneCutFrames, reframeFrames, fps }) => {
+  const frame = useCurrentFrame();
+  const scale = cameraScaleAtFrame(frame, reframeFrames);
+  const videoTrack = (
+    <AbsoluteFill style={{ overflow: "hidden", backgroundColor: "#000000" }}>
+      {segments.map((segment) => (
+        <Sequence
+          key={`${segment.sourceStart}-${segment.outputStart}`}
+          from={segment.outputStart}
+          durationInFrames={segment.frames}
+          layout="none"
+        >
+          <OffthreadVideo
+            src={staticFile(`media/${asset}`)}
+            startFrom={segment.sourceStart}
+            endAt={segment.sourceStart + segment.frames}
+            muted
+            volume={0}
+            style={{
+              position: "absolute",
+              width: "100%",
+              height: "100%",
+              objectFit: "cover",
+              transform: `scale(${scale})`,
+              transformOrigin: "center center",
+            }}
+          />
+        </Sequence>
+      ))}
+    </AbsoluteFill>
+  );
+
+  // The shutter is enabled for the final frame before each hard cut only.
+  // This samples both sides of that cut without shortening the edit or its audio.
+  return isSceneCutBlurFrame(frame, sceneCutFrames) ? (
+    <CameraMotionBlur shutterAngle={360} samples={5}>
+      {videoTrack}
+    </CameraMotionBlur>
+  ) : videoTrack;
 };
 
 const PromoOverlay: FC<{ text: string }> = ({ text }) => (
@@ -359,12 +419,25 @@ const FullEdit: FC<FullEditProps> = ({
   captionStyle,
   titleOverlay,
   brandLogoAsset,
+  sourceVideoAsset,
+  videoSegments,
+  sceneCutFrames,
+  reframeFrames,
   promoText,
   imageOverlays,
   cardOverlays,
   captionGroups,
 }) => (
   <AbsoluteFill style={{ backgroundColor: "transparent", overflow: "hidden" }}>
+    {sourceVideoAsset && videoSegments.length > 0 && (
+      <SourceVideoBackground
+        asset={sourceVideoAsset}
+        segments={videoSegments}
+        sceneCutFrames={sceneCutFrames}
+        reframeFrames={reframeFrames}
+        fps={fps}
+      />
+    )}
     <div
       style={{
         position: "absolute",
@@ -446,6 +519,10 @@ export const FullRemotionRoot: FC = () => (
       soundEffects: [],
       titleOverlay: null,
       brandLogoAsset: null,
+      sourceVideoAsset: null,
+      videoSegments: [],
+      sceneCutFrames: [],
+      reframeFrames: [],
       promoText: null,
       imageOverlays: [],
       cardOverlays: [],

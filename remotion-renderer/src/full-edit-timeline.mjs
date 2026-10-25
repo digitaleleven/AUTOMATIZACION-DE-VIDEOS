@@ -4,9 +4,30 @@ export const FULL_HEIGHT = 1920;
 export const FULL_DURATION_IN_FRAMES = 1747;
 export const VECTOR_DURATION_IN_FRAMES = 54;
 
-export function cameraScaleAtFrame(_frame) {
-  // Camera zoom is disabled; keep the frame scale constant to prevent abrupt motion.
-  return 1;
+export function cameraScaleAtFrame(frame, reframeFrames = [], easingFrames = 12, maxScale = 1.06) {
+  if (!Number.isFinite(frame) || !Array.isArray(reframeFrames)) return 1;
+  if (!Number.isInteger(easingFrames) || easingFrames <= 0 || !Number.isFinite(maxScale)) {
+    throw new Error("La curva de reencuadre no es válida.");
+  }
+  const smooth = (value) => value * value * (3 - 2 * value);
+  let scale = 1;
+  for (const start of reframeFrames) {
+    if (!Number.isInteger(start) || start <= easingFrames) continue;
+    if (frame >= start && frame <= start + easingFrames) {
+      const progress = (frame - start) / easingFrames;
+      scale = Math.max(scale, 1 + (maxScale - 1) * smooth(progress));
+    } else if (frame > start + easingFrames && frame <= start + easingFrames * 2) {
+      const progress = (frame - start - easingFrames) / easingFrames;
+      scale = Math.max(scale, maxScale - (maxScale - 1) * smooth(progress));
+    }
+  }
+  return scale;
+}
+
+export function isSceneCutBlurFrame(frame, sceneCutFrames) {
+  return Number.isInteger(frame) &&
+    Array.isArray(sceneCutFrames) &&
+    sceneCutFrames.some((cutFrame) => Number.isInteger(cutFrame) && frame === cutFrame - 1);
 }
 
 export function buildKeepSegments(sourceFrames, cuts, fps = FULL_FPS) {

@@ -4,6 +4,7 @@ import {
   buildKeepSegments,
   buildTimedVectorEffects,
   cameraScaleAtFrame,
+  isSceneCutBlurFrame,
   FULL_FPS,
   FULL_HEIGHT,
   FULL_WIDTH,
@@ -21,6 +22,15 @@ test("legacy full-edit timeline keeps its separate camera helper neutral", () =>
   for (const frame of [0, 1, 30, 908, 1496, 1746]) {
     assert.equal(cameraScaleAtFrame(frame), 1);
   }
+});
+
+test("master camera zoom stays smooth and Remotion blur is confined to cut boundaries", () => {
+  assert.equal(cameraScaleAtFrame(20, [20]), 1);
+  assert.equal(cameraScaleAtFrame(26, [20]), 1.03);
+  assert.equal(cameraScaleAtFrame(32, [20]), 1.06);
+  assert.equal(cameraScaleAtFrame(44, [20]), 1);
+  assert.equal(isSceneCutBlurFrame(89, [90]), true);
+  assert.equal(isSceneCutBlurFrame(90, [90]), false);
 });
 
 test("MM-004 cuts preserve all 1799 proxy frames outside cuts on a gapless timeline", () => {
