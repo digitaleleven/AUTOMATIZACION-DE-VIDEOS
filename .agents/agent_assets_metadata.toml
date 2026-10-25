@@ -518,3 +518,31 @@ mtime_ms = 1792928683794
 storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/e5b109c0-1406-4d45-9995-9594bcb9ee8d/c1b6df5c-464a-4887-999a-d5395d6f8e34"
 storage_version_token = "1792928728317761"
 content_type = "image/png"
+
+[[outputs]]
+id = "5Ab1fUmcw-WPQ3aMnX-nQ"
+uri = "file://generated-artifacts/drive-inspection/q03c-control/proxy_30fps_allintra_1080_npl1000_capcut-test.mp4"
+type = "video"
+title = "MATRIX MOTION — muestra CapCut Pro"
+description = "Proxy local de 12 s, H.264 All-Intra, 1080×1920 a 30 FPS; no es un render de producción."
+logical_id = "e898235b-e196-4b30-a086-723e0930ca93"
+content_hash = "sha256:ad33e7c434f3fc67831900fa688d6ae0785072436973575b15515f0eedb4569b"
+size = 44527509
+mtime_ms = 1792928859218
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/e898235b-e196-4b30-a086-723e0930ca93/47415b30-f06e-4768-b7af-5e3d9da1f5c0"
+storage_version_token = "1792928928409930"
+content_type = "video/mp4"
+
+[[outputs]]
+id = "hpq9bkN_8MZ_p-zYrVSU5"
+uri = "file://generated-artifacts/drive-inspection/q03c-control/proxy_npl1000_capcut-test_frame-2.5.png"
+type = "image"
+title = "MATRIX MOTION — captura CapCut Pro a 2,5 s"
+description = "YAVG central medido: 111,154. Captura para revisar piel, blancos y definición."
+logical_id = "83b643a1-22da-4d22-b845-7f69949a6fa9"
+content_hash = "sha256:b718272c4070d7b3904b230f2d460dc787f9f28af54209e7c2d7d2f6bef146c2"
+size = 1392791
+mtime_ms = 1792928867228
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/83b643a1-22da-4d22-b845-7f69949a6fa9/421b193c-bcfd-4f42-9d46-fd996579af5c"
+storage_version_token = "1792928929126701"
+content_type = "image/png"
