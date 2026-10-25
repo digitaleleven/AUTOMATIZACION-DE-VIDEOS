@@ -109,6 +109,11 @@ export function buildCreativeOverlays({
   }
 
   const fromBriefing = parseBriefing(briefing);
+  for (const kind of ["images", "cards"]) {
+    if (planOverlays[kind] !== undefined && !Array.isArray(planOverlays[kind])) {
+      throw new Error(`overlays.${kind} debe ser una lista.`);
+    }
+  }
   const titleSpec = planOverlays.title ?? fromBriefing.title;
   const promoSpec = planOverlays.promo ?? fromBriefing.promo;
   const titleText = titleSpec && typeof titleSpec === "object"
@@ -133,13 +138,21 @@ export function buildCreativeOverlays({
     ...(Array.isArray(planOverlays.cards) ? planOverlays.cards : []),
   ];
   const warnings = [];
+  if (imageSpecs.length + cardSpecs.length > 24) {
+    throw new Error("El plan admite como máximo 24 imágenes y tarjetas en total.");
+  }
   const resolveTimed = (spec, kind, index) => {
-    const triggerText = safeText(
-      spec.trigger_text ?? spec.triggerText ?? "",
-      `La referencia de audio del overlay ${index + 1}`,
-    );
+    const triggerValue = spec.trigger_text ?? spec.triggerText;
+    const triggerText = triggerValue
+      ? safeText(triggerValue, `La referencia de audio del overlay ${index + 1}`)
+      : "";
     let startFrame = findTriggerFrame(triggerText, wordTimings, fps);
-    if (startFrame === null && Number.isFinite(Number(spec.start_seconds))) {
+    if (
+      startFrame === null &&
+      spec.start_seconds !== undefined &&
+      spec.start_seconds !== null &&
+      Number.isFinite(Number(spec.start_seconds))
+    ) {
       startFrame = Math.round(Number(spec.start_seconds) * fps);
     }
     if (startFrame === null) {
@@ -193,6 +206,20 @@ export function buildCreativeOverlays({
       text: safeText(spec.text, "El texto de tarjeta", 90),
     };
   }).filter(Boolean);
+
+  const cues = [...images, ...cards];
+  for (const cue of cues) {
+    const concurrent = cues.filter(
+      (other) => other.startFrame <= cue.startFrame &&
+        other.startFrame + other.durationFrames > cue.startFrame,
+    );
+    if (concurrent.length > 3) {
+      throw new Error("No se permiten más de tres tarjetas/imágenes simultáneas.");
+    }
+    if (concurrent.some((other) => other !== cue && other.position === cue.position)) {
+      throw new Error("Dos overlays simultáneos no pueden ocupar la misma posición.");
+    }
+  }
 
   return {
     title: titleText ? { text: titleText, durationFrames: titleDurationFrames } : null,

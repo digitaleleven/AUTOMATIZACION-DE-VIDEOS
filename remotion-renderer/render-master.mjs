@@ -1,15 +1,16 @@
 import { bundle } from "@remotion/bundler";
 import { renderMedia, selectComposition } from "@remotion/renderer";
 import { createHash } from "node:crypto";
-import { spawn } from "node:child_process";
 import { createReadStream } from "node:fs";
 import {
   copyFile,
   mkdir,
   mkdtemp,
+  open,
   readFile,
   rm,
   stat,
+  statfs,
   symlink,
   writeFile,
 } from "node:fs/promises";
@@ -23,7 +24,6 @@ import {
 import {
   buildKeepSegments,
   buildTimedVectorEffects,
-  FULL_DURATION_IN_FRAMES,
   FULL_FPS,
   FULL_HEIGHT,
   FULL_WIDTH,
@@ -43,6 +43,8 @@ import {
   buildColorManagedProxyFilter,
 } from "./src/render-profile.mjs";
 import { resolveCaptionStyle } from "./src/caption-style.mjs";
+import { buildCreativeOverlays } from "./src/creative-overlays.mjs";
+import { runLocalProcess as run } from "./src/local-process.mjs";
 
 const PACKAGE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(PACKAGE_DIR, "..");
@@ -63,29 +65,6 @@ const DEFAULTS = {
   effectsDir: path.join(PROJECT_ROOT, "generated-artifacts/drive-inspection/mm004/effects"),
   output: path.join(PROJECT_ROOT, "outputs/IMG_1254-MATRIX-MOTION-v3-PRO-MASTER.mp4"),
 };
-
-const run = (command, args, { cwd } = {}) =>
-  new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => { stdout += chunk; });
-    child.stderr.on("data", (chunk) => { stderr += chunk; });
-    child.on("error", reject);
-    child.on("close", (code, signal) => {
-      if (code === 0) resolve({ stdout, stderr });
-      else {
-        const error = new Error(
-          `${command} exited with code ${code ?? "null"}${signal ? ` (${signal})` : ""}`,
-        );
-        error.stdout = stdout;
-        error.stderr = stderr;
-        reject(error);
-      }
-    });
-  });
 
 const parseArguments = (args) => {
   const parsed = {};
@@ -118,7 +97,7 @@ const probe = async (filePath, countFrames = false) => {
   const args = ["-v", "error"];
   if (countFrames) args.push("-count_frames");
   args.push("-show_streams", "-show_format", "-of", "json", filePath);
-  const { stdout } = await run("ffprobe", args);
+  const { stdout } = await run("ffprobe", args, { timeoutMs: countFrames ? 30 * 60 * 1000 : 60000 });
   return JSON.parse(stdout);
 };
 
@@ -202,9 +181,11 @@ const formatError = (error) => [
 
 let workDirectory;
 let shortTmpLink;
-let previousTmpDir;
+let previousTmpDir = process.env.TMPDIR;
 let outputPath;
 let errorLogPath;
+let renderLock;
+let renderLockPath;
 
 try {
   const options = parseArguments(process.argv.slice(2));
@@ -239,6 +220,18 @@ try {
       if (error?.code !== "ENOENT") throw error;
     }
   }
+  const workRoot = path.join(PROJECT_ROOT, "generated-artifacts/drive-inspection/remotion");
+  await mkdir(workRoot, { recursive: true });
+  renderLockPath = path.join(workRoot, "master-render.lock");
+  try {
+    renderLock = await open(renderLockPath, "wx");
+    await renderLock.writeFile(JSON.stringify({ pid: process.pid, output: outputPath }));
+  } catch (error) {
+    if (error.code === "EEXIST") {
+      throw new Error("Ya existe un bloqueo de render máster. Comprueba el PID de master-render.lock antes de retirarlo; no se inicia otro proceso.");
+    }
+    throw error;
+  }
 
   const plan = JSON.parse(await readFile(planPath, "utf8"));
   if (!Array.isArray(plan.cuts) || !Array.isArray(plan.effect_cues)) {
@@ -272,7 +265,7 @@ try {
   const durationInFrames = clips.reduce((sum, clip) => sum + clip.frames, 0);
   const expectedFrames = Math.round(Number(plan.expected_output_duration_seconds) * FULL_FPS);
   if (
-    durationInFrames !== FULL_DURATION_IN_FRAMES ||
+    !Number.isInteger(expectedFrames) || expectedFrames <= 0 ||
     Math.abs(durationInFrames - expectedFrames) > 1
   ) {
     throw new Error(
@@ -292,6 +285,29 @@ try {
     throw new Error("No hay marcas de palabra temporales válidas para la edición.");
   }
   const effects = buildTimedVectorEffects(plan.effect_cues, durationInFrames, FULL_FPS);
+  const creativeOverlays = buildCreativeOverlays({
+    briefing: options.briefing,
+    planOverlays: plan.overlays ?? {},
+    wordTimings,
+    durationInFrames,
+    fps: FULL_FPS,
+  });
+  const productCues = [...creativeOverlays.images, ...creativeOverlays.cards];
+  for (const warning of creativeOverlays.warnings) console.warn(`overlay_warning=${warning}`);
+  for (const image of creativeOverlays.images) {
+    const assetInfo = await stat(path.join(effectsDirectory, image.asset));
+    if (!assetInfo.isFile() || assetInfo.size === 0 || assetInfo.size > 25 * 1024 * 1024) {
+      throw new Error(`La imagen PIP debe existir y ocupar entre 1 byte y 25 MB: ${image.asset}`);
+    }
+    const imageProbe = await probe(path.join(effectsDirectory, image.asset));
+    const imageStream = imageProbe.streams?.find((stream) => stream.codec_type === "video");
+    if (
+      !imageStream || !["png", "mjpeg", "webp"].includes(imageStream.codec_name) ||
+      !(imageStream.width > 0 && imageStream.height > 0) ||
+      imageStream.width * imageStream.height > 16_000_000 ||
+      Number(imageStream.nb_frames ?? 1) > 1
+    ) throw new Error(`La imagen PIP debe ser estática, PNG/JPEG/WebP y de máximo 16 megapíxeles: ${image.asset}`);
+  }
   for (const effect of effects) {
     for (const asset of effect.assets) {
       if (!EFFECT_ASSET_NAMES.has(asset)) {
@@ -308,6 +324,7 @@ try {
     wordTimings,
     plan.effect_cues,
     FULL_FPS,
+    productCues,
   ).filter((frame) => frame < durationInFrames);
   const soundEffects = buildSoundEffectCues(
     clips,
@@ -315,20 +332,28 @@ try {
     wordTimings,
     plan.effect_cues,
     FULL_FPS,
-    { includeCaptionEffects: showSubtitles },
+    { includeCaptionEffects: showSubtitles, overlays: productCues },
   ).filter((cue) => cue.startFrame + cue.durationFrames <= durationInFrames);
   const soundEffectsInRender = soundEffects.filter(
     (cue) => cue.startFrame < renderFrameCount,
   );
 
-  const workRoot = path.join(PROJECT_ROOT, "generated-artifacts/drive-inspection/remotion");
-  await mkdir(workRoot, { recursive: true });
+  const disk = await statfs(workRoot);
+  const requiredBytes = FULL_WIDTH * FULL_HEIGHT * 8 * renderFrameCount + 1024 ** 3;
+  if (disk.bavail * disk.bsize < requiredBytes) {
+    throw new Error("Espacio insuficiente en workspace para la capa alpha y el máster; no se inicia Chromium.");
+  }
   workDirectory = await mkdtemp(path.join(workRoot, ".master-work-"));
   const publicDirectory = path.join(workDirectory, "public");
   const publicEffectsDirectory = path.join(publicDirectory, "effects");
   await mkdir(publicEffectsDirectory, { recursive: true });
   for (const asset of new Set(effects.flatMap((effect) => effect.assets))) {
     await copyFile(path.join(effectsDirectory, asset), path.join(publicEffectsDirectory, asset));
+  }
+  const publicOverlaysDirectory = path.join(publicDirectory, "overlays");
+  await mkdir(publicOverlaysDirectory, { recursive: true });
+  for (const asset of new Set(creativeOverlays.images.map((cue) => cue.asset))) {
+    await copyFile(path.join(effectsDirectory, asset), path.join(publicOverlaysDirectory, asset));
   }
   await makeSfxAssets(publicDirectory);
   const overlayPath = path.join(workDirectory, "graphics-overlay.mov");
@@ -352,6 +377,10 @@ try {
     showSubtitles,
     captionStyle,
     soundEffects: soundEffectsInRender,
+    titleOverlay: creativeOverlays.title,
+    promoText: creativeOverlays.promo?.text ?? null,
+    imageOverlays: creativeOverlays.images,
+    cardOverlays: creativeOverlays.cards,
   };
   const browserOptions = { enableMultiProcessOnLinux: true };
   const composition = await selectComposition({
@@ -386,6 +415,9 @@ try {
     browserExecutable: CHROMIUM,
     chromiumOptions: browserOptions,
     logLevel: "info",
+    ffmpegOverride: ({ args }) => [
+      ...args.slice(0, -1), "-threads", "2", args[args.length - 1],
+    ],
   });
   const overlaySeconds = (performance.now() - overlayStarted) / 1000;
   const overlayProbe = await probe(overlayPath, true);
@@ -429,13 +461,14 @@ try {
   const masterStarted = performance.now();
   await run("ffmpeg", [
     "-nostdin", "-n", "-hide_banner", "-loglevel", "error",
-    "-i", inputPath,
-    "-i", overlayPath,
+    "-filter_complex_threads", "1",
+    "-threads", "2", "-i", inputPath,
+    "-threads", "2", "-i", overlayPath,
     "-filter_complex", filterComplex,
     "-map", "[vout]", "-map", "[aout]",
     "-t", renderDurationSeconds.toFixed(3),
     "-frames:v", String(renderFrameCount),
-    "-c:v", "libx264", "-preset", "medium", "-crf", "15",
+    "-c:v", "libx264", "-threads", "2", "-preset", "medium", "-crf", "15",
     "-profile:v", "high", "-pix_fmt", "yuv420p",
     "-fps_mode", "cfr",
     "-color_range", "tv", "-colorspace", "bt709",
@@ -507,6 +540,7 @@ try {
         captionStyle,
         wordTimings: wordTimings.length,
         effects,
+        creativeOverlays,
         soundEffects: soundEffectsInRender,
         scheduledSoundEffects: soundEffects.length,
         jumpFrames,
@@ -531,6 +565,10 @@ try {
           ? outputVideoBitrateMbps
           : null,
         containerBitrateMbps: outputContainerBitrateMbps,
+        videoAssembly: "single sequential decode with frame select; no 4K split queues",
+        decoderThreads: 2,
+        encoderThreads: 2,
+        filterComplexThreads: 1,
       },
     },
     output: {
@@ -554,9 +592,13 @@ try {
 } catch (error) {
   const message = formatError(error);
   console.error(message);
-  if (errorLogPath) await writeFile(errorLogPath, `${message}\n`).catch(() => {});
+  if (errorLogPath) await writeFile(errorLogPath, `${message}\n`, { flag: "wx" }).catch(() => {});
   process.exitCode = 1;
 } finally {
+  if (renderLock) {
+    await renderLock.close().catch(() => {});
+    await rm(renderLockPath, { force: true }).catch(() => {});
+  }
   if (previousTmpDir === undefined) delete process.env.TMPDIR;
   else process.env.TMPDIR = previousTmpDir;
   if (shortTmpLink) await rm(shortTmpLink, { recursive: true, force: true }).catch(() => {});

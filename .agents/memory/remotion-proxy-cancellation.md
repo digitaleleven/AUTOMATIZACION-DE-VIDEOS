@@ -44,3 +44,11 @@ En Remotion 4.0.538, `renderMedia` con `codec: "prores"`, perfil 4444 y `pixelFo
 **Why:** una validación estricta de `pix_fmt === "yuva444p10le"` rechazó una capa ProRes 4444 que sí conservaba alfa, audio y todos los fotogramas.
 
 **How to apply:** validar el códec/perfil ProRes 4444 y aceptar las salidas alfa `yuva444p10le` y `yuva444p12le`; comprobar los metadatos reales con FFprobe antes de componer con FFmpeg.
+
+### Decisión para fuentes maestras grandes
+
+Mantener la cámara 4K original fuera de Chromium y del directorio público del bundle; el navegador dibuja gráficos transparentes y FFmpeg conserva la fuente maestra para el ensamblado.
+
+**Why:** los fallos anteriores de decodificación en Chromium y los temporales grandes hicieron necesario aislar ambas cargas. Las mejoras de recursos son mitigaciones, no prueba de ausencia de OOM o timeouts en cualquier duración. Una muestra corta no valida un máster completo.
+
+**How to apply:** no reintroducir el MOV en una composición gráfica para “simplificar” sin una prueba explícita de recursos; distinguir siempre la verificación parcial de la del render completo.

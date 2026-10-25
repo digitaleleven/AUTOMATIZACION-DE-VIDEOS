@@ -21,15 +21,6 @@ import {
   FULL_WIDTH,
 } from "./full-edit-timeline.mjs";
 
-type FullEditProps = {
-  durationInFrames: number;
-  effects: TimedVectorEffect[];
-  wordTimings: TimedWord[];
-  showSubtitles: boolean;
-  soundEffects: SoundEffectCue[];
-  captionStyle: CaptionStyle;
-};
-
 export type SoundEffectCue = {
   kind: "swoosh" | "pop" | "ding" | "impact";
   startFrame: number;
@@ -315,8 +306,28 @@ const FullEdit: FC<FullEditProps> = ({
   showSubtitles,
   soundEffects,
   captionStyle,
+  titleOverlay,
+  promoText,
+  imageOverlays,
+  cardOverlays,
 }) => (
   <AbsoluteFill style={{ backgroundColor: "transparent" }}>
+    {titleOverlay && (
+      <Sequence from={0} durationInFrames={titleOverlay.durationFrames} layout="none">
+        <TitleOverlay title={titleOverlay} />
+      </Sequence>
+    )}
+    {promoText && <PromoOverlay text={promoText} />}
+    {imageOverlays.map((cue) => (
+      <Sequence key={cue.id} from={cue.startFrame} durationInFrames={cue.durationFrames} layout="none">
+        <PictureInPictureOverlay cue={cue} />
+      </Sequence>
+    ))}
+    {cardOverlays.map((cue) => (
+      <Sequence key={cue.id} from={cue.startFrame} durationInFrames={cue.durationFrames} layout="none">
+        <ProductCardOverlay cue={cue} />
+      </Sequence>
+    ))}
     {effects.map((effect) => (
       <Sequence
         key={effect.id}
@@ -347,12 +358,17 @@ export const FullRemotionRoot: FC = () => (
     height={FULL_HEIGHT}
     fps={FULL_FPS}
     durationInFrames={FULL_DURATION_IN_FRAMES}
+    calculateMetadata={({ props }) => ({ durationInFrames: props.durationInFrames })}
     defaultProps={{
       durationInFrames: FULL_DURATION_IN_FRAMES,
       effects: [],
       wordTimings: [],
       showSubtitles: true,
       soundEffects: [],
+      titleOverlay: null,
+      promoText: null,
+      imageOverlays: [],
+      cardOverlays: [],
       captionStyle: {
         fontFamily: "Montserrat",
         highlightColor: "#FF2A85",

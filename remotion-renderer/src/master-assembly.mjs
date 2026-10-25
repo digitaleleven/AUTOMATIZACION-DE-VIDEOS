@@ -27,13 +27,14 @@ export function buildNaturalReframeFrames(wordTimings, fps = 30, pauseSeconds = 
   return [...new Set(frames)].sort((left, right) => left - right);
 }
 
-export function buildJumpFrames(clips, wordTimings, effectCues, fps = 30) {
+export function buildJumpFrames(clips, wordTimings, effectCues, fps = 30, overlays = []) {
   if (!Array.isArray(clips) || !Array.isArray(wordTimings) || !Array.isArray(effectCues)) {
     throw new Error("Los datos para los cortes de énfasis no son válidos.");
   }
   const frames = [
     ...clips.slice(1).map((clip) => Number(clip.outputStart)),
     ...buildNaturalReframeFrames(wordTimings, fps),
+    ...overlays.map((cue) => cue.startFrame),
   ];
   for (const cue of effectCues) {
     const trigger = normalizeWord(cue.trigger_word);
@@ -52,7 +53,7 @@ export function buildSoundEffectCues(
   wordTimings,
   effectCues,
   fps = 30,
-  { includeCaptionEffects = true } = {},
+  { includeCaptionEffects = true, overlays = [] } = {},
 ) {
   const cues = [];
   const add = (kind, startFrame, durationFrames) => {
@@ -62,6 +63,7 @@ export function buildSoundEffectCues(
 
   for (const clip of clips.slice(1)) add("swoosh", clip.outputStart, 12);
   for (const effect of effects) add("pop", effect.startFrame, 8);
+  for (const cue of overlays) add("pop", cue.startFrame, 8);
   if (includeCaptionEffects) {
     const firstWord = wordTimings.find(
       (word) => Number.isFinite(Number(word.start)) && Number(word.start) >= 0,
@@ -156,21 +158,22 @@ export function buildMasterFilterComplex({
   }
 
   const graph = [];
-  const videoLabels = clips.map((_, index) => `vsrc${index}`);
-  if (clips.length === 1) {
-    graph.push(`[0:v]fps=${fps}[${videoLabels[0]}]`);
-  } else {
-    graph.push(`[0:v]fps=${fps},split=${clips.length}${videoLabels.map((label) => `[${label}]`).join("")}`);
+  let previousEnd = 0;
+  let outputStart = 0;
+  for (const clip of clips) {
+    if (
+      !Number.isInteger(clip.sourceStart) || clip.sourceStart < previousEnd ||
+      !Number.isInteger(clip.frames) || clip.frames <= 0 ||
+      clip.outputStart !== outputStart
+    ) throw new Error("Los segmentos deben ser cronológicos, contiguos en salida y no solaparse.");
+    previousEnd = clip.sourceStart + clip.frames;
+    outputStart += clip.frames;
   }
-  const clipLabels = clips.map((clip, index) => {
-    const label = `vclip${index}`;
-    graph.push(
-      `[${videoLabels[index]}]trim=start_frame=${clip.sourceStart}:end_frame=${clip.sourceStart + clip.frames},` +
-      `setpts=PTS-STARTPTS[${label}]`,
-    );
-    return `[${label}]`;
-  });
-  graph.push(`${clipLabels.join("")}concat=n=${clips.length}:v=1:a=0[vcut]`);
+  // One decoded video stream, not N split/concat branches buffering full 4K frames.
+  const selection = clips.map(
+    (clip) => `between(n\\,${clip.sourceStart}\\,${clip.sourceStart + clip.frames - 1})`,
+  ).join("+");
+  graph.push(`[0:v]fps=${fps},select='${selection}',setpts=N/(${fps}*TB)[vcut]`);
   const colorStages = colorFilter.replace(/^fps=\d+,/u, "");
   graph.push(`[vcut]${colorStages}[vcolor]`);
   graph.push(`[vcolor]${buildZoompanFilter(jumpFrames, { width, height, fps })}[vzoom]`);

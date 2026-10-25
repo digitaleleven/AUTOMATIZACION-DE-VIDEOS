@@ -588,3 +588,17 @@ mtime_ms = 1792935895456
 storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/7f35f8f6-8292-4056-9af7-80b6980780a1/63875167-ecb3-43d4-9ccc-cb7bf17d4356"
 storage_version_token = "1792935945039871"
 content_type = "video/mp4"
+
+[[outputs]]
+id = "elIPBqxiQuc10pShLIXlM"
+uri = "file://generated-artifacts/pipeline-validation/run-R3uHB4/local-overlays-2s.mp4"
+type = "video"
+title = "MATRIX MOTION — prueba local de overlays (2 s)"
+description = "Muestra técnica real a 1080×1920 y 30 FPS, con subtítulos, título, tarjeta y PIP claramente identificado como recurso de prueba. Decodificación completa aprobada; no es el render completo."
+logical_id = "513e35a5-60e4-443f-b284-b11a14422086"
+content_hash = "sha256:4041b6fe931664aab6341d9265a59a622e8847037e1391ca2f61aee6b6428780"
+size = 6596291
+mtime_ms = 1792939073384
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/513e35a5-60e4-443f-b284-b11a14422086/08fb8918-71c4-4641-bd5a-42e3073d2e32"
+storage_version_token = "1792939175286587"
+content_type = "video/mp4"

@@ -91,16 +91,31 @@ test("FFmpeg graph trims source video and audio, overlays alpha graphics, and mi
     colorFilter: "fps=30,scale=1080:1920,format=yuv420p",
     jumpFrames: [36, 90],
   });
-  assert.match(graph, /\[0:v\]fps=30,split=2/u);
-  assert.match(graph, /trim=start_frame=17:end_frame=107/u);
-  assert.match(graph, /trim=start_frame=120:end_frame=200/u);
-  assert.match(graph, /concat=n=2:v=1:a=0\[vcut\]/u);
+  assert.match(graph, /\[0:v\]fps=30,select=/u);
+  assert.ok(graph.includes("between(n\\,17\\,106)+between(n\\,120\\,199)"));
+  assert.match(graph, /setpts=N\/\(30\*TB\)\[vcut\]/u);
+  assert.doesNotMatch(graph, /split=2\[v/u);
   assert.match(graph, /\[vcut\]scale=1080:1920,format=yuv420p\[vcolor\]/u);
   assert.match(graph, /\[1:v\]format=rgba\[graphics\]/u);
   assert.match(graph, /\[0:2\]asplit=2/u);
   assert.match(graph, /\[1:a:0\]aresample=48000/u);
   assert.match(graph, /amix=inputs=2:duration=first:dropout_transition=0:normalize=0/u);
   assert.match(graph, /alimiter=limit=0\.95\[aout\]/u);
+});
+
+test("product overlays trigger synchronized pops and restrained reframes", () => {
+  const overlays = [{ startFrame: 130 }];
+  assert.ok(buildJumpFrames(clips, words, [], 30, overlays).includes(130));
+  assert.ok(buildSoundEffectCues(clips, [], words, [], 30, {
+    includeCaptionEffects: false, overlays,
+  }).some((cue) => cue.kind === "pop" && cue.startFrame === 130));
+});
+
+test("streaming video assembly rejects overlapping and reordered clips", () => {
+  assert.throws(() => buildMasterFilterComplex({
+    clips: [clips[0], { sourceStart: 50, frames: 20, outputStart: 90 }],
+    sourceAudioStreamIndex: 1, colorFilter: "format=yuv420p", jumpFrames: [],
+  }), /cronológicos/u);
 });
 
 test("preview without timed effects preserves source audio without requiring an overlay audio stream", () => {

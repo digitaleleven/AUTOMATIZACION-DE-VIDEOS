@@ -8,7 +8,8 @@ ni llama al servicio de seguimiento de Remotion.
 ## Máster local: Remotion para gráficos + FFmpeg para vídeo
 
 La ruta actual es de dos etapas: Remotion dibuja una capa transparente 1080 ×
-1920 con subtítulos, SVG y efectos de sonido, sin abrir ni decodificar el MOV.
+1920 con subtítulos de 1–3 palabras, títulos, tarjetas/PIP, SVG y efectos de sonido,
+sin abrir ni decodificar el MOV.
 FFmpeg lee el original como fuente maestra, ejecuta los cortes de
 `mm004-plan.json`, aplica la conversión HLG BT.2020 → SDR BT.709 y compone la
 capa. El original y los resultados previos no se sobrescriben.
@@ -48,6 +49,81 @@ para una ejecución puntual:
 ```sh
 pnpm run render:full -- --show-subtitles false
 ```
+
+### Overlays explícitos y sincronización de productos
+
+No se deducen marcas, descuentos ni imágenes de una nota libre. El máster acepta
+`overlays` en el JSON de `--plan`:
+
+```json
+{
+  "overlays": {
+    "title": {"text": "Paso a paso", "duration_seconds": 3.5},
+    "promo": {"text": "Código: PROMO10"},
+    "images": [
+      {"asset": "serum.png", "label": "Sérum", "trigger_text": "este sérum",
+       "position": "right", "duration_seconds": 2.5}
+    ],
+    "cards": [
+      {"text": "Rutina de noche", "trigger_text": "limpieza", "position": "left"}
+    ]
+  }
+}
+```
+
+Esto es una **estructura de ejemplo**, no contenido añadido automáticamente.
+Las imágenes deben existir en `--effects-dir`; se rechazan URLs, rutas fuera de
+ese directorio, imágenes vacías, de más de 25 MB o de más de 16 megapíxeles.
+Posiciones: `topLeft`, `topRight`, `left`, `right`, `bottomLeft`, `bottomRight`.
+Se admiten 24 tarjetas/imágenes por plan, máximo tres simultáneas, sin colisiones
+en la misma posición. Los títulos usan Georgia, crema `#FFFDF8`; el widget
+promocional permanece en el tercio superior izquierdo y no altera el vídeo base.
+
+También se admiten líneas explícitas en `--briefing`:
+
+```text
+title=Paso a paso
+promo=Publi / Marca autorizada
+pip=serum.png|Sérum|este sérum|right
+card=Rutina de noche|limpieza|left
+```
+
+El disparador se busca en las palabras realmente alineadas **después de los
+cortes**. Si no existe, se omite el recurso y se registra una advertencia; no se
+inventan tiempos. Un plan puede fijar `start_seconds` explícitamente. Los PIP y
+tarjetas tienen entrada scale/fade, esquinas de 16 px y sombra; sus inicios
+disparan un pop y un reencuadre suave limitado al 106%. `showSubtitles=false`
+desactiva los subtítulos y sus SFX asociados, pero no los overlays explícitos.
+No se ha conectado esta ruta experimental al procesamiento Python/Shotstack;
+el briefing de esa ruta no se envía por sí solo al máster local.
+
+### Archivos grandes y pruebas locales
+
+El vídeo se decodifica secuencialmente con `fps,select,setpts`, sin ramas de
+vídeo 4K `split/concat` que retengan fotogramas mientras esperan otros segmentos.
+FFmpeg limita decodificación/codificación a dos hilos y el grafo a uno.
+Remotion usa concurrencia uno, PNG/ProRes alpha y cero reintentos. Los recursos
+públicos del bundle no incluyen el MOV. Temporales y perfil Chromium permanecen
+en workspace mediante un enlace corto; se comprueba espacio antes del render.
+Un bloqueo exclusivo evita dos másteres simultáneos. Si un proceso muere por
+SIGKILL, hay que comprobar el PID de `master-render.lock` antes de retirarlo.
+
+Los procesos locales tienen salida de diagnóstico acotada, un tiempo máximo
+explícito y terminación de su grupo si se bloquean; un timeout produce un error,
+no un nuevo intento. Esto reduce riesgos: no garantiza ausencia de fallos para
+cualquier tamaño, duración o recursos disponibles.
+
+```sh
+npm run test:captions
+npm run typecheck
+# Prueba opt-in de 60 fotogramas (2 s) sobre IMG_1254.MOV, sin proveedores:
+node tools/validate-local-pipeline.mjs
+```
+
+La prueba opt-in crea archivos nuevos en `generated-artifacts/pipeline-validation`,
+comprueba MP4/audio/decodificación completa y hash del original, e incluye
+overlays claramente identificados como prueba. No sustituye la validación de
+un render completo ni su revisión humana de sonido, encuadre y color.
 
 El demo rápido requiere que exista el máster anterior y crea un archivo nuevo:
 
