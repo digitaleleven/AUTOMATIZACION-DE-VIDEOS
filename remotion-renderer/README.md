@@ -17,18 +17,18 @@ mkdir -p generated-artifacts/drive-inspection/q03c-control
 ffmpeg -y \
   -i "$PWD/generated-artifacts/drive-inspection/IMG_1254.MOV" \
   -map 0:v:0 -map 0:a:0 -t 12 \
-  -vf "fps=30,zscale=primariesin=bt2020:transferin=arib-std-b67:matrixin=bt2020nc:rangein=limited:primaries=bt2020:transfer=linear:matrix=gbr:range=full:npl=100,format=gbrpf32le,tonemap=hable,zscale=primariesin=bt2020:transferin=linear:matrixin=gbr:rangein=full:primaries=bt709:transfer=bt709:matrix=bt709:range=limited:c=topleft,format=yuv420p" \
+  -vf "fps=30,zscale=primariesin=bt2020:transferin=arib-std-b67:matrixin=bt2020nc:rangein=limited:primaries=bt2020:transfer=linear:matrix=gbr:range=full:npl=100,format=gbrpf32le,tonemap=hable,zscale=primariesin=bt2020:transferin=linear:matrixin=gbr:rangein=full:primaries=bt709:transfer=bt709:matrix=bt709:range=limited:c=topleft,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,format=yuv420p" \
   -c:v libx264 -preset ultrafast -crf 17 -g 1 -keyint_min 1 -pix_fmt yuv420p \
   -color_range tv -colorspace bt709 -color_primaries bt709 -color_trc bt709 \
   -c:a aac -ac 2 -ar 48000 \
-  "$PWD/generated-artifacts/drive-inspection/q03c-control/proxy_30fps_allintra-corrected.mp4"
+  "$PWD/generated-artifacts/drive-inspection/q03c-control/proxy_30fps_allintra_1080.mp4"
 
 pnpm --dir remotion-renderer run render:sample -- \
   --input "$PWD/generated-artifacts/drive-inspection/IMG_1254.MOV" \
   --transcript "$PWD/generated-artifacts/drive-inspection/q03a/transcription-corrected.json" \
-  --proxy "$PWD/generated-artifacts/drive-inspection/q03c-control/proxy_30fps_allintra-corrected.mp4" \
+  --proxy "$PWD/generated-artifacts/drive-inspection/q03c-control/proxy_30fps_allintra_1080.mp4" \
   --render-frames 150 \
-  --output "$PWD/remotion-renderer/generated-artifacts/remotion/allintra-control-30fps.mp4"
+  --output "$PWD/remotion-renderer/generated-artifacts/remotion/allintra-control-30fps-1080.mp4"
 ```
 
 La prueba conserva la composición existente, usa `OffthreadVideo` y renderiza

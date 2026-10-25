@@ -21,6 +21,8 @@ En Remotion 4.0.538, `trimBefore` usa fotogramas de origen y `durationInFrames` 
 
 Un proxy H.264 de 30 FPS con todos los fotogramas I puede superar FFprobe y una decodificación completa, pero aun así fallar cuando Remotion solicita el primer fotograma por su endpoint local `/proxy`. El mensaje genérico de Chrome sobre disco no demuestra falta de espacio; `ECANCELED` en la escritura tampoco identifica por sí solo la causa.
 
-**Why:** la prueba All-Intra de MATRIX MOTION validó 360/360 fotogramas I y tenía 248 GB libres, pero el endpoint local falló al entregar el fotograma 0.
+En Remotion 4.0.538, el servidor de OffthreadVideo registra el mismo mensaje para errores de extracción y de escritura HTTP. Si el registro además dice que los encabezados ya se enviaron y muestra `write ECANCELED`, el código del servidor ya había generado el fotograma y comenzado la respuesta 200; el consumidor cerró o canceló el flujo durante la escritura. La sugerencia de ampliar disco se añade genéricamente ante `Failed to fetch` y no demuestra falta de espacio.
 
-**How to apply:** separar la validación del archivo de la validación del endpoint de Remotion; registrar el error del servidor local y comprobar el espacio disponible antes de atribuir el fallo a disco o a la estructura GOP.
+**Why:** la prueba All-Intra de MATRIX MOTION validó 360/360 fotogramas I y decodificó directamente el fotograma 0, pero Chromium no completó la recepción desde `/proxy`; el workspace tenía 248 GB libres.
+
+**How to apply:** separar la validación del archivo de la del endpoint; distingue el fallo de decodificación de una cancelación del cuerpo HTTP, y comprueba el espacio real antes de atribuir el error al disco o a la estructura GOP.
