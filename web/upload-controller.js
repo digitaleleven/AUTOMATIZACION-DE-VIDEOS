@@ -24,11 +24,12 @@
       uploading = true;
       const niche = options.getNiche();
       const styleNotes = options.getStyleNotes();
+      const editingStyle = options.getEditingStyle?.() || "dynamic";
       options.setBusy(true);
       options.setMessage(`Archivo seleccionado: ${fileName}. Subiendo a la biblioteca…`, { busy: true });
 
       try {
-        const response = await options.upload(file, niche, styleNotes);
+        const response = await options.upload(file, niche, styleNotes, editingStyle);
         const uploadedItem = response?.item ?? response;
         if (!uploadedItem?.id) {
           throw new Error("El servidor no devolvió el identificador del vídeo guardado.");

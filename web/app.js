@@ -19,10 +19,10 @@ const API = {
 
 const VIDEO_NICHE_LABELS = {
   beauty_skincare: "Beauty & Skincare",
-  fashion: "Moda & Fashion",
+  fashion: "Fashion & Style",
   lifestyle_travel: "Lifestyle & Travel",
   fitness_sport: "Fitness & Sport",
-  ugc_ecommerce: "UGC E-commerce",
+  ugc_ecommerce: "UGC & Productos",
   generic_viral: "Genérico / Viral",
 };
 
@@ -62,12 +62,26 @@ const state = {
   driveTokenExpiresAt: 0,
   googleTokenClient: null,
   uploadingVideo: false,
+  activePage: "home",
 };
 
 let csrfToken = "";
 
 const $ = (selector) => document.querySelector(selector);
 const byId = (id) => document.getElementById(id);
+
+function setActivePage(page) {
+  const allowedPages = new Set(["home", "create", "library", "settings"]);
+  const nextPage = allowedPages.has(page) ? page : "home";
+  state.activePage = nextPage;
+  document.querySelectorAll("[data-page-section]").forEach((section) => {
+    section.hidden = section.dataset.pageSection !== nextPage;
+  });
+  document.querySelectorAll(".primary-nav [data-page], .mobile-nav [data-page]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.page === nextPage);
+    button.setAttribute("aria-current", button.dataset.page === nextPage ? "page" : "false");
+  });
+}
 
 async function requestJson(url, options = {}) {
   let response;
@@ -112,13 +126,14 @@ async function loadLibrary() {
   return Array.isArray(result) ? result : (result?.items || result?.library || []);
 }
 
-async function uploadVideo(file, niche, styleNotes) {
+async function uploadVideo(file, niche, styleNotes, editingStyle) {
   return requestJson(API.upload, {
     method: "POST",
     headers: {
       "Content-Type": file.type || "application/octet-stream",
       "X-Upload-Filename": encodeURIComponent(file.name),
       "X-Video-Niche": niche,
+      "X-Editing-Style": editingStyle,
       "X-Style-Notes": encodeURIComponent(styleNotes),
     },
     body: file,
@@ -264,13 +279,12 @@ function collectCreativePlan() {
   };
 }
 
-async function startProcessing(proposal, authorizePaidApis, unknownCostAcknowledged) {
+async function startProcessing(proposal, unknownCostAcknowledged) {
   return requestJson(API.jobs, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       proposal_id: proposal.proposal_id,
-      authorize_paid_apis: authorizePaidApis,
       unknown_cost_acknowledged: unknownCostAcknowledged,
       authorize_modal_compute: proposal.api_plan?.renderer_backend === "modal",
       authorize_openai_transcription: proposal.api_plan?.openai_transcription === true,
@@ -416,8 +430,8 @@ function statusLabel(status) {
     downloading: "Descargando el resultado", completed: "Completado", complete: "Completado",
     failed: "Error", error: "Error", rejected: "No admitido",
     normalizing: "Preparando el formato del vídeo", preparing_captions: "Preparando subtítulos",
-    uploading: "Enviando el vídeo a Shotstack Stage",
-    uploading_captions: "Enviando los subtítulos a Shotstack Stage",
+    uploading: "Preparando el vídeo",
+    uploading_captions: "Preparando subtítulos",
     uploading_to_modal: "Subiendo el trabajo a Modal",
     rendering_on_modal: "Renderizando con Remotion en Modal",
     downloading_from_modal: "Descargando el MP4 desde Modal",
@@ -429,17 +443,15 @@ function statusLabel(status) {
 function renderLibrary() {
   const list = byId("library-list");
   const visibleItems = getVisibleLibraryItems(state.library);
-  const hiddenTestCount = state.library.length - visibleItems.length;
   byId("library-count").textContent = visibleItems.length
     ? `${visibleItems.length} ARCHIVO${visibleItems.length === 1 ? "" : "S"}`
     : "0 ARCHIVOS";
   renderSummary();
+  renderRecentVideos();
   if (!visibleItems.length) {
-    const emptyMessage = hiddenTestCount
-      ? `${hiddenTestCount} vídeos de prueba se conservan, pero están ocultos en esta vista.`
-      : state.libraryLoaded
-        ? "Todavía no hay vídeos. Añade un archivo MP4 o MOV para empezar."
-        : "Añade tu primer vídeo para empezar a crear contenido.";
+    const emptyMessage = state.libraryLoaded
+      ? "Todavía no hay vídeos. Añade un archivo MP4 o MOV para empezar."
+      : "Añade tu primer vídeo para empezar a crear contenido.";
     list.innerHTML = `<div class="empty-state"><div class="empty-glyph">▧</div><h3>Tu biblioteca está vacía</h3><p>${escapeHtml(emptyMessage)}</p><button class="outline-button" type="button" data-action="upload">Añadir un vídeo</button></div>`;
     return;
   }
@@ -461,10 +473,36 @@ function renderLibrary() {
   }).join("");
 }
 
+function renderRecentVideos() {
+  const list = byId("recent-video-list");
+  if (!list) return;
+  const recent = getVisibleLibraryItems(state.library)
+    .slice()
+    .sort((a, b) => {
+      const timestamp = (item) => {
+        const numeric = Number(item.created_at);
+        return Number.isFinite(numeric) ? numeric : (Date.parse(item.created_at || "") || 0) / 1000;
+      };
+      return timestamp(b) - timestamp(a);
+    })
+    .slice(0, 3);
+  if (!recent.length) {
+    list.innerHTML = `<div class="recent-empty">Tus vídeos recientes aparecerán aquí cuando subas un archivo.</div>`;
+    return;
+  }
+  list.innerHTML = recent.map((item) => {
+    const filename = item.original_filename || item.filename || `Vídeo ${item.id}`;
+    return `<button class="recent-video-item" type="button" data-recent-id="${escapeHtml(item.id)}">
+      <span class="recent-video-icon" aria-hidden="true">▶</span>
+      <span class="recent-video-copy"><strong>${escapeHtml(filename)}</strong><small>${escapeHtml(statusLabel(item.status))} · ${formatDuration(item.duration_seconds)}</small></span>
+      <span class="recent-video-arrow" aria-hidden="true">→</span>
+    </button>`;
+  }).join("");
+}
+
 function renderSummary() {
   if (!state.libraryLoaded) return;
   const visibleItems = getVisibleLibraryItems(state.library);
-  const hiddenTestCount = state.library.length - visibleItems.length;
   const pendingStatuses = new Set(["ready", "pending", "queued", "processing", "transcribing", "rendering", "downloading", "normalizing", "preparing_captions", "uploading", "uploading_captions", "uploading_to_modal", "rendering_on_modal", "downloading_from_modal", "validating_output"]);
   const processedStatuses = new Set(["completed", "complete"]);
   const errorStatuses = new Set(["failed", "error", "rejected", "interrupted"]);
@@ -473,9 +511,7 @@ function renderSummary() {
   byId("summary-processed").textContent = String(count(processedStatuses));
   byId("summary-errors").textContent = String(count(errorStatuses));
   byId("summary-pending-note").textContent = "Listos o en curso";
-  byId("summary-source").textContent = hiddenTestCount
-    ? `${hiddenTestCount} pruebas ocultas en esta vista; los datos se conservan`
-    : "Datos actualizados";
+  byId("summary-source").textContent = "Datos actualizados";
 }
 
 function clearEditProposal() {
@@ -501,7 +537,14 @@ function resetCreativePlanControls() {
 function syncEditOptionsForSelectedItem(item) {
   if (!item || state.editOptionsSourceId === item.id) return;
   state.editOptionsSourceId = item.id;
-  byId("edit-subtitle-mode").value = "none";
+  const editingStyle = item.editing_style === "natural_premium" ? "natural_premium" : "dynamic";
+  byId("upload-editing-style").value = editingStyle;
+  document.querySelectorAll("[data-editing-style]").forEach((button) => {
+    const selected = button.dataset.editingStyle === editingStyle;
+    button.classList.toggle("selected", selected);
+    button.setAttribute("aria-pressed", String(selected));
+  });
+  byId("edit-subtitle-mode").value = editingStyle === "natural_premium" ? "none" : "dynamic";
   byId("edit-output-profile").value = "1080p";
   byId("edit-output-quality").value = "high";
   const supportedFps = [25, 30, 50, 60];
@@ -524,16 +567,12 @@ function syncRenderBackendControls() {
   byId("add-zoom-button").disabled = modal;
   for (const field of byId("edit-zooms-list").querySelectorAll("input, select")) {
     field.disabled = modal;
-  }
   if (modal) {
     fps.value = "30";
     profile.value = "1080p";
     if (byId("edit-subtitle-mode").value === "simple") byId("edit-subtitle-mode").value = "dynamic";
     byId("render-backend-note").textContent =
       "Modal usa Remotion/FFmpeg, salida fija 1080 × 1920 a 30 FPS y coste cloud variable. Admite cortes, subtítulos dinámicos y stickers; los zooms manuales y el logo global no se aplican.";
-  } else {
-    byId("render-backend-note").textContent =
-      "Stage mantiene el flujo actual. Modal ejecuta el motor Remotion en cómputo cloud con coste variable no cotizado; su salida se devuelve al panel.";
   }
 }
 
@@ -541,14 +580,12 @@ function renderEditProposal(proposal) {
   state.editProposal = proposal;
   const modeLabels = {
     none: "Sin subtítulos",
-    simple: "Subtítulos sencillos, sin animación",
     dynamic: "Subtítulos dinámicos con palabras destacadas",
   };
   const source = proposal.source || {};
   const edit = proposal.edit || {};
   const costs = proposal.costs || {};
   const apiPlan = proposal.api_plan || {};
-  const isModal = apiPlan.renderer_backend === "modal";
   const captionStyle = edit.caption_style || {};
   const creativePlan = edit.creative_plan || { cuts: [], zooms: [], stickers: [] };
   const duration = Number(source.duration_seconds);
@@ -567,7 +604,7 @@ function renderEditProposal(proposal) {
     : "ninguno";
   const lines = [
     `Vídeo: ${proposal.source_name || "No disponible"} · ${Number.isFinite(duration) ? `${duration.toFixed(2)} s` : "duración desconocida"}`,
-    `Motor: ${isModal ? "Remotion + FFmpeg en Modal" : "Shotstack Stage"}`,
+    "Motor: Remotion + FFmpeg en Modal",
     `Nicho: ${edit.niche_label || VIDEO_NICHE_LABELS[edit.niche] || VIDEO_NICHE_LABELS.generic_viral}`,
     `Subtítulos: fuente ${captionStyle.fontFamily || "Montserrat"} · resaltado ${captionStyle.highlightColor || "#FF2A85"} · texto ${captionStyle.textColor || "#FFFFFF"}`,
     `Briefing: ${edit.style_notes ? `${edit.style_notes} (las directivas explícitas de tipografía y color se aplican a esta propuesta)` : "ninguna"}`,
@@ -587,9 +624,7 @@ function renderEditProposal(proposal) {
     "El plan creativo de esta propuesta es manual; no se ha pedido a una IA que analice el contenido.",
     `Destino: ${proposal.destination || "no disponible"}`,
     `OpenAI estimado: ${formatCost(costs.openai_usd)}`,
-    isModal
-      ? `Cómputo Modal: ${formatCost(costs.modal_compute_usd)} (no cotizado)`
-      : `Shotstack Stage estimado: ${formatCost(costs.shotstack_usd)}`,
+    `Cómputo Modal: ${formatCost(costs.modal_compute_usd)} (no cotizado)`,
     `Total estimado: ${formatCost(costs.total_estimate_usd)}`,
   ];
   const warnings = (proposal.warnings || []).filter(Boolean);
@@ -601,16 +636,10 @@ function renderEditProposal(proposal) {
   byId("unknown-cost-wrap").hidden = !unknownCost;
   byId("unknown-cost-consent").checked = false;
   byId("paid-consent").checked = false;
-  byId("paid-consent-copy").textContent = isModal
-    ? apiPlan.openai_transcription
-      ? "Autorizo enviar solo el audio a OpenAI para transcribirlo y el vídeo a Modal para un render Remotion."
-      : "Autorizo enviar este vídeo a Modal para un render Remotion. No se usará OpenAI."
-    : apiPlan.openai_transcription
-      ? "Autorizo enviar este vídeo a OpenAI para transcribirlo y a Shotstack Stage para un único render."
-      : "Autorizo enviar este vídeo a Shotstack Stage para un único render. No se usará OpenAI para transcribirlo.";
-  byId("approve-render-button").querySelector("span").textContent = isModal
-    ? "Autorizar y renderizar en Modal"
-    : "Aprobar y renderizar en Stage";
+  byId("paid-consent-copy").textContent = apiPlan.openai_transcription
+    ? "Autorizo enviar solo el audio a OpenAI para transcribirlo y el vídeo normalizado a Modal para un render Remotion."
+    : "Autorizo enviar el vídeo normalizado a Modal para un render Remotion. No se usará OpenAI.";
+  byId("approve-render-button").querySelector("span").textContent = "Autorizar y renderizar en Modal";
   byId("render-approval").hidden = false;
   updateProcessButton();
 }
@@ -632,10 +661,6 @@ function renderSelectedItem() {
     byId("cost-note").textContent = "Selecciona un vídeo para consultar la estimación disponible.";
     byId("unknown-cost-wrap").hidden = true;
     byId("retry-drive-upload-button").hidden = true;
-    byId("retry-render-button").hidden = true;
-    byId("retry-render-hint").hidden = true;
-    byId("retry-final-render-button").hidden = true;
-    byId("retry-final-render-hint").hidden = true;
     updateProcessButton();
     return;
   }
@@ -688,20 +713,6 @@ function renderSelectedItem() {
     byId("file-summary").insertAdjacentHTML("beforeend", `<div class="job-error">El render local se conserva. Error al guardar en Drive: ${escapeHtml(item.drive_error)}</div>`);
   }
   byId("retry-drive-upload-button").hidden = item.can_retry_drive_upload !== true;
-  const retryButton = byId("retry-render-button");
-  const retryHint = byId("retry-render-hint");
-  retryButton.hidden = item.can_retry_render !== true;
-  retryButton.disabled = false;
-  retryHint.hidden = item.can_retry_render !== true;
-  retryHint.textContent = item.retry_remote_status_check_available
-    ? "Al autorizar, el servidor comprobará primero el estado del render registrado."
-    : "No hay ID remoto: el estado en Shotstack no se puede consultar. Se solicitará confirmación antes de permitir el único reenvío.";
-  const finalRetryButton = byId("retry-final-render-button");
-  const finalRetryHint = byId("retry-final-render-hint");
-  finalRetryButton.hidden = item.can_run_controlled_third_render !== true;
-  finalRetryButton.disabled = false;
-  finalRetryHint.hidden = item.can_run_controlled_third_render !== true;
-  finalRetryHint.textContent = "Acción de una sola vez reservada para 0415.mov. Los dos intentos anteriores se conservarán.";
   updateProcessButton();
 }
 
@@ -713,15 +724,13 @@ function renderHealth(health) {
     el.className = configured === true ? "health-ok" : configured === false ? "health-no" : "health-unknown";
   };
   set("health-openai", health?.openai_key_configured);
-  set("health-shotstack", health?.shotstack_key_configured);
   const modal = health?.modal || {};
   const modalStatus = byId("health-modal");
   modalStatus.textContent = modal.sdk_installed && modal.credentials_configured
     ? "SDK y perfil detectados; worker comprobado antes de procesar"
     : "No configurado en el servidor";
   modalStatus.className = "health-unknown";
-  const env = health?.shotstack_environment;
-  byId("health-environment").textContent = env == null || env === "" ? "No disponible" : String(env);
+  byId("health-environment").textContent = "Modal exclusivo";
   const drive = health?.drive_connected;
   const driveReady = health?.drive_oauth_ready;
   const pickerReady = health?.drive_picker_configured;
@@ -935,10 +944,8 @@ function updateProcessButton() {
   const item = getSelectedItem();
   const busy = state.activeJob && !["completed", "complete", "failed", "error", "rejected"].includes(String(state.activeJob.status || "").toLowerCase());
   const itemStatus = String(item?.status || "").toLowerCase();
-  const selectedBackend = byId("edit-render-backend").value;
-  const sameBackend = !item?.latest_job_backend || item.latest_job_backend === selectedBackend;
   const unavailable = ["processing", "queued"].includes(itemStatus)
-    || (sameBackend && ["completed", "failed"].includes(itemStatus));
+    || ["completed", "failed"].includes(itemStatus);
   const proposal = state.editProposal;
   const unknownCost = !proposal
     || proposal.costs?.total_estimate_usd === null
@@ -946,14 +953,11 @@ function updateProcessButton() {
   const consentOk = byId("paid-consent").checked
     && (!unknownCost || byId("unknown-cost-consent").checked);
   const needsOpenAI = proposal?.api_plan?.openai_transcription === true;
-  const modalBackend = proposal?.api_plan?.renderer_backend === "modal";
   const missingApi = proposal && (
-    modalBackend
-      ? (!proposal.api_plan?.modal_sdk_installed
-        || !proposal.api_plan?.modal_credentials_configured
-        || (needsOpenAI && !proposal.api_plan?.openai_key_configured))
-      : (!proposal.api_plan?.shotstack_key_configured
-        || (needsOpenAI && !proposal.api_plan?.openai_key_configured))
+    proposal.api_plan?.renderer_backend !== "modal"
+    || !proposal.api_plan?.modal_sdk_installed
+    || !proposal.api_plan?.modal_credentials_configured
+    || (needsOpenAI && !proposal.api_plan?.openai_key_configured)
   );
   byId("process-button").disabled = !item || Boolean(busy) || unavailable;
   byId("approve-render-button").disabled = !proposal || !consentOk || Boolean(missingApi) || Boolean(busy);
@@ -1036,7 +1040,7 @@ async function refreshWorkspace() {
     else {
       byId("connection-label").textContent = "No se pudo comprobar";
       $(".local-indicator").classList.remove("connected");
-      for (const id of ["health-openai", "health-shotstack", "health-modal", "health-environment", "health-drive"]) {
+      for (const id of ["health-openai", "health-modal", "health-environment", "health-drive"]) {
         const status = byId(id);
         status.textContent = "No disponible";
         status.className = "health-unknown";
@@ -1115,7 +1119,7 @@ byId("drive-scan-button").addEventListener("click", async () => {
     renderLibrary();
     renderSelectedItem();
     const failures = Array.isArray(result?.failed) ? result.failed.length : 0;
-    message.textContent = `Escaneo completado: ${result?.imported?.length || 0} vídeo(s) nuevo(s), ${result?.skipped || 0} ya importado(s), ${failures} error(es). No se llamó a OpenAI ni a Shotstack.`;
+    message.textContent = `Escaneo completado: ${result?.imported?.length || 0} vídeo(s) nuevo(s), ${result?.skipped || 0} ya importado(s), ${failures} error(es). No se llamó a OpenAI ni se inició ningún render.`;
     if (failures) {
       message.dataset.error = "true";
       displayToast("El escaneo terminó con errores. Revisa el detalle del panel.", true);
@@ -1169,105 +1173,23 @@ byId("retry-drive-upload-button").addEventListener("click", async () => {
     button.disabled = false;
   }
 });
-async function authorizeRenderRetry(finalAttempt = false) {
-  const item = getSelectedItem();
-  const canAuthorize = finalAttempt
-    ? item?.can_run_controlled_third_render
-    : item?.can_retry_render;
-  if (!canAuthorize || !item.latest_job_id) return;
-  const settings = item.retry_settings || {};
-  const plan = settings.creative_plan || {};
-  const zooms = Array.isArray(plan.zooms) ? plan.zooms : [];
-  const stickers = Array.isArray(plan.stickers) ? plan.stickers : [];
-  const zoomSummary = zooms.length
-    ? zooms.map((zoom) => `${Number(zoom.start_seconds).toFixed(0)}–${Number(zoom.end_seconds).toFixed(0)} s`).join(", ")
-    : "ninguno";
-  const stickerSummary = stickers.length
-    ? stickers.map((sticker) => `${sticker.sticker === "sparkle" ? "Destello" : sticker.sticker}, ${Number(sticker.start_seconds).toFixed(1)} s durante ${Number(sticker.duration_seconds).toFixed(1)} s`).join("; ")
-    : "ninguno";
-  const outputLabel = settings.output_profile === "1080p" ? "1080 × 1920" : String(settings.output_profile || "configuración guardada");
-  const estimatedCost = item.retry_estimated_cost_usd;
-  const costLine = estimatedCost === null || estimatedCost === undefined
-    ? "Coste estimado desconocido; el envío puede consumir créditos."
-    : `Coste estimado guardado: ${formatCost(estimatedCost)}; el importe real puede variar.`;
-  const driveWriteLine = item.retry_will_upload_to_drive
-    ? "Al terminar, se creará un MP4 nuevo en 02_PROCESADOS. El original de Drive no se modificará."
-    : "";
-  const message = [
-    finalAttempt
-      ? `Se autorizará la única tercera y última prueba de RENDER-001 para ${item.original_filename || item.filename}.`
-      : `Se autorizará un único reintento para ${item.original_filename || item.filename}.`,
-    `Configuración guardada: ${settings.subtitle_mode === "none" ? "sin subtítulos" : "subtítulos " + settings.subtitle_mode}; ${outputLabel}, ${settings.output_fps} FPS, calidad ${settings.output_quality}; zoom ${zoomSummary}; sticker ${stickerSummary}.`,
-    costLine,
-    driveWriteLine,
-    finalAttempt
-      ? "Los dos intentos anteriores permanecerán intactos. Se enviará exactamente una vez a Shotstack Stage. ¿Autorizas esta prueba final?"
-      : "Se enviará a Shotstack Stage. ¿Autorizas este único intento?",
-  ].filter(Boolean).join("\n");
-  if (!window.confirm(message)) return;
-  const remoteStatusAvailable = item.retry_remote_status_check_available === true;
-  if (!remoteStatusAvailable && !window.confirm(
-    finalAttempt
-      ? "Los dos intentos anteriores terminaron con HTTP 400 y no devolvieron un ID de render. No es posible consultar el estado remoto. MATRIX MOTION bloqueará cualquier cuarto intento. ¿Confirmas que autorizas exactamente esta tercera y última prueba?"
-      : "El primer intento terminó con HTTP 400 y no devolvió un ID de render. No se puede consultar el estado remoto. MATRIX MOTION impedirá un segundo reintento local. ¿Confirmas que autorizas reenviar exactamente la edición guardada una vez?",
-  )) return;
-  const unknownCost = estimatedCost === null || estimatedCost === undefined;
-  if (unknownCost && !window.confirm("El coste no puede estimarse con los datos guardados. ¿Aceptas continuar con coste desconocido?")) return;
-
-  const button = byId(finalAttempt ? "retry-final-render-button" : "retry-render-button");
-  const originalText = button.textContent;
-  button.disabled = true;
-  button.textContent = finalAttempt ? "Preparando tercera prueba…" : "Solicitando reintento…";
-  try {
-    const retryPath = finalAttempt ? "retry-third" : "retry";
-    const response = await requestJson(`/api/jobs/${encodeURIComponent(item.latest_job_id)}/${retryPath}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        authorize_paid_apis: true,
-        confirm_single_retry: true,
-        confirm_final_third_attempt: finalAttempt,
-        confirm_no_render_id: !remoteStatusAvailable,
-        confirm_drive_output_write: item.retry_will_upload_to_drive === true,
-        unknown_cost_acknowledged: unknownCost,
-      }),
-    });
-    const job = response?.job || response;
-    state.activeJob = job;
-    state.library = await loadLibrary();
-    state.libraryLoaded = true;
-    renderLibrary();
-    renderSelectedItem();
-    renderJob(job, item.original_filename || item.filename);
-    if (job.id && !["completed", "complete", "failed", "error", "rejected"].includes(String(job.status || "").toLowerCase())) {
-      clearInterval(state.pollTimer);
-      state.pollTimer = setInterval(() => pollJob(job.id, item.original_filename || item.filename), 2500);
-      await pollJob(job.id, item.original_filename || item.filename);
-    }
-    displayToast(response?.resumes_existing_render
-      ? "Reanudada la descarga del render existente; no se creó otro render."
-      : finalAttempt
-        ? "Tercera y última prueba solicitada en Shotstack Stage."
-        : "Reintento único solicitado en Shotstack Stage.");
-  } catch (error) {
-    displayToast(`No se pudo autorizar el reintento: ${error.message}`, true);
-  } finally {
-    button.textContent = originalText;
-    button.disabled = false;
-  }
-}
-byId("retry-render-button").addEventListener("click", () => authorizeRenderRetry(false));
-byId("retry-final-render-button").addEventListener("click", () => authorizeRenderRetry(true));
-document.querySelector(".list-toolbar [data-action='upload']")?.addEventListener("click", () => byId("video-input").click());
-document.querySelectorAll("[data-scroll]").forEach((button) => button.addEventListener("click", () => {
-  document.getElementById(button.dataset.scroll)?.scrollIntoView({ behavior: "smooth" });
-  document.querySelectorAll("[data-scroll]").forEach((link) => link.classList.toggle("active", link.dataset.scroll === button.dataset.scroll));
-}));
+document.querySelectorAll("[data-page]").forEach((button) => {
+  button.addEventListener("click", () => setActivePage(button.dataset.page));
+});
 
 byId("library-list").addEventListener("click", (event) => {
   const actionButton = event.target.closest("[data-action]");
   if (actionButton?.dataset.action === "upload") {
+    setActivePage("create");
     byId("video-input").click();
+    return;
+  }
+  const recentButton = event.target.closest("[data-recent-id]");
+  if (recentButton) {
+    state.selectedId = recentButton.dataset.recentId;
+    setActivePage("create");
+    renderLibrary();
+    renderSelectedItem();
     return;
   }
   const itemButton = event.target.closest(".library-item");
@@ -1290,6 +1212,7 @@ const uploadController = window.MatrixMotionUploadController.createUploadControl
   renderLibrary,
   renderSelectedItem,
   getNiche: () => byId("upload-niche").value,
+  getEditingStyle: () => byId("upload-editing-style").value,
   getStyleNotes: () => byId("upload-style-notes").value.trim(),
   clearStyleNotes: () => { byId("upload-style-notes").value = ""; },
   setBusy: (busy) => {
@@ -1311,6 +1234,63 @@ const uploadController = window.MatrixMotionUploadController.createUploadControl
 window.MatrixMotionUploadController.bindFileInput(byId("video-input"), uploadController);
 byId("upload-trigger").addEventListener("click", () => {
   if (!state.uploadingVideo) byId("video-input").click();
+});
+document.querySelectorAll("[data-niche]").forEach((button) => {
+  button.addEventListener("click", () => {
+    byId("upload-niche").value = button.dataset.niche;
+    document.querySelectorAll("[data-niche]").forEach((candidate) => {
+      const selected = candidate === button;
+      candidate.classList.toggle("selected", selected);
+      candidate.setAttribute("aria-pressed", String(selected));
+    });
+  });
+});
+document.querySelectorAll("[data-editing-style]").forEach((button) => {
+  button.addEventListener("click", () => {
+    const editingStyle = button.dataset.editingStyle;
+    byId("upload-editing-style").value = editingStyle;
+    document.querySelectorAll("[data-editing-style]").forEach((candidate) => {
+      const selected = candidate === button;
+      candidate.classList.toggle("selected", selected);
+      candidate.setAttribute("aria-pressed", String(selected));
+    });
+    if (getSelectedItem()) {
+      byId("edit-subtitle-mode").value = editingStyle === "natural_premium" ? "none" : "dynamic";
+      invalidateEditOptions();
+    }
+  });
+});
+const videoDropzone = byId("video-dropzone");
+videoDropzone.addEventListener("keydown", (event) => {
+  if ((event.key === "Enter" || event.key === " ") && event.target === videoDropzone) {
+    event.preventDefault();
+    byId("video-input").click();
+  }
+});
+videoDropzone.addEventListener("dragover", (event) => {
+  event.preventDefault();
+  videoDropzone.classList.add("drag-over");
+});
+videoDropzone.addEventListener("dragleave", () => videoDropzone.classList.remove("drag-over"));
+videoDropzone.addEventListener("drop", (event) => {
+  event.preventDefault();
+  videoDropzone.classList.remove("drag-over");
+  const file = event.dataTransfer?.files?.[0];
+  if (file && !state.uploadingVideo) uploadController.handleSelection(file);
+});
+videoDropzone.addEventListener("click", (event) => {
+  if (event.target.closest("button, input") || state.uploadingVideo) return;
+  byId("video-input").click();
+});
+byId("recent-video-list").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-recent-id]");
+  if (!button) return;
+  state.selectedId = button.dataset.recentId;
+  byId("paid-consent").checked = false;
+  byId("unknown-cost-consent").checked = false;
+  setActivePage("create");
+  renderLibrary();
+  renderSelectedItem();
 });
 
 byId("paid-consent").addEventListener("change", updateProcessButton);
@@ -1370,14 +1350,9 @@ byId("approve-render-button").addEventListener("click", async () => {
     return;
   }
   const usesOpenAI = proposal.api_plan?.openai_transcription === true;
-  const usesModal = proposal.api_plan?.renderer_backend === "modal";
-  const providerSummary = usesModal
-    ? usesOpenAI
-      ? "OpenAI para transcribir y Modal para un render Remotion."
-      : "Modal para un render Remotion; no se llamará a OpenAI."
-    : usesOpenAI
-      ? "OpenAI para transcribir y Shotstack Stage para un único render."
-      : "Shotstack Stage para un único render; no se llamará a OpenAI.";
+  const providerSummary = usesOpenAI
+    ? "OpenAI para transcribir el audio autorizado y Modal para un render Remotion."
+    : "Modal para un render Remotion; no se llamará a OpenAI.";
   const costSummary = unknown
     ? "El coste total no está disponible y podría haber cargos."
     : `La estimación total es ${formatCost(proposal.costs.total_estimate_usd)}.`;
@@ -1389,7 +1364,7 @@ byId("approve-render-button").addEventListener("click", async () => {
   button.disabled = true;
   button.querySelector("span").textContent = "Iniciando render…";
   try {
-    const result = await startProcessing(proposal, true, unknown);
+    const result = await startProcessing(proposal, unknown);
     const job = result?.job || result;
     state.activeJob = job;
     renderJob(job, item.original_filename || item.filename);
@@ -1404,9 +1379,7 @@ byId("approve-render-button").addEventListener("click", async () => {
     byId("job-status-tag").textContent = "ERROR AL INICIAR";
     byId("job-content").innerHTML = `<div class="job-error">${escapeHtml(error.message)}</div>`;
   } finally {
-    button.querySelector("span").textContent = proposal.api_plan?.renderer_backend === "modal"
-      ? "Autorizar y renderizar en Modal"
-      : "Aprobar y renderizar en Stage";
+    button.querySelector("span").textContent = "Autorizar y renderizar en Modal";
     updateProcessButton();
   }
 });
@@ -1776,5 +1749,6 @@ byId("drive-test-file-button").addEventListener("click", async () => {
   }
 });
 
+setActivePage("home");
 initializePanel();
 void initializeMasterPreview();

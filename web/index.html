@@ -19,14 +19,10 @@
         <div class="sidebar-divider"></div>
         <p class="nav-caption">ESPACIO DE TRABAJO</p>
         <nav class="primary-nav">
-          <button class="rail-link active" type="button" data-scroll="inicio"><span class="nav-symbol">⌂</span>Inicio</button>
-          <button class="rail-link" type="button" data-scroll="biblioteca"><span class="nav-symbol">▤</span>Biblioteca</button>
-          <button class="rail-link" type="button" data-scroll="estudio"><span class="nav-symbol">▣</span>Estudio de edición</button>
-          <button class="rail-link" type="button" data-scroll="resultado-fase1" hidden><span class="nav-symbol">▶</span>Resultado Fase 1</button>
-          <button class="rail-link" type="button" data-scroll="resultado-mm003" hidden><span class="nav-symbol">▶</span>Edición dinámica MM-003</button>
-          <button class="rail-link" type="button" data-scroll="resultado-mm004" hidden><span class="nav-symbol">▶</span>Edición dinámica MM-004</button>
-          <button class="rail-link" type="button" data-scroll="procesamiento"><span class="nav-symbol">⌁</span>Procesamiento</button>
-          <button class="rail-link" type="button" data-scroll="configuracion"><span class="nav-symbol">☷</span>Configuración</button>
+          <button class="rail-link active" type="button" data-page="home"><span class="nav-symbol">⌂</span>Inicio</button>
+          <button class="rail-link" type="button" data-page="create"><span class="nav-symbol">＋</span>Crear vídeo</button>
+          <button class="rail-link" type="button" data-page="library"><span class="nav-symbol">▤</span>Mis vídeos</button>
+          <button class="rail-link" type="button" data-page="settings"><span class="nav-symbol">☷</span>Ajustes</button>
         </nav>
         <div class="sidebar-safety">
           <div class="safety-heading"><span class="local-indicator"><i></i><span id="connection-label">Pendiente de actualizar</span></span></div>
@@ -48,37 +44,19 @@
         </header>
 
         <div class="content">
-          <section class="intro" id="inicio">
+          <section class="intro premium-home" id="inicio" data-page-section="home">
             <div class="intro-copy-wrap">
               <p class="eyebrow">VIDEO AUTOMATION STUDIO <span>·</span> VERTICAL 9:16</p>
-              <h1>Vídeos para <span>publicar.</span></h1>
+              <h1>Tu vídeo. <span>Otro nivel.</span></h1>
               <p class="intro-copy">De vídeo original a contenido listo para publicar. Prepara tus vídeos verticales, revisa cada resultado y autoriza el procesamiento cuando quieras.</p>
             </div>
             <div class="hero-action">
-              <div class="upload-preferences" aria-label="Preferencias de este vídeo">
-                <label for="upload-niche">Nicho / categoría
-                  <select id="upload-niche" name="niche">
-                    <option value="beauty_skincare">Beauty &amp; Skincare</option>
-                    <option value="fashion">Moda &amp; Fashion</option>
-                    <option value="lifestyle_travel">Lifestyle &amp; Travel</option>
-                    <option value="fitness_sport">Fitness &amp; Sport</option>
-                    <option value="ugc_ecommerce">UGC E-commerce</option>
-                    <option value="generic_viral" selected>Genérico / Viral</option>
-                  </select>
-                </label>
-                <label for="upload-style-notes">Notas o instrucciones de estilo especiales para este vídeo (Opcional)
-                  <textarea id="upload-style-notes" name="style_notes" rows="3" maxlength="500" placeholder="Añade contexto para la revisión de este vídeo"></textarea>
-                </label>
-                <small class="upload-preferences-note">El texto libre queda en el briefing. Para cambiar subtítulos, añade líneas como <code>fontFamily=Montserrat</code>, <code>highlightColor=#FF2A85</code> o <code>textColor=#FFFFFF</code>.</small>
-              </div>
-              <button id="upload-trigger" class="hero-upload" type="button"><span class="upload-mark">＋</span><span>Añadir vídeo</span><b>→</b></button>
-              <input id="video-input" type="file" accept="video/mp4,video/quicktime,.mp4,.mov" hidden>
-              <p>MP4 o MOV <span>·</span> H.264 o HEVC</p>
-              <div class="upload-progress" id="upload-message" role="status" aria-live="polite" hidden></div>
+              <button class="hero-upload" type="button" data-page="create"><span class="upload-mark">＋</span><span>Nuevo vídeo</span><b>→</b></button>
+              <p>Originales intactos <span>·</span> revisión antes de cada render</p>
             </div>
           </section>
 
-          <section class="summary-strip" aria-label="Resumen de la biblioteca">
+          <section class="summary-strip" aria-label="Resumen de la biblioteca" data-page-section="home">
             <article class="summary-item">
               <span class="summary-mark pending-mark"></span>
               <div><p>PENDIENTES</p><strong id="summary-pending">—</strong><small id="summary-pending-note">Pendiente de actualizar</small></div>
@@ -94,13 +72,76 @@
             <span class="summary-source" id="summary-source">Actualiza para ver la información disponible</span>
           </section>
 
-          <div class="notice-band" role="note">
+          <section class="home-recent-section" data-page-section="home" aria-labelledby="recent-title">
+            <div class="section-head">
+              <div><p class="eyebrow">BIBLIOTECA REAL</p><h2 id="recent-title">Mis últimos vídeos</h2></div>
+              <button class="small-action" type="button" data-page="library">Ver todos <span aria-hidden="true">→</span></button>
+            </div>
+            <div id="recent-video-list" class="recent-video-list" aria-live="polite">
+              <div class="recent-empty">Cargando vídeos de la biblioteca…</div>
+            </div>
+          </section>
+
+          <div class="notice-band" role="note" data-page-section="home">
             <span class="notice-icon" aria-hidden="true">i</span>
-            <p><strong>El original no se modifica.</strong> OpenAI y Shotstack Stage solo se usan al iniciar un procesamiento con tu autorización explícita.</p>
+            <p><strong>El original no se modifica.</strong> OpenAI y Modal solo se usan tras una autorización explícita; no se inicia ningún render en segundo plano.</p>
             <span class="notice-local">SIN ENVÍOS AUTOMÁTICOS</span>
           </div>
 
-          <section class="drive-section" aria-labelledby="drive-title">
+          <section class="section-block create-upload-section" id="crear-video" data-page-section="create" aria-labelledby="create-title">
+            <div class="section-head">
+              <div><p class="eyebrow">01 / NUEVO PROYECTO</p><h2 id="create-title">Crear vídeo</h2><p class="section-description">Sube el original, define su categoría y elige el estilo de subtítulos.</p></div>
+              <span class="status-pill">Motor disponible: Modal</span>
+            </div>
+            <div class="create-steps" aria-label="Pasos confirmados">
+              <span class="create-step active"><b>1</b> Vídeo</span><span class="step-connector"></span>
+              <span class="create-step"><b>2</b> Categoría</span><span class="step-connector"></span>
+              <span class="create-step"><b>3</b> Estilo</span>
+            </div>
+            <div class="upload-preferences" aria-label="Preferencias de este vídeo">
+              <label class="sr-only" for="upload-niche">Nicho o categoría</label>
+              <select id="upload-niche" name="niche" class="sr-only">
+                <option value="beauty_skincare">Beauty &amp; Skincare</option>
+                <option value="fashion">Fashion &amp; Style</option>
+                <option value="lifestyle_travel">Lifestyle &amp; Travel</option>
+                <option value="fitness_sport">Fitness &amp; Sport</option>
+                <option value="ugc_ecommerce">UGC &amp; Productos</option>
+                <option value="generic_viral" selected>Genérico / Viral</option>
+              </select>
+              <div class="choice-block">
+                <div class="choice-label"><strong>2. Categoría</strong><span>Elige la que mejor describe el vídeo.</span></div>
+                <div class="niche-card-grid" role="group" aria-label="Categoría del vídeo">
+                  <button type="button" class="niche-card" data-niche="beauty_skincare" aria-pressed="false">Beauty &amp; Skincare</button>
+                  <button type="button" class="niche-card" data-niche="fashion" aria-pressed="false">Fashion &amp; Style</button>
+                  <button type="button" class="niche-card" data-niche="lifestyle_travel" aria-pressed="false">Lifestyle &amp; Travel</button>
+                  <button type="button" class="niche-card" data-niche="fitness_sport" aria-pressed="false">Fitness &amp; Sport</button>
+                  <button type="button" class="niche-card" data-niche="ugc_ecommerce" aria-pressed="false">UGC &amp; Productos</button>
+                  <button type="button" class="niche-card selected" data-niche="generic_viral" aria-pressed="true">Genérico / Viral</button>
+                </div>
+              </div>
+              <div class="choice-block">
+                <div class="choice-label"><strong>3. Estilo de edición</strong><span>Se aplica a la propuesta de este vídeo.</span></div>
+                <input id="upload-editing-style" type="hidden" value="dynamic">
+                <div class="editing-style-grid" role="group" aria-label="Estilo de edición">
+                  <button type="button" class="editing-style-card" data-editing-style="natural_premium" aria-pressed="false"><strong>Natural Premium</strong><span>Sin subtítulos; conserva el ritmo y el audio originales.</span></button>
+                  <button type="button" class="editing-style-card selected" data-editing-style="dynamic" aria-pressed="true"><strong>Dinámico</strong><span>Subtítulos animados. La transcripción requiere autorización aparte.</span></button>
+                </div>
+              </div>
+              <label class="briefing-label" for="upload-style-notes">Notas o instrucciones de estilo especiales para este vídeo (Opcional)
+                <textarea id="upload-style-notes" name="style_notes" rows="3" maxlength="500" placeholder="Añade contexto para la revisión de este vídeo"></textarea>
+              </label>
+              <small class="upload-preferences-note">Las notas se guardan con este vídeo y se aplican a la propuesta. Los ajustes de subtítulos pueden cambiarse en Ajustes.</small>
+            </div>
+            <div class="upload-dropzone" id="video-dropzone" tabindex="0" aria-label="Seleccionar o soltar un vídeo MP4 o MOV">
+              <span class="upload-drop-icon" aria-hidden="true">↑</span>
+              <div><strong>Arrastra un vídeo aquí o selecciónalo</strong><p>MP4 o MOV · H.264 o HEVC · el archivo original se conserva</p></div>
+              <button id="upload-trigger" class="hero-upload" type="button"><span class="upload-mark">＋</span><span>Añadir vídeo</span><b>→</b></button>
+              <input id="video-input" type="file" accept="video/mp4,video/quicktime,.mp4,.mov" hidden>
+            </div>
+            <div class="upload-progress" id="upload-message" role="status" aria-live="polite" hidden></div>
+          </section>
+
+          <section class="drive-section" id="drive-section" data-page-section="settings" aria-labelledby="drive-title">
             <div class="drive-heading">
               <div><p class="eyebrow">PICKER OPCIONAL · DRIVE.FILE</p><h2 id="drive-title">Archivos de Google Drive</h2></div>
               <button id="drive-sync-button" class="outline-button" type="button" disabled>Listar y descargar Entrada + Logos</button>
@@ -134,7 +175,7 @@
             <p id="drive-message" class="drive-message" aria-live="polite">Comprobando la configuración de Google Picker…</p>
           </section>
 
-          <section class="section-block" id="biblioteca">
+          <section class="section-block" id="biblioteca" data-page-section="library">
             <div class="section-head">
               <div><p class="eyebrow">01 / ARCHIVOS</p><h2>Tu biblioteca</h2></div>
               <span class="count-tag" id="library-count">Pendiente de actualizar</span>
@@ -143,20 +184,6 @@
               <div class="list-toolbar">
                 <span>VÍDEOS DISPONIBLES</span>
                 <button class="small-action" type="button" data-action="upload">＋ Añadir vídeo</button>
-              </div>
-              <div class="drive-panel" aria-labelledby="drive-panel-title">
-                <div class="drive-panel-copy">
-                  <span class="drive-panel-kicker">GOOGLE DRIVE</span>
-                  <strong id="drive-panel-title">Estado pendiente</strong>
-                  <p id="drive-status-detail" role="status" aria-live="polite">Se está consultando la configuración local.</p>
-                </div>
-                <div class="drive-panel-actions">
-                  <button class="outline-button" id="drive-connect-button" type="button" disabled>Conectar Google Drive (OAuth)</button>
-                  <button class="small-action" id="drive-scan-button" type="button" disabled>Escanear 01_ENTRADA</button>
-                  <button class="small-action" id="drive-write-test-button" type="button" disabled>Probar escritura MP4</button>
-                </div>
-                <p class="drive-scope-note">OAuth solicita <code>drive.readonly</code> para leer y <code>drive.file</code> para crear resultados. Google concede lectura sobre todo el Drive de la cuenta secundaria; MATRIX MOTION limita sus operaciones a los IDs configurados de 01_ENTRADA, 02_PROCESADOS y RECURSOS/LOGOS. Picker es opcional. El escáner no inicia renders.</p>
-                <div class="drive-message" id="drive-oauth-message" role="status" aria-live="polite" hidden></div>
               </div>
               <div id="library-list" class="library-list" aria-live="polite">
                 <div class="empty-state">
@@ -168,7 +195,7 @@
             </div>
           </section>
 
-          <section class="section-block" id="estudio">
+          <section class="section-block" id="estudio" data-page-section="create">
             <div class="section-head">
               <div><p class="eyebrow">02 / ESTUDIO</p><h2>Vídeo original y resultado</h2></div>
               <span class="preview-status" id="selected-status">NINGÚN VÍDEO</span>
@@ -267,7 +294,7 @@
             </div>
           </section>
 
-          <section class="section-block q03e-section" id="resultado-remotion" aria-labelledby="remotion-final-title">
+          <section class="section-block q03e-section" id="resultado-remotion" aria-labelledby="remotion-final-title" hidden>
             <div class="section-head">
               <div><p class="eyebrow">REMOTION + FFMPEG / HLG → SDR</p><h2 id="remotion-final-title">IMG_1254.MOV · máster local de revisión</h2></div>
               <span class="preview-status q03e-pending">PENDIENTE DE REVISIÓN HUMANA</span>
@@ -292,7 +319,7 @@
             </div>
           </section>
 
-          <section class="section-block" id="procesamiento">
+          <section class="section-block" id="procesamiento" data-page-section="create">
             <div class="section-head">
               <div><p class="eyebrow">03 / PROCESO</p><h2>Estado y costes</h2></div>
               <span class="job-state-tag" id="job-status-tag">SIN PROCESOS</span>
@@ -310,17 +337,12 @@
                 </div>
                 <div class="edit-options" aria-labelledby="edit-options-title">
                   <h3 id="edit-options-title">Edición para este vídeo</h3>
-                  <label for="edit-render-backend">Motor de render</label>
-                  <select id="edit-render-backend" aria-describedby="render-backend-note">
-                    <option value="shotstack_stage" selected>Shotstack Stage</option>
-                    <option value="modal">Remotion + FFmpeg en Modal</option>
-                  </select>
-                  <p class="field-help" id="render-backend-note">Stage mantiene el flujo actual. Modal ejecuta el motor Remotion en cómputo cloud con coste variable no cotizado; su salida se devuelve al panel.</p>
+                  <input id="edit-render-backend" type="hidden" value="modal">
+                  <p class="field-help engine-note" id="render-backend-note">Motor exclusivo: Remotion + FFmpeg en Modal. El coste cloud es variable y no está cotizado aquí.</p>
                   <label for="edit-subtitle-mode">Subtítulos</label>
                   <select id="edit-subtitle-mode" aria-describedby="edit-options-note">
                     <option value="none" selected>Sin subtítulos</option>
                     <option value="dynamic">Dinámicos, con palabras destacadas</option>
-                    <option value="simple">Sencillos, sin animación</option>
                   </select>
                   <label for="edit-output-fps">FPS de salida</label>
                   <select id="edit-output-fps" aria-describedby="edit-options-note">
@@ -336,13 +358,12 @@
                     <option value="1440p" disabled>1440 × 2560 (requiere plan 4K; no verificado)</option>
                     <option value="2160p" disabled>2160 × 3840 (4K; requiere plan 4K no verificado)</option>
                   </select>
-                  <label for="edit-output-quality">Calidad de salida Shotstack</label>
+                  <label for="edit-output-quality">Calidad de salida</label>
                   <select id="edit-output-quality" aria-describedby="edit-quality-note">
-                    <option value="medium">Media</option>
-                    <option value="high" selected>Alta</option>
+                    <option value="high" selected>Alta · CRF 15</option>
                   </select>
-                  <p class="field-help" id="edit-quality-note">“Alta” selecciona el preset de Shotstack; no fija un bitrate. El bitrate real solo se podrá medir después de un render autorizado.</p>
-                  <p class="field-help" id="edit-options-note">La propuesta se prepara localmente. No llama a OpenAI, Shotstack ni Google. 1440p y 4K están deshabilitados hasta verificar el plan de la cuenta. Stage aplica marca de agua y requiere créditos.</p>
+                  <p class="field-help" id="edit-quality-note">Modal fija H.264, CRF 15, preset medium y salida 1080 × 1920 a 30 FPS.</p>
+                  <p class="field-help" id="edit-options-note">La propuesta se prepara localmente. No llama a OpenAI ni a Google. La transcripción y el render solo comienzan tras autorización expresa.</p>
                   <fieldset class="creative-editor" aria-describedby="creative-editor-note">
                     <legend>Plan creativo manual</legend>
                     <p class="field-help" id="creative-editor-note">Los tiempos se refieren al vídeo original. Estos cambios se aplican sin depender de los subtítulos. No se generan recomendaciones con IA en esta fase.</p>
@@ -367,27 +388,22 @@
                 <div class="proposal-summary" id="proposal-summary" aria-live="polite" hidden></div>
                 <div class="health-list" aria-label="Estado de los servicios">
                   <div><span>OpenAI</span><b id="health-openai" class="health-unknown">Pendiente de actualizar</b></div>
-                  <div><span>Shotstack</span><b id="health-shotstack" class="health-unknown">Pendiente de actualizar</b></div>
                   <div><span>Modal</span><b id="health-modal" class="health-unknown">Pendiente de actualizar</b></div>
                   <div><span>Entorno</span><b id="health-environment" class="health-unknown">Pendiente de actualizar</b></div>
                   <div><span>Google Drive</span><b id="health-drive" class="health-unknown">Pendiente de actualizar</b></div>
                 </div>
                 <div id="render-approval" hidden>
-                  <label class="consent-check"><input id="paid-consent" type="checkbox"><span id="paid-consent-copy">Autorizo el envío del vídeo a Shotstack Stage.</span></label>
+                  <label class="consent-check"><input id="paid-consent" type="checkbox"><span id="paid-consent-copy">Autorizo el envío del vídeo a Modal.</span></label>
                   <label class="consent-check unknown-check" id="unknown-cost-wrap" hidden><input id="unknown-cost-consent" type="checkbox"><span>Entiendo que el coste es desconocido y podría haber cargos.</span></label>
                   <button class="primary-button" id="approve-render-button" type="button" disabled><span>Aprobar y renderizar</span><b>→</b></button>
                 </div>
                 <button class="outline-button retry-drive-upload" id="retry-drive-upload-button" type="button" hidden>Reintentar solo la subida a Drive</button>
-                <button class="outline-button retry-render" id="retry-render-button" type="button" hidden>Autorizar un reintento único en Stage</button>
-                <p class="button-hint" id="retry-render-hint" hidden></p>
-                <button class="outline-button retry-render" id="retry-final-render-button" type="button" hidden>Autorizar tercera y última prueba en Stage</button>
-                <p class="button-hint" id="retry-final-render-hint" hidden></p>
                 <p class="button-hint" id="process-hint">Selecciona un vídeo y prepara la propuesta. No se iniciará ningún servicio de pago en ese paso.</p>
               </aside>
             </div>
           </section>
 
-          <section class="section-block settings-section" id="configuracion">
+          <section class="section-block settings-section" id="configuracion" data-page-section="settings">
             <div class="settings-top">
               <div><p class="eyebrow">04 / CONFIGURACIÓN</p><h2>Estilo de edición</h2><p>El estilo se consulta y se guarda en la configuración de la aplicación.</p></div>
               <div class="settings-actions">
@@ -407,7 +423,7 @@
                     <label>Color de resaltado<input name="highlight_color" type="color"></label>
                     <label>Animación de subtítulos<select name="animation_style"><option value="highlight">Resaltar palabra</option><option value="karaoke">Karaoke</option></select></label>
                     <label class="toggle-line"><input name="show_subtitles" type="checkbox"><span>Mostrar subtítulos en nuevas salidas locales de Remotion</span></label>
-                    <small class="field-help">Se aplica a los siguientes renders locales; no modifica vídeos ya generados ni los renders de Shotstack.</small>
+                    <small class="field-help">Se aplica a nuevas propuestas; no cambia vídeos ya procesados.</small>
                     <label>Emojis asociados a subtítulos<textarea name="emoji_by_keyword" rows="3" placeholder='{"palabra":"carácter Unicode"}' aria-describedby="emoji-help"></textarea></label>
                     <small class="field-help" id="emoji-help">Solo se aplica al texto de los subtítulos. No crea stickers ni emojis independientes.</small>
                   </div>
@@ -426,12 +442,28 @@
                     <label>Duración máxima del vídeo (segundos)<input name="max_video_duration_seconds" type="number" min="1" step="1"></label>
                     <label>Fragmentos máximos por transcripción<input name="max_transcription_chunks" type="number" min="1" step="1"></label>
                     <label>OpenAI · coste por minuto de audio (USD)<input name="openai_price_per_audio_minute_usd" type="number" min="0" step="0.0001" placeholder="Desconocido"></label>
-                    <label>Shotstack · coste por minuto de vídeo procesado (USD)<input name="shotstack_price_per_render_minute_usd" type="number" min="0" step="0.0001" placeholder="Desconocido"></label>
                     <label>Límite estimado total (USD)<input name="max_estimated_cost_usd" type="number" min="0" step="0.01" placeholder="Sin límite configurado"></label>
+                    <p class="field-help">El coste de Modal no está cotizado por el panel y debe revisarse antes de cada render.</p>
                   </div>
                 </div>
               </fieldset>
             </form>
+            <section class="drive-settings-block" aria-label="Conexión de Google Drive">
+              <div class="drive-panel" aria-labelledby="drive-panel-title">
+                <div class="drive-panel-copy">
+                  <span class="drive-panel-kicker">GOOGLE DRIVE</span>
+                  <strong id="drive-panel-title">Estado pendiente</strong>
+                  <p id="drive-status-detail" role="status" aria-live="polite">Se está consultando la configuración local.</p>
+                </div>
+                <div class="drive-panel-actions">
+                  <button class="outline-button" id="drive-connect-button" type="button" disabled>Conectar Google Drive (OAuth)</button>
+                  <button class="small-action" id="drive-scan-button" type="button" disabled>Escanear 01_ENTRADA</button>
+                  <button class="small-action" id="drive-write-test-button" type="button" disabled>Probar escritura MP4</button>
+                </div>
+                <p class="drive-scope-note">La conexión OAuth está limitada en código a la cuenta secundaria autorizada y a los IDs de las carpetas configuradas. El escaneo no inicia renders.</p>
+                <div class="drive-message" id="drive-oauth-message" role="status" aria-live="polite" hidden></div>
+              </div>
+            </section>
           </section>
           <footer><span>MATRIX MOTION / ENTORNO LOCAL</span><span>Los precios y las claves de acceso no se comprueban desde esta pantalla.</span></footer>
         </div>
@@ -439,11 +471,10 @@
     </div>
 
     <nav class="mobile-nav" aria-label="Navegación móvil">
-      <button class="rail-link active" type="button" data-scroll="inicio"><span>⌂</span>Inicio</button>
-      <button class="rail-link" type="button" data-scroll="biblioteca"><span>▤</span>Biblioteca</button>
-      <button class="rail-link" type="button" data-scroll="estudio"><span>▣</span>Edición</button>
-      <button class="rail-link" type="button" data-scroll="procesamiento"><span>⌁</span>Estado</button>
-      <button class="rail-link" type="button" data-scroll="configuracion"><span>☷</span>Ajustes</button>
+      <button class="rail-link active" type="button" data-page="home"><span>⌂</span>Inicio</button>
+      <button class="rail-link" type="button" data-page="create"><span>＋</span>Crear</button>
+      <button class="rail-link" type="button" data-page="library"><span>▤</span>Mis vídeos</button>
+      <button class="rail-link" type="button" data-page="settings"><span>☷</span>Ajustes</button>
     </nav>
     <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
     <script src="/upload-controller.js" defer></script>

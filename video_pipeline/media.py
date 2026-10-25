@@ -33,7 +33,7 @@ def probe_video(path: str | Path) -> VideoInfo:
         "-show_entries",
         "format=duration,size,format_name,bit_rate:"
         "stream=codec_type,codec_name,width,height,r_frame_rate,pix_fmt,profile,"
-        "color_primaries,color_transfer,color_space,bit_rate:"
+        "color_primaries,color_transfer,color_space,color_range,bit_rate:"
         "stream_tags=rotate:stream_side_data=rotation",
         "-of", "json", str(video),
     ]
@@ -105,10 +105,100 @@ def probe_video(path: str | Path) -> VideoInfo:
         color_primaries=video_stream.get("color_primaries"),
         color_transfer=video_stream.get("color_transfer"),
         color_space=video_stream.get("color_space"),
+        color_range=video_stream.get("color_range"),
         container=str(probe.get("format", {}).get("format_name") or "unknown"),
         video_bit_rate_bps=video_bit_rate,
         format_bit_rate_bps=format_bit_rate,
     )
+
+
+def prepare_video_for_modal(
+    video: VideoInfo,
+    work_dir: str | Path,
+) -> tuple[VideoInfo, dict[str, object]]:
+    """Create a new 1080x1920 H.264/BT.709/30fps input using Remotion's color profile."""
+    source_path = Path(video.path).expanduser().resolve()
+    directory = Path(work_dir).expanduser().resolve()
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / f"{source_path.stem}.mp4"
+    if target.exists() or target.resolve() == source_path:
+        raise MediaError("La normalización requiere una ruta temporal nueva; no se sobrescribirá el original.")
+
+    normalizer = Path(__file__).resolve().parents[1] / "remotion-renderer" / "src" / "normalize-input.mjs"
+    if not normalizer.is_file():
+        raise MediaError("No está disponible el normalizador de entrada de Remotion.")
+    timeout = min(6 * 60 * 60, max(300, int(video.duration * 10)))
+    try:
+        result = subprocess.run(
+            ["node", str(normalizer), str(source_path), str(target)],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except FileNotFoundError as exc:
+        raise MediaError("Node.js y FFmpeg son necesarios para normalizar la entrada antes de Modal.") from exc
+    except subprocess.TimeoutExpired as exc:
+        target.unlink(missing_ok=True)
+        raise MediaError("La normalización local superó el tiempo máximo; no se envió el archivo a Modal.") from exc
+    except subprocess.CalledProcessError as exc:
+        target.unlink(missing_ok=True)
+        detail = (exc.stderr or exc.stdout or "").strip().splitlines()
+        safe_detail = detail[-1][:500] if detail else "error de FFmpeg"
+        logger.error("Modal input normalization failed for %s: %s", source_path.name, safe_detail)
+        raise MediaError(f"No se pudo normalizar la entrada para Modal: {safe_detail}") from None
+
+    normalized = probe_video(target)
+    if (
+        normalized.video_codec != "h264"
+        or (normalized.width, normalized.height) != (1080, 1920)
+        or not normalized.fps
+        or abs(normalized.fps - 30) > 0.05
+        or normalized.pixel_format != "yuv420p"
+        or normalized.color_primaries != "bt709"
+        or normalized.color_transfer != "bt709"
+        or normalized.color_space != "bt709"
+        or normalized.color_range != "tv"
+        or not normalized.has_audio
+        or abs(normalized.duration - video.duration) > max(0.1, 1 / 30)
+    ):
+        target.unlink(missing_ok=True)
+        raise MediaError("La copia normalizada no cumple el perfil H.264/BT.709/30 FPS requerido por Modal.")
+    try:
+        report = json.loads(result.stdout.strip().splitlines()[-1])
+    except (json.JSONDecodeError, IndexError):
+        report = {}
+    return normalized, {
+        "converted": True,
+        "method": "Remotion color profile + FFmpeg",
+        "input": {
+            "codec": video.video_codec,
+            "width": video.width,
+            "height": video.height,
+            "fps": video.fps,
+            "color_primaries": video.color_primaries,
+            "color_transfer": video.color_transfer,
+            "color_space": video.color_space,
+            "color_range": video.color_range,
+        },
+        "output": {
+            "codec": normalized.video_codec,
+            "width": normalized.width,
+            "height": normalized.height,
+            "fps": normalized.fps,
+            "pixel_format": normalized.pixel_format,
+            "color_primaries": normalized.color_primaries,
+            "color_transfer": normalized.color_transfer,
+            "color_space": normalized.color_space,
+            "color_range": normalized.color_range,
+            "audio_codec": report.get("audio_codec", normalized.audio_codec),
+            "audio_sample_rate": report.get("audio_sample_rate"),
+            "audio_channels": report.get("audio_channels"),
+        },
+        "source_color_profile": report.get("source_color_profile", "no informado"),
+        "original_preserved": True,
+        "visual_color_review_required": True,
+    }
 
 
 def extract_audio_chunks(

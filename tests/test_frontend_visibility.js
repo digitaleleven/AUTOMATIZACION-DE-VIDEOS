@@ -38,7 +38,7 @@ test("invalid library values produce an empty visible list", () => {
   assert.deepEqual(Array.from(context.filterItems(null)), []);
 });
 
-test("the three legacy result links and their sections stay hidden without removing their media sources", () => {
+test("legacy result sections stay hidden without removing their media sources", () => {
   const hiddenResults = [
     ["resultado-fase1", "/media/outputs/IMG_1254-MATRIX-MOTION-FASE1.mp4"],
     ["resultado-mm003", "/media/outputs/IMG_1254-MATRIX-MOTION-MM003.mp4"],
@@ -46,12 +46,20 @@ test("the three legacy result links and their sections stay hidden without remov
   ];
 
   for (const [id, mediaPath] of hiddenResults) {
-    const navLink = indexSource.match(new RegExp(`<button\\b[^>]*data-scroll="${id}"[^>]*>`));
     const section = indexSource.match(new RegExp(`<section\\b[^>]*id="${id}"[^>]*>`));
-    assert.ok(navLink, `sidebar item ${id} should remain in markup`);
     assert.ok(section, `result section ${id} should remain in markup`);
-    assert.match(navLink[0], /\shidden(?:\s|>)/, `${id} sidebar item should be hidden`);
     assert.match(section[0], /\shidden(?:\s|>)/, `${id} result section should be hidden`);
     assert.ok(indexSource.includes(mediaPath), `${id} media should be preserved`);
   }
+});
+
+test("the visible navigation has the four requested pages and Modal-only render UI", () => {
+  for (const page of ["home", "create", "library", "settings"]) {
+    assert.match(indexSource, new RegExp(`data-page="${page}"`));
+    assert.match(indexSource, new RegExp(`data-page-section="${page}"`));
+  }
+  assert.match(indexSource, /Mis últimos vídeos/);
+  assert.match(indexSource, /Conectar Google Drive \(OAuth\)/);
+  assert.doesNotMatch(indexSource, /Shotstack/i);
+  assert.doesNotMatch(indexSource, /retry-render-button|retry-final-render-button/);
 });

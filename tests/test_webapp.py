@@ -177,7 +177,7 @@ class VideoPanelApiTests(unittest.TestCase):
         )
         return path
 
-    def upload(self, path, *, niche="generic_viral", style_notes=""):
+    def upload(self, path, *, niche="generic_viral", style_notes="", editing_style="dynamic"):
         data = path.read_bytes()
         status, _, body = self.request(
             "POST",
@@ -188,6 +188,7 @@ class VideoPanelApiTests(unittest.TestCase):
                 "Content-Length": str(len(data)),
                 "X-Upload-Filename": quote(path.name),
                 "X-Video-Niche": niche,
+                "X-Editing-Style": editing_style,
                 "X-Style-Notes": quote(style_notes, safe=""),
             },
         )
@@ -934,6 +935,7 @@ class VideoPanelApiTests(unittest.TestCase):
         self.assertEqual(item["niche"], "beauty_skincare")
         self.assertEqual(item["niche_label"], "Beauty & Skincare")
         self.assertEqual(item["style_notes"], style_notes)
+        self.assertEqual(item["editing_style"], "dynamic")
         self.assertIsInstance(item["created_at"], (int, float))
         self.assertTrue(item["thumbnail_url"])
         stored_upload = self.panel.store.get_upload(item["id"])
@@ -955,11 +957,19 @@ class VideoPanelApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body.decode("utf-8"))["items"][0]["id"], item["id"])
 
-    def test_upload_rejects_unknown_niches_and_oversized_style_notes(self):
+    def test_upload_rejects_unknown_niches_styles_and_oversized_style_notes(self):
         path = self.create_movie()
         status, response = self.upload(path, niche="unknown")
         self.assertEqual(status, 400)
         self.assertIn("categoría", response["detail"])
+
+        status, response = self.upload(path, editing_style="unsupported")
+        self.assertEqual(status, 400)
+        self.assertIn("estilo de edición", response["detail"])
+
+        status, response = self.upload(path, editing_style="natural_premium")
+        self.assertEqual(status, 201)
+        self.assertEqual(response["item"]["editing_style"], "natural_premium")
 
         status, response = self.upload(path, style_notes="x" * 501)
         self.assertEqual(status, 400)
@@ -1536,20 +1546,29 @@ class VideoPanelApiTests(unittest.TestCase):
         self.assertIsNone(proposal["costs"]["total_estimate_usd"])
         self.assertIn(proposal["proposal_id"], self.panel.pending_proposals)
 
-    def test_local_proposal_accepts_720p_and_medium_quality_without_external_calls(self):
+    def test_local_proposal_uses_fixed_modal_profile_without_external_calls(self):
         status, response = self.upload(self.create_movie(".mp4"))
         self.assertEqual(status, 201)
         proposal = self.panel.prepare_proposal({
             "source_id": response["item"]["id"],
             "subtitle_mode": "none",
-            "output_fps": 50,
-            "output_profile": "720p",
-            "output_quality": "medium",
+            "output_fps": 30,
+            "output_profile": "1080p",
+            "output_quality": "high",
             "creative_plan": {"cuts": [], "zooms": [], "stickers": []},
         })
-        self.assertEqual((proposal["edit"]["output_width"], proposal["edit"]["output_height"]), (720, 1280))
-        self.assertEqual(proposal["edit"]["output_quality"], "medium")
+        self.assertEqual((proposal["edit"]["output_width"], proposal["edit"]["output_height"]), (1080, 1920))
+        self.assertEqual(proposal["edit"]["output_quality"], "high")
         self.assertEqual(proposal["api_plan"]["external_services_called_during_proposal"], [])
+        with self.assertRaises(PanelError):
+            self.panel.prepare_proposal({
+                "source_id": response["item"]["id"],
+                "subtitle_mode": "none",
+                "output_fps": 50,
+                "output_profile": "720p",
+                "output_quality": "medium",
+                "creative_plan": {"cuts": [], "zooms": [], "stickers": []},
+            })
 
     def test_4k_profile_is_rejected_until_account_plan_is_verified(self):
         status, response = self.upload(self.create_movie(".mp4"))
@@ -1561,7 +1580,7 @@ class VideoPanelApiTests(unittest.TestCase):
                 "output_fps": 50,
                 "output_profile": "2160p",
             })
-        self.assertIn("no se ha verificado el plan 4K", str(blocked.exception))
+        self.assertIn("1080 × 1920", str(blocked.exception))
 
     def test_render_requires_approved_single_use_local_proposal(self):
         status, response = self.upload(self.create_movie(".mp4"))
