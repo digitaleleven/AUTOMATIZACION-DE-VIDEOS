@@ -5,7 +5,37 @@ aplicación Python, el panel ni Shotstack. El navegador de render se ejecuta con
 resolución de hosts externos bloqueada. El render no recibe clave de licencia
 ni llama al servicio de seguimiento de Remotion.
 
-## Ejecución única
+## Prueba de control All-Intra a 30 FPS
+
+El proxy se limita a los 12 segundos de fuente que necesita la composición.
+Se selecciona la primera pista AAC para no intentar decodificar pistas
+adicionales y se fija a 30 FPS para que los recortes por fotograma coincidan
+con Remotion:
+
+```sh
+mkdir -p generated-artifacts/drive-inspection/q03c-control
+ffmpeg -y \
+  -i "$PWD/generated-artifacts/drive-inspection/IMG_1254.MOV" \
+  -map 0:v:0 -map 0:a:0 -t 12 \
+  -vf "fps=30,zscale=primariesin=bt2020:transferin=arib-std-b67:matrixin=bt2020nc:rangein=limited:primaries=bt2020:transfer=linear:matrix=gbr:range=full:npl=100,format=gbrpf32le,tonemap=hable,zscale=primariesin=bt2020:transferin=linear:matrixin=gbr:rangein=full:primaries=bt709:transfer=bt709:matrix=bt709:range=limited:c=topleft,format=yuv420p" \
+  -c:v libx264 -preset ultrafast -crf 17 -g 1 -keyint_min 1 -pix_fmt yuv420p \
+  -color_range tv -colorspace bt709 -color_primaries bt709 -color_trc bt709 \
+  -c:a aac -ac 2 -ar 48000 \
+  "$PWD/generated-artifacts/drive-inspection/q03c-control/proxy_30fps_allintra-corrected.mp4"
+
+pnpm --dir remotion-renderer run render:sample -- \
+  --input "$PWD/generated-artifacts/drive-inspection/IMG_1254.MOV" \
+  --transcript "$PWD/generated-artifacts/drive-inspection/q03a/transcription-corrected.json" \
+  --proxy "$PWD/generated-artifacts/drive-inspection/q03c-control/proxy_30fps_allintra-corrected.mp4" \
+  --render-frames 150 \
+  --output "$PWD/remotion-renderer/generated-artifacts/remotion/allintra-control-30fps.mp4"
+```
+
+La prueba conserva la composición existente, usa `OffthreadVideo` y renderiza
+solo 150 fotogramas (5 segundos). El controlador valida metadatos y que todos
+los fotogramas del proxy sean I-frames antes de abrir Chromium.
+
+## Ejecución local sin proxy preparado
 
 Desde la raíz del repositorio, indica explícitamente el MOV/MP4, el JSON de
 Whisper con palabras y tiempos, y una ruta de salida nueva:
@@ -21,14 +51,14 @@ El script valida con FFprobe el perfil de color de entrada. Para HLG BT.2020
 limitado usa una conversión explícita HLG → RGB lineal → Hable (`desat=0`) →
 BT.709 limitado; para SDR acepta BT.709 con rango declarado. Rechaza perfiles
 desconocidos en vez de etiquetarlos como si fueran BT.709. Crea un proxy
-temporal Lanczos de 1080 × 1920 y 50 FPS para los 12 segundos que cubren los
+temporal Lanczos de 1080 × 1920 y 30 FPS para los 12 segundos que cubren los
 segmentos, y extrae únicamente el audio AAC principal a PCM temporal. El MOV
 original no se altera.
 
 La composición recibe solo palabras con marcas temporales reales de Whisper.
 Mapea las palabras completas que caen dentro de los segmentos; omite las que
 cruzan un corte y resalta en amarillo corporativo únicamente la palabra activa.
-El render produce 285 fotogramas (5,7 segundos, 1080 × 1920, 50 FPS) en H.264
+El render produce 171 fotogramas (5,7 segundos, 1080 × 1920, 30 FPS) en H.264
 CRF 17/preset `medium`, BT.709 limitado y YUV420p. Chromium trabaja con
 concurrencia 1, cero reintentos, dos hilos FFmpeg para OffthreadVideo, un
 máximo de 32 MiB de caché de vídeo y sin codificación paralela; el proxy también

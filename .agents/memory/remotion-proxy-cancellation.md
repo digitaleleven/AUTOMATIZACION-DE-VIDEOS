@@ -16,3 +16,11 @@ En Remotion 4.0.538, `trimBefore` usa fotogramas de origen y `durationInFrames` 
 **Why:** un render de MATRIX MOTION pasó las validaciones de códec, duración y decodificación, pero el contenido quedó negro después del primer fotograma porque el código mezclaba segundos con el recuento de fotogramas de `OffthreadVideo`.
 
 **How to apply:** pasar índices y duraciones enteros en fotogramas, validar que el segmento no supere la duración de la fuente y añadir una comprobación de imagen visible además de FFprobe y decodificación.
+
+### Proxy de OffthreadVideo y avisos de Chromium
+
+Un proxy H.264 de 30 FPS con todos los fotogramas I puede superar FFprobe y una decodificación completa, pero aun así fallar cuando Remotion solicita el primer fotograma por su endpoint local `/proxy`. El mensaje genérico de Chrome sobre disco no demuestra falta de espacio; `ECANCELED` en la escritura tampoco identifica por sí solo la causa.
+
+**Why:** la prueba All-Intra de MATRIX MOTION validó 360/360 fotogramas I y tenía 248 GB libres, pero el endpoint local falló al entregar el fotograma 0.
+
+**How to apply:** separar la validación del archivo de la validación del endpoint de Remotion; registrar el error del servidor local y comprobar el espacio disponible antes de atribuir el fallo a disco o a la estructura GOP.

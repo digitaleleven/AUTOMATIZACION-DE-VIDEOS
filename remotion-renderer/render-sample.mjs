@@ -27,6 +27,7 @@ import {
 import {
   buildColorManagedProxyFilter,
   hasVisualContent,
+  parseAllIntraFrameInfo,
   REMOTION_RENDER_PROFILE,
 } from "./src/render-profile.mjs";
 
@@ -272,7 +273,7 @@ try {
     proxyProbe = await probe(proxyPath);
     console.log(`prepared_proxy_all_intra=${JSON.stringify(allIntraInfo)}`);
   } else {
-    const proxyFilter = buildColorManagedProxyFilter(inputVideo);
+    const proxyFilter = buildColorManagedProxyFilter(inputVideo, FPS);
     await run("ffmpeg", [
       "-nostdin",
       "-hide_banner",
@@ -495,7 +496,11 @@ try {
     input: { path: inputPath, sha256Before: inputHashBefore, sha256After: inputHashAfter },
     transcript: { path: transcriptPath, exactWordTimings: sourceWords.length, mappedToSample: wordTimings.length },
     proxy: { path: proxyPath, probe: proxyProbe, expectedSourceSeconds: SAMPLE_SOURCE_SECONDS },
-    renderProfile: { ...REMOTION_RENDER_PROFILE, renderFrameCount },
+    renderProfile: {
+      ...REMOTION_RENDER_PROFILE,
+      fps: FPS,
+      renderFrameCount,
+    },
     output: { path: outputPath, sizeBytes: outputStat.size, probe: outputProbe },
     validation: { ...validation, visualContent },
     visualLumaSamples,

@@ -110,7 +110,7 @@ const AudioSegment: FC<{
     <Sequence from={outputStart} durationInFrames={frames} layout="none">
       <Audio
         src={staticFile(audioFile)}
-        trimBefore={sourceStart / FPS}
+        trimBefore={sourceStart}
         durationInFrames={frames}
         volume={(frame) =>
           audioVolume(frame, frames, fadeInFrames, fadeOutFrames)
@@ -213,7 +213,7 @@ const PhaseOneSample: FC<{
         />
       ))}
 
-      <Sequence from={50} durationInFrames={60} layout="none">
+      <Sequence from={FPS} durationInFrames={Math.round(FPS * 1.2)} layout="none">
         <AnimatedSparkle />
       </Sequence>
       <WordSubtitles words={wordTimings} fps={FPS} />
@@ -231,7 +231,7 @@ export const RemotionRoot: FC = () => (
     durationInFrames={DURATION_IN_FRAMES}
     defaultProps={{
       sourceFile: "source.mov",
-      sourceDurationInFrames: 941,
+       sourceDurationInFrames: 360,
       audioFile: null,
       wordTimings: [],
     }}

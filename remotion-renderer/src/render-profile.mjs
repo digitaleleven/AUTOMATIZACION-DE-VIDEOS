@@ -37,7 +37,10 @@ export const parseAllIntraFrameInfo = (ffprobeCsv) => {
   };
 };
 
-export const buildColorManagedProxyFilter = (video) => {
+export const buildColorManagedProxyFilter = (
+  video,
+  fps = REMOTION_RENDER_PROFILE.fps,
+) => {
   const rangeIn =
     video.color_range === "tv" ? "limited" :
     video.color_range === "pc" ? "full" :
@@ -85,6 +88,6 @@ export const buildColorManagedProxyFilter = (video) => {
     `scale=${REMOTION_RENDER_PROFILE.width}:${REMOTION_RENDER_PROFILE.height}:` +
     "force_original_aspect_ratio=increase:flags=lanczos," +
     `crop=${REMOTION_RENDER_PROFILE.width}:${REMOTION_RENDER_PROFILE.height},setsar=1,` +
-    `fps=${REMOTION_RENDER_PROFILE.fps},format=${REMOTION_RENDER_PROFILE.pixelFormat}`
+    `fps=${fps},format=${REMOTION_RENDER_PROFILE.pixelFormat}`
   );
 };

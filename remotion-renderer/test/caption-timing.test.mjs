@@ -48,7 +48,7 @@ test("only complete word timings inside kept clips are mapped to output time", (
   assert.ok(Math.abs(mapped[0].end - 0.5) < 1e-9);
   assert.ok(Math.abs(mapped[1].start - 1.7) < 1e-9);
   assert.ok(Math.abs(mapped[1].end - 1.9) < 1e-9);
-  assert.equal(DURATION_IN_FRAMES, 285);
+  assert.equal(DURATION_IN_FRAMES, 171);
 });
 
 test("Remotion source clips use frame-based trim and duration props", () => {
@@ -57,11 +57,11 @@ test("Remotion source clips use frame-based trim and duration props", () => {
   );
 
   assert.deepEqual(windows, [
-    { trimBefore: 0, durationInFrames: 100 },
-    { trimBefore: 250, durationInFrames: 125 },
-    { trimBefore: 500, durationInFrames: 100 },
+    { trimBefore: 0, durationInFrames: 60 },
+    { trimBefore: 150, durationInFrames: 75 },
+    { trimBefore: 300, durationInFrames: 60 },
   ]);
-  assert.throws(() => getSourceClipWindow(500, 200, 600), /Invalid source clip frame range/);
+  assert.throws(() => getSourceClipWindow(300, 100, 360), /Invalid source clip frame range/);
 });
 
 test("caption groups stay within four words and highlight one timed word", () => {
@@ -117,6 +117,12 @@ test("HLG proxy conversion is explicit and outputs limited BT.709 YUV420p", () =
   assert.match(filter, /tonemap=tonemap=hable:desat=0/);
   assert.match(filter, /primaries=bt709:transfer=bt709:matrix=bt709:range=limited/);
   assert.match(filter, /format=yuv420p/);
+  assert.match(buildColorManagedProxyFilter({
+    color_range: "tv",
+    color_space: "bt2020nc",
+    color_transfer: "arib-std-b67",
+    color_primaries: "bt2020",
+  }, 30), /fps=30/);
   assert.equal(REMOTION_RENDER_PROFILE.colorSpace, "bt709");
   assert.equal(REMOTION_RENDER_PROFILE.concurrency, 1);
   assert.equal(REMOTION_RENDER_PROFILE.maxRetries, 0);
