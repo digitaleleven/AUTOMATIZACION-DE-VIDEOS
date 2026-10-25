@@ -38,3 +38,9 @@ Las URL de sesiones de subida reanudable de Drive son credenciales de capacidad:
 **Why:** una reanudación tras reinicio necesita conservar la URL de sesión, pero esa URL concede acceso a la carga en curso.
 
 **How to apply:** al añadir recuperación de transferencias, limita el estado persistido al URL y a la identidad del archivo/destino, con permisos privados; bórralo al confirmar la creación en Drive.
+
+La responsable autoriza reutilizar la transcripción y el análisis existentes si la fuente coincide.
+
+**Why:** la usuaria lo pidió expresamente.
+
+**How to apply:** comprobar la identidad de la fuente y la procedencia del resultado antes de reutilizarlo; no presentar como generado un análisis que no quedó guardado.

@@ -94,6 +94,48 @@ def _run_checked(args: list[str], *, timeout: int = 3600) -> subprocess.Complete
     )
 
 
+def _safe_diagnostic_text(value: Any, limit: int = 8000) -> str:
+    """Bound subprocess logs and remove URLs and common credential formats."""
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="replace")
+    text = str(value or "")
+    text = re.sub(r"https?://[^\s\"'<>]+", "[URL REDACTED]", text)
+    text = re.sub(
+        r"(?i)\b(authorization|x-goog-api-key|x-api-key|api[_-]?key|"
+        r"token(?:[_-](?:id|secret))?|password|secret)[\"']?\s*[:=]\s*[\"']?"
+        r"(?:bearer\s+)?[^\s,;\"']+",
+        r"\1=[REDACTED]",
+        text,
+    )
+    text = re.sub(r"\bsk-[A-Za-z0-9_-]{10,}", "[KEY REDACTED]", text)
+    return text[-limit:]
+
+
+def _worker_failure_diagnostic(job_id: str, exc: Exception) -> dict[str, Any]:
+    is_process = isinstance(exc, (subprocess.CalledProcessError, subprocess.TimeoutExpired))
+    return {
+        "job_id": job_id,
+        "error_type": type(exc).__name__,
+        "returncode": getattr(exc, "returncode", None),
+        "timeout_seconds": getattr(exc, "timeout", None),
+        # Do not log command arguments: they can contain customer briefing text.
+        "message": (
+            "El subproceso del motor falló; consulta stderr."
+            if is_process else _safe_diagnostic_text(str(exc), 1000)
+        ),
+        "stdout": _safe_diagnostic_text(getattr(exc, "stdout", "")),
+        "stderr": _safe_diagnostic_text(getattr(exc, "stderr", "")),
+    }
+
+
+def _persist_worker_failure(remote_job: Path, job_id: str, exc: Exception) -> dict[str, Any]:
+    diagnostic = _worker_failure_diagnostic(job_id, exc)
+    # Exclusive creation preserves the first failure rather than overwriting history.
+    with (remote_job / "failure.json").open("x", encoding="utf-8") as stream:
+        json.dump(diagnostic, stream, ensure_ascii=False, indent=2)
+    return diagnostic
+
+
 def _file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -270,6 +312,8 @@ def render_master(job_id: str) -> dict[str, Any]:
         raise FileNotFoundError("No se encontró el manifiesto del trabajo Modal.")
     if (remote_job / "output.mp4").exists():
         raise FileExistsError("El trabajo Modal ya generó un MP4; se impide un segundo render.")
+    if (remote_job / "failure.json").exists():
+        raise RuntimeError("El trabajo Modal ya falló; no se permite reenviar este identificador.")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if manifest.get("job_id") != job_id:
         raise ValueError("El manifiesto no coincide con el trabajo Modal solicitado.")
@@ -425,5 +469,17 @@ def render_master(job_id: str) -> dict[str, Any]:
             ),
             "fps": output_fps,
         }
+    except Exception as exc:
+        diagnostic = _worker_failure_diagnostic(job_id, exc)
+        try:
+            _persist_worker_failure(remote_job, job_id, exc)
+            staging_volume.commit()
+        except Exception as persist_error:
+            print(f"matrix_failure_persistence_failed type={type(persist_error).__name__}", flush=True)
+        print(f"matrix_render_failed {json.dumps(diagnostic, ensure_ascii=False)}", flush=True)
+        details = diagnostic["stderr"][-2000:] or diagnostic["message"]
+        raise RuntimeError(
+            f"Motor: {diagnostic['error_type']}; código {diagnostic['returncode']}. {details}"
+        ) from None
     finally:
         shutil.rmtree(local_job, ignore_errors=True)

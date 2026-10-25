@@ -708,6 +708,7 @@ function renderEditProposal(proposal) {
 
 function renderSelectedItem() {
   const item = getSelectedItem();
+  renderSeoStrategy();
   const video = byId("source-video");
   const placeholder = $(".stage-placeholder");
   if (!item) {
@@ -778,6 +779,22 @@ function renderSelectedItem() {
   byId("retry-drive-upload-button").hidden = item.can_retry_drive_upload !== true;
   updateProcessButton();
   updateCreationSummary(item);
+  void restoreSelectedJob(item);
+}
+
+async function restoreSelectedJob(item) {
+  if (!item?.latest_job_id) return;
+  try {
+    const job = await loadJob(item.latest_job_id);
+    const selected = getSelectedItem();
+    if (
+      String(selected?.id) !== String(item.id) ||
+      selected?.latest_job_id !== item.latest_job_id
+    ) return;
+    renderJob(job, item.original_filename || item.filename);
+  } catch (error) {
+    displayToast(`No se pudo cargar el resultado guardado: ${whiteLabelText(error.message)}`, true);
+  }
 }
 
 function updateCreationSummary(item = getSelectedItem()) {
@@ -1024,14 +1041,16 @@ function renderJob(job, sourceName = "") {
   const zooms = Array.isArray(gemini.suggested_zooms) ? gemini.suggested_zooms : [];
   const copySeo = gemini.copy_and_seo || {};
   const transcription = job.transcription || {};
-  const geminiMarkup = gemini.model
+  const geminiMarkup = gemini.status === "failed"
+    ? '<div class="job-output-metadata"><strong>Estrategia Copywriting &amp; SEO pendiente</strong><span>El servicio de análisis no pudo completar la solicitud. El estado del vídeo se conserva por separado; no se han inventado textos.</span></div>'
+    : gemini.model
     ? `<div class="job-output-metadata"><strong>Estrategia Copywriting &amp; SEO</strong><span>Transcripción: ${escapeHtml(transcription.word_count ?? 0)} palabras con marcas temporales. Análisis visual: ${escapeHtml(whiteLabelText(gemini.summary || "Sin resumen disponible"))}</span><span>Archivo temporal eliminado: ${gemini.remote_file_deleted === true ? "sí" : "no confirmado"} · unidades informadas: ${escapeHtml(gemini.usage?.total_tokens ?? "no disponibles")}</span><span>Momentos visuales: ${moments.length}; reencuadres sugeridos ${zooms.length}, aplicados ${gemini.suggested_zooms_applied === true ? "sí" : "no"}. Los cortes no se aplicaron y requieren revisión humana.</span>${moments.length ? `<ul>${moments.map((item) => `<li>${Number(item.start_seconds).toFixed(2)}–${Number(item.end_seconds).toFixed(2)} s · ${escapeHtml(item.label || "")}: ${escapeHtml(whiteLabelText(item.reason || ""))}</li>`).join("")}</ul>` : ""}${suggestedCuts.length ? `<ul>${suggestedCuts.map((cut) => `<li>Corte sugerido ${Number(cut.start_seconds).toFixed(2)}–${Number(cut.end_seconds).toFixed(2)} s · ${escapeHtml(whiteLabelText(cut.reason || ""))}</li>`).join("")}</ul>` : "<span>Sin cortes sugeridos.</span>"}</div>`
     : "";
   const r2 = job.r2_storage || {};
   const r2Markup = r2.object_key
     ? `<div class="job-output-metadata"><strong>Almacenamiento privado</strong><span>${escapeHtml(whiteLabelText(r2.object_key))} · ${Number.isFinite(Number(r2.size_bytes)) ? `${(Number(r2.size_bytes) / 1048576).toFixed(1)} MiB` : "tamaño no disponible"} · verificación ${r2.verified === true ? "confirmada" : "pendiente"}</span></div>`
     : "";
-  renderSeoStrategy(copySeo);
+  renderSeoStrategy(copySeo, gemini.status === "failed");
   byId("job-status-tag").textContent = statusLabel(job.status).toLocaleUpperCase("es");
   byId("job-content").innerHTML = `<div class="job-live">
     <div><strong>${escapeHtml(sourceName || "Procesamiento")}</strong><p>${escapeHtml(phase)} · Identificador ${escapeHtml(job.id ?? "No disponible")}</p>${progressMarkup}</div>
@@ -1062,7 +1081,7 @@ function showOutput(outputId) {
   panel.hidden = false;
 }
 
-function renderSeoStrategy(copySeo = {}) {
+function renderSeoStrategy(copySeo = {}, analysisFailed = false) {
   const container = byId("step5-seo-content");
   const button = byId("copy-seo-button");
   if (!container || !button) return;
@@ -1076,7 +1095,9 @@ function renderSeoStrategy(copySeo = {}) {
   button.disabled = !hasContent;
   button.dataset.copySeo = "";
   if (!hasContent) {
-    container.innerHTML = '<p class="step5-seo-empty">Hook, caption y hashtags aparecerán aquí cuando exista un análisis real.</p>';
+    container.innerHTML = analysisFailed
+      ? '<p class="step5-seo-empty">El análisis SEO no pudo completarse. No hay Hook, Caption ni Hashtags generados; el resultado de vídeo se conserva por separado.</p>'
+      : '<p class="step5-seo-empty">Hook, caption y hashtags aparecerán aquí cuando exista un análisis real.</p>';
     return;
   }
   const copyText = [

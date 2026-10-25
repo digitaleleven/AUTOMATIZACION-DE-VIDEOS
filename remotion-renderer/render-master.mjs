@@ -47,6 +47,7 @@ import { resolveCaptionStyle } from "./src/caption-style.mjs";
 import { buildCreativeOverlays } from "./src/creative-overlays.mjs";
 import { prepareCaptionTrack } from "./src/caption-coverage.mjs";
 import { runLocalProcess as run } from "./src/local-process.mjs";
+import { parseMasterOptionPairs } from "./src/master-cli-options.mjs";
 
 const PACKAGE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(PACKAGE_DIR, "..");
@@ -73,24 +74,7 @@ const DEFAULTS = {
 };
 
 const parseArguments = (args) => {
-  const parsed = {};
-  const allowed = new Set([
-    "--input", "--transcript", "--plan", "--effects-dir", "--output",
-    "--show-subtitles", "--render-frames", "--briefing", "--caption-style-json",
-    "--width", "--height", "--fps",
-  ]);
-  for (let index = 0; index < args.length; index += 1) {
-    const key = args[index];
-    if (!allowed.has(key) || !args[index + 1]) {
-      throw new Error(
-        "Uso: render-master.mjs [--input MOV] [--transcript JSON] [--plan JSON] " +
-        "[--effects-dir DIR] [--output MP4] [--show-subtitles true|false] " +
-        "[--render-frames COUNT] [--briefing TEXT] [--width PX] [--height PX] [--fps FPS]",
-      );
-    }
-    parsed[key] = args[index + 1];
-    index += 1;
-  }
+  const parsed = parseMasterOptionPairs(args);
   return {
     input: path.resolve(parsed["--input"] || DEFAULTS.input),
     transcript: path.resolve(parsed["--transcript"] || DEFAULTS.transcript),

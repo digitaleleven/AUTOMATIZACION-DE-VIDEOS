@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -19,6 +20,46 @@ from .modal_renderer import ModalRenderClient
 from .style import StyleConfigError, VideoStyle, validate_output_profile
 from .subtitles import build_subtitle_segments
 from .transcription import transcribe_video
+
+
+def _validate_supplied_word_timings(words: list[WordTiming], duration: float) -> None:
+    """Preserve zero-length markers only with the same nearby anchor used by Remotion."""
+    for word in words:
+        if (
+            not isinstance(word, WordTiming)
+            or not word.text.strip()
+            or not math.isfinite(word.start)
+            or not math.isfinite(word.end)
+            or word.start < 0
+            or word.end < word.start
+            or word.end > duration + 0.05
+        ):
+            raise ValueError("Las palabras con timestamps no superaron la validación temporal.")
+    for index, word in enumerate(words):
+        if word.end == word.start:
+            members = [word]
+            for candidate in words[index + 1:]:
+                members.append(candidate)
+                if candidate.end > candidate.start:
+                    break
+            anchor = members[-1]
+            if (
+                anchor.end <= anchor.start
+                or not 0 <= anchor.start - word.start <= 0.75
+                or sum(len(member.text.split()) for member in members) > 3
+            ):
+                raise ValueError("Una palabra sin duración no tiene un ancla cercana fiable; alineación pendiente.")
+
+
+def _render_transcript_payload(words: list[WordTiming]) -> dict[str, Any]:
+    """Keep the canonical text and every original interval in the renderer contract."""
+    return {
+        "text": " ".join(word.text for word in words),
+        "words": [
+            {"word": word.text, "start": word.start, "end": word.end}
+            for word in words
+        ],
+    }
 
 def _validate_remote_input_profile(source: Path) -> None:
     """Reject unsupported color/audio before any OpenAI or Modal compute request."""
@@ -234,15 +275,7 @@ def process_local_video_modal(
     if subtitle_mode == "dynamic":
         if subtitle_words is not None:
             words = list(subtitle_words)
-            if any(
-                not isinstance(word, WordTiming)
-                or not word.text.strip()
-                or word.start < 0
-                or word.end <= word.start
-                or word.end > video.duration + 0.05
-                for word in words
-            ):
-                raise ValueError("Las palabras con timestamps no superaron la validación temporal.")
+            _validate_supplied_word_timings(words, video.duration)
         else:
             if progress_callback:
                 progress_callback("transcribing")
@@ -256,12 +289,7 @@ def process_local_video_modal(
         if not words:
             raise RuntimeError("No se obtuvieron palabras con marcas temporales válidas para los subtítulos.")
 
-    transcript = {
-        "words": [
-            {"word": word.text, "start": word.start, "end": word.end}
-            for word in words
-        ]
-    }
+    transcript = _render_transcript_payload(words)
     effect_cues = []
     for sticker in plan["stickers"]:
         name = sticker["sticker"]
@@ -365,6 +393,7 @@ def process_local_video_modal(
             "primeros 5 segundos para revisión" if render_mode == "quick_demo" else "vídeo completo"
         ),
         "transcribed_word_count": len(words),
+        "transcription_reused": subtitle_words is not None,
         "subtitle_mode": subtitle_mode,
         "subtitle_segment_count": len(build_subtitle_segments(words, video_duration=video.duration)),
         "creative_plan": plan,
@@ -387,7 +416,7 @@ def process_local_video_modal(
             "requiere autorización humana antes de cada ejecución."
         ),
         "paid_operations": {
-            "openai_transcription": subtitle_mode == "dynamic",
+            "openai_transcription": subtitle_mode == "dynamic" and subtitle_words is None,
             "shotstack_render": False,
             "modal_render": True,
             "google_drive_upload": bool(upload_to_drive),

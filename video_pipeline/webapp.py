@@ -564,6 +564,9 @@ def _public_job(job: dict[str, Any]) -> dict[str, Any]:
     r2_result = result.get("r2_storage", {}) if isinstance(result, dict) else {}
     public_gemini = {
         "model": gemini_result.get("model"),
+        "status": gemini_result.get("status") or (
+            "completed" if gemini_result.get("copy_and_seo") else "pending"
+        ),
         "summary": gemini_result.get("summary"),
         "key_moments": gemini_result.get("key_moments", []),
         "suggested_zooms": gemini_result.get("suggested_zooms", []),
