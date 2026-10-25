@@ -2,7 +2,7 @@ modules = ["python-3.11", "nodejs-24"]
 
 [nix]
 channel = "stable-25_05"
-packages = ["cacert", "cargo", "glibcLocales", "libiconv", "libxcrypt", "rustc"]
+packages = ["cacert", "cargo", "glibcLocales", "libffi", "libiconv", "libxcrypt", "openssl", "pkg-config", "rustc"]
 
 [postMerge]
 path = "scripts/post-merge.sh"
