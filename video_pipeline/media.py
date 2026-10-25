@@ -34,7 +34,9 @@ def probe_video(path: str | Path) -> VideoInfo:
         "format=duration,size,format_name,bit_rate:"
         "stream=codec_type,codec_name,width,height,r_frame_rate,pix_fmt,profile,"
         "color_primaries,color_transfer,color_space,color_range,bit_rate:"
-        "stream_tags=rotate:stream_side_data=rotation",
+        "stream_tags=rotate:"
+        "stream_side_data=rotation,side_data_type,dv_profile,dv_level,"
+        "rpu_present_flag,dv_bl_signal_compatibility_id",
         "-of", "json", str(video),
     ]
     try:
@@ -90,6 +92,21 @@ def probe_video(path: str | Path) -> VideoInfo:
         format_bit_rate = int(probe.get("format", {}).get("bit_rate") or 0) or None
     except (TypeError, ValueError):
         format_bit_rate = None
+    dolby_vision = next(
+        (
+            side_data
+            for side_data in video_stream.get("side_data_list", [])
+            if side_data.get("side_data_type") == "DOVI configuration record"
+        ),
+        {},
+    )
+
+    def optional_int(value: object) -> int | None:
+        try:
+            return int(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
     return VideoInfo(
         path=str(video),
         duration=duration,
@@ -109,6 +126,16 @@ def probe_video(path: str | Path) -> VideoInfo:
         container=str(probe.get("format", {}).get("format_name") or "unknown"),
         video_bit_rate_bps=video_bit_rate,
         format_bit_rate_bps=format_bit_rate,
+        dolby_vision_profile=optional_int(dolby_vision.get("dv_profile")),
+        dolby_vision_level=optional_int(dolby_vision.get("dv_level")),
+        dolby_vision_compatibility_id=optional_int(
+            dolby_vision.get("dv_bl_signal_compatibility_id")
+        ),
+        dolby_vision_rpu_present=(
+            bool(int(dolby_vision["rpu_present_flag"]))
+            if dolby_vision.get("rpu_present_flag") in (0, 1, "0", "1")
+            else None
+        ),
     )
 
 
@@ -123,6 +150,19 @@ def prepare_video_for_modal(
     target = directory / f"{source_path.stem}.mp4"
     if target.exists() or target.resolve() == source_path:
         raise MediaError("La normalización requiere una ruta temporal nueva; no se sobrescribirá el original.")
+    if video.dolby_vision_profile is not None and not (
+        video.dolby_vision_profile == 8
+        and video.dolby_vision_compatibility_id == 4
+        and video.color_transfer == "arib-std-b67"
+        and video.color_primaries == "bt2020"
+        and video.color_space == "bt2020nc"
+        and video.color_range == "tv"
+    ):
+        raise MediaError(
+            "Este perfil Dolby Vision no se puede normalizar con seguridad. "
+            "Solo se admite Dolby Vision 8.4 compatible con HLG BT.2020 limitado; "
+            "se requiere una conversión específica para conservar una interpretación de color válida."
+        )
 
     normalizer = Path(__file__).resolve().parents[1] / "remotion-renderer" / "src" / "normalize-input.mjs"
     if not normalizer.is_file():
@@ -196,6 +236,18 @@ def prepare_video_for_modal(
             "audio_channels": report.get("audio_channels"),
         },
         "source_color_profile": report.get("source_color_profile", "no informado"),
+        "dolby_vision": (
+            {
+                "profile": video.dolby_vision_profile,
+                "level": video.dolby_vision_level,
+                "compatibility_id": video.dolby_vision_compatibility_id,
+                "rpu_present_in_source": video.dolby_vision_rpu_present,
+                "rpu_preserved": False,
+                "conversion": "HLG base layer to SDR BT.709; not a Dolby Vision render",
+            }
+            if video.dolby_vision_profile is not None
+            else None
+        ),
         "original_preserved": True,
         "visual_color_review_required": True,
     }
@@ -337,6 +389,12 @@ def prepare_video_for_shotstack(
 ) -> tuple[VideoInfo, dict[str, str | bool]]:
     """Normalize only HEVC or incompatible audio/rotation for broad H.264 editing support."""
     source_path = Path(video.path)
+    if video.dolby_vision_profile is not None:
+        raise MediaError(
+            "No se convierte Dolby Vision en la ruta de compatibilidad H.264: "
+            "FFmpeg puede descartar sus metadatos dinámicos. Use una conversión "
+            "gestionada a SDR BT.709 compatible con el perfil de color de origen."
+        )
     needs_video_encode = video.video_codec == "hevc" or video.rotation in {90, 270}
     needs_audio_encode = video.audio_codec != "aac"
     if not needs_video_encode and not needs_audio_encode:

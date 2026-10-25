@@ -11,7 +11,9 @@ from unittest.mock import patch
 from video_pipeline.config import PipelineConfig
 from video_pipeline.edit_plan import edited_duration, map_subtitles_to_output
 from video_pipeline.media import (
+    MediaError,
     extract_audio_chunks,
+    prepare_video_for_modal,
     prepare_video_for_shotstack,
     probe_video,
     validate_rendered_output,
@@ -604,6 +606,108 @@ class ProviderAdapterTests(unittest.TestCase):
 
 
 class LocalMediaTests(unittest.TestCase):
+    @unittest.skipUnless(
+        shutil.which("ffmpeg") and shutil.which("ffprobe") and shutil.which("node"),
+        "FFmpeg, ffprobe, and Node.js are required",
+    )
+    def test_hlg_10bit_video_normalizes_to_sdr_without_modifying_original(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "iphone-hlg.mov"
+            work = root / "work"
+            subprocess.run(
+                [
+                    "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+                    "-f", "lavfi", "-i", "color=c=blue:s=360x640:d=1:r=30",
+                    "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+                    "-c:v", "libx265",
+                    "-x265-params", "pools=1:frame-threads=1:log-level=error",
+                    "-pix_fmt", "yuv420p10le",
+                    "-color_primaries", "bt2020", "-color_trc", "arib-std-b67",
+                    "-colorspace", "bt2020nc", "-color_range", "tv",
+                    "-c:a", "aac", "-shortest", str(source),
+                ],
+                check=True,
+                capture_output=True,
+                timeout=60,
+            )
+            original_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+
+            source_info = probe_video(source)
+            normalized, report = prepare_video_for_modal(source_info, work)
+
+            self.assertEqual(source_info.pixel_format, "yuv420p10le")
+            self.assertEqual(source_info.color_transfer, "arib-std-b67")
+            self.assertEqual(source_info.rotation, 0)
+            self.assertEqual((normalized.width, normalized.height), (1080, 1920))
+            self.assertEqual(normalized.video_codec, "h264")
+            self.assertEqual(normalized.pixel_format, "yuv420p")
+            self.assertEqual(normalized.color_primaries, "bt709")
+            self.assertEqual(normalized.color_transfer, "bt709")
+            self.assertEqual(normalized.color_space, "bt709")
+            self.assertEqual(normalized.color_range, "tv")
+            self.assertTrue(report["original_preserved"])
+            self.assertTrue(report["visual_color_review_required"])
+            self.assertEqual(hashlib.sha256(source.read_bytes()).hexdigest(), original_hash)
+
+    def test_dolby_vision_profile_is_rejected_by_unmanaged_h264_conversion(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "iphone-dolby-vision.mov"
+            source.write_bytes(b"original")
+            video = VideoInfo(
+                str(source), 1, 1080, 1920, True, video_codec="hevc",
+                dolby_vision_profile=8, dolby_vision_compatibility_id=1,
+            )
+            with self.assertRaisesRegex(MediaError, "metadatos dinámicos"):
+                prepare_video_for_shotstack(video, Path(temp_dir) / "work")
+            with self.assertRaisesRegex(MediaError, "Solo se admite Dolby Vision 8.4"):
+                prepare_video_for_modal(video, Path(temp_dir) / "modal-work")
+            self.assertEqual(source.read_bytes(), b"original")
+
+    def test_probe_reads_rotation_and_dolby_vision_configuration(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "iphone.MOV"
+            source.write_bytes(b"metadata fixture")
+            ffprobe_output = {
+                "format": {"duration": "1.0", "size": "16", "format_name": "mov"},
+                "streams": [
+                    {
+                        "codec_type": "video",
+                        "codec_name": "hevc",
+                        "width": 3840,
+                        "height": 2160,
+                        "r_frame_rate": "30/1",
+                        "pix_fmt": "yuv420p10le",
+                        "color_range": "tv",
+                        "color_space": "bt2020nc",
+                        "color_transfer": "arib-std-b67",
+                        "color_primaries": "bt2020",
+                        "side_data_list": [
+                            {"side_data_type": "Display Matrix", "rotation": 90},
+                            {
+                                "side_data_type": "DOVI configuration record",
+                                "dv_profile": 8,
+                                "dv_level": 9,
+                                "dv_bl_signal_compatibility_id": 4,
+                                "rpu_present_flag": 1,
+                            },
+                        ],
+                    },
+                    {"codec_type": "audio", "codec_name": "aac"},
+                ],
+            }
+            with patch(
+                "video_pipeline.media.subprocess.run",
+                return_value=Mock(stdout=json.dumps(ffprobe_output)),
+            ):
+                info = probe_video(source)
+
+        self.assertEqual((info.width, info.height, info.rotation), (2160, 3840, 90))
+        self.assertEqual(info.dolby_vision_profile, 8)
+        self.assertEqual(info.dolby_vision_level, 9)
+        self.assertEqual(info.dolby_vision_compatibility_id, 4)
+        self.assertTrue(info.dolby_vision_rpu_present)
+
     def test_extracts_long_source_into_bounded_audio_chunks_with_absolute_offsets(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

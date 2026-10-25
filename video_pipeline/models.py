@@ -24,6 +24,10 @@ class VideoInfo:
     video_bit_rate_bps: int | None = None
     format_bit_rate_bps: int | None = None
     color_range: str | None = None
+    dolby_vision_profile: int | None = None
+    dolby_vision_level: int | None = None
+    dolby_vision_compatibility_id: int | None = None
+    dolby_vision_rpu_present: bool | None = None
 
 
 @dataclass(frozen=True)
