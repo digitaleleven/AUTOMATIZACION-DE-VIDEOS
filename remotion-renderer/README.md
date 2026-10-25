@@ -8,36 +8,30 @@ ni llama al servicio de seguimiento de Remotion.
 ## Prueba directa BT.709 sin tone mapping
 
 Esta variante conserva una conversión explícita de HLG BT.2020 a BT.709 con
-`zscale`, pero omite el filtro `tonemap`. Después aplica los valores EQ
-solicitados. `format=yuv420p` se aplica al final; cambiar solo el formato de
-píxel no convierte HLG a SDR.
+`zscale`, pero omite el filtro `tonemap`. Aplica `npl=1000` y los valores EQ
+solicitados. `upstream_format=uhd` no aparece entre las opciones de esta
+compilación; se declaran los metadatos de entrada explícitamente.
 
 ```sh
 ffmpeg -y \
   -i "$PWD/generated-artifacts/drive-inspection/IMG_1254.MOV" \
   -map 0:v:0 -map 0:a:0 -t 12 \
-  -vf "zscale=primariesin=bt2020:transferin=arib-std-b67:matrixin=bt2020nc:rangein=limited:primaries=bt709:transfer=bt709:matrix=bt709:range=limited:c=topleft,scale=1080:1920:force_original_aspect_ratio=decrease:flags=lanczos,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,eq=brightness=-0.08:contrast=1.05:saturation=0.88:gamma=0.95,setsar=1,fps=30,format=yuv420p" \
+  -vf "fps=30,scale=1080:1920:force_original_aspect_ratio=decrease:flags=lanczos,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,zscale=primariesin=bt2020:transferin=arib-std-b67:matrixin=bt2020nc:rangein=limited:primaries=bt709:transfer=bt709:matrix=bt709:range=limited:npl=1000:c=topleft,format=yuv420p,eq=contrast=0.92:brightness=-0.05:gamma=0.85:saturation=0.92" \
   -c:v libx264 -preset ultrafast -crf 17 -g 1 -keyint_min 1 -sc_threshold 0 -pix_fmt yuv420p \
   -color_range tv -colorspace bt709 -color_primaries bt709 -color_trc bt709 \
   -c:a aac -b:a 192k -ac 2 -ar 48000 \
-  "$PWD/generated-artifacts/drive-inspection/q03c-control/proxy_30fps_allintra_1080_direct-eq.mp4"
-
-pnpm --dir remotion-renderer run render:sample -- \
-  --input "$PWD/generated-artifacts/drive-inspection/IMG_1254.MOV" \
-  --transcript "$PWD/generated-artifacts/drive-inspection/q03a/transcription-corrected.json" \
-  --proxy "$PWD/generated-artifacts/drive-inspection/q03c-control/proxy_30fps_allintra_1080_direct-eq.mp4" \
-  --render-frames 150 \
-  --output "$PWD/remotion-renderer/generated-artifacts/remotion/allintra-direct-eq-30fps-1080.mp4"
+  "$PWD/generated-artifacts/drive-inspection/q03c-control/proxy_30fps_allintra_1080_npl1000_eq.mp4"
 
 ffmpeg -y -ss 2.5 \
-  -i "$PWD/remotion-renderer/generated-artifacts/remotion/allintra-direct-eq-30fps-1080.mp4" \
+  -i "$PWD/generated-artifacts/drive-inspection/q03c-control/proxy_30fps_allintra_1080_npl1000_eq.mp4" \
   -frames:v 1 -update 1 \
-  "$PWD/remotion-renderer/generated-artifacts/remotion/allintra-direct-eq-30fps-1080-frame-2.5.png"
+  "$PWD/generated-artifacts/drive-inspection/q03c-control/proxy_npl1000_eq_frame-2.5.png"
 ```
 
 La conversión directa evita `tonemap` y la etapa RGB lineal, pero conserva la
-declaración correcta de la entrada/salida. Este camino puede recortar altas
-luces HLG; la imagen requiere revisión visual y no se integra automáticamente.
+declaración correcta de entrada/salida. `npl=1000` fija luminancia nominal, no
+una curva de compresión; puede haber clipping de altas luces. La imagen requiere
+revisión visual y no se integra automáticamente.
 
 ## Experimento Mobius anterior (conservado)
 

@@ -406,3 +406,31 @@ mtime_ms = 1792927682995
 storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/02d44d1e-1c92-4811-a1db-612c1c62d555/584dbb32-9521-47d5-a838-884bed411042"
 storage_version_token = "1792927725565321"
 content_type = "image/png"
+
+[[outputs]]
+id = "2eWYdOt5yEURziDrmsJM9"
+uri = "file://generated-artifacts/drive-inspection/q03c-control/proxy_30fps_allintra_1080_npl1000_eq.mp4"
+type = "video"
+title = "MATRIX MOTION — proxy NPL 1000 + EQ"
+description = "Proxy local de 12 s, H.264 All-Intra, 1080×1920 a 30 FPS, BT.709 y audio AAC."
+logical_id = "c60ac70a-fda2-43bf-b119-97c0b69de451"
+content_hash = "sha256:e831ef76994b9f17a18ea623a5b73352225f6bc1e5c239f494fccff286d11e86"
+size = 42257244
+mtime_ms = 1792928007274
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/c60ac70a-fda2-43bf-b119-97c0b69de451/cf6202e1-6b38-49e0-a33c-ac425972adb1"
+storage_version_token = "1792928079096410"
+content_type = "video/mp4"
+
+[[outputs]]
+id = "yLEE2WvJgZkCPBR8NKEN_"
+uri = "file://generated-artifacts/drive-inspection/q03c-control/proxy_npl1000_eq_frame-2.5.png"
+type = "image"
+title = "MATRIX MOTION — captura NPL 1000 a 2,5 s"
+description = "Fotograma extraído del proxy para revisar luminancia central, textura y dominante cálida."
+logical_id = "a3d9f167-2b3a-4cb0-9845-fb2895ab1687"
+content_hash = "sha256:7ba74f5641d5c209ac5f6e3055a316ccef17abe890704130c15948bb01130c57"
+size = 1297278
+mtime_ms = 1792928014744
+storage_uri = "gcs://replit-rams-assets-archer/rams/assets/repl:2b9d91eb-1ecb-4858-9351-430228f81e65/a3d9f167-2b3a-4cb0-9845-fb2895ab1687/9dfbf4b1-1ca8-4056-ae6d-f9eedc3ec131"
+storage_version_token = "1792928079836986"
+content_type = "image/png"
