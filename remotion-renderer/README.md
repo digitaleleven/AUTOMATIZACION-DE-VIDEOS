@@ -35,11 +35,12 @@ que el color esté aprobado visualmente.
 El panel autenticado conserva `show_subtitles` en la configuración de estilo. La
 casilla afecta las próximas ejecuciones locales, no modifica MP4 existentes.
 `font_family`, `font_color` y `highlight_color` alimentan los subtítulos de Remotion.
-El valor por defecto es Montserrat 800, texto blanco y resaltado rosa `#FF2A85`.
+El valor por defecto es Montserrat 800, texto activo oscuro `#202124` y resaltado
+rosa pastel bebé `#FFC0CB`; las palabras no activas conservan blanco con contorno.
 Se puede sobrescribir en una ejecución con directivas por línea en `--briefing`:
 
 ```sh
-pnpm run render:full -- --briefing $'fontFamily=Montserrat\nhighlightColor=#FF2A85\ntextColor=#FFFFFF'
+pnpm run render:full -- --briefing $'fontFamily=Montserrat\nhighlightColor=#FFC0CB\ntextColor=#202124'
 ```
 
 La nota libre se conserva en el registro de la propuesta; solo esas directivas
@@ -98,6 +99,19 @@ No se ha conectado esta ruta experimental al procesamiento Python/Shotstack;
 el briefing de esa ruta no se envía por sí solo al máster local.
 
 ### Archivos grandes y pruebas locales
+
+Antes de renderizar, la pista de subtítulos compara el texto completo con las
+palabras del JSON y verifica que ningún corte suprima o divida sus intervalos.
+Las palabras con duración cero no se eliminan: se muestran junto a un ancla
+próxima de duración positiva en un grupo de hasta tres palabras, **sin resalte
+individual**. Los nombres compuestos con un único intervalo reciben el mismo
+tratamiento. Esas ventanas compartidas se registran en
+`pipeline.stage1.captionCoverage.uncertainties` del informe del MP4.
+No son una alineación forzada ni tiempos individuales recuperados.
+Si no hay ancla cercana, falta texto, existe solapamiento o el grupo no puede
+aparecer a 30 FPS, el render se bloquea en lugar de ocultar la pérdida.
+La cobertura del JSON no demuestra que Whisper haya reconocido todo lo hablado;
+esa comparación con el audio requiere revisión humana o alineación adicional.
 
 El vídeo se decodifica secuencialmente con `fps,select,setpts`, sin ramas de
 vídeo 4K `split/concat` que retengan fotogramas mientras esperan otros segmentos.
@@ -193,12 +207,13 @@ proxies de muestra son Lanczos, 1080 × 1920 y 30 FPS para los 12 segundos que
 cubren los segmentos; se extrae únicamente el audio AAC principal a PCM temporal.
 El MOV original no se altera.
 
-La composición recibe marcas temporales de palabra existentes en el JSON de
-Whisper, agrupa de 1 a 2 palabras y resalta solo la palabra activa con texto
-configurable sobre fondo rosa `#FF2A85`. Usa Montserrat 800 por defecto. Los SVG
-conservan su entrada/salida suave; el audio añade impacto grave y whoosh al gancho,
-pop en pausas o stickers, swoosh en cortes y ding en palabras gancho. La imagen
-abre a 1.08× durante tres segundos y luego usa reencuadres suaves de hasta 1.06×
+El máster recibe marcas temporales del JSON de Whisper y valida la cobertura
+completa del texto antes del render. Agrupa de 1 a 3 palabras y resalta solo la
+palabra con alineación individual fiable, con texto oscuro sobre rosa pastel
+`#FFC0CB`. Usa Montserrat 800 por defecto. Los SVG conservan entrada/salida suave;
+el audio añade un pop por bloque de subtítulos/tarjeta y whoosh en cortes,
+sin impactos graves ni campanillas por defecto. La imagen usa reencuadres
+smoothstep de 1.00× a 1.06× y regreso, sin salto inicial al 108%,
 en frases y pausas naturales. El reproductor
 del panel apunta al MP4 final local y sigue protegido por la autenticación actual.
 

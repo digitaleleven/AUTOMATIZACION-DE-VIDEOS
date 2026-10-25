@@ -1,7 +1,7 @@
 export const DEFAULT_CAPTION_STYLE = Object.freeze({
   fontFamily: "Montserrat",
-  highlightColor: "#FF2A85",
-  textColor: "#FFFFFF",
+  highlightColor: "#FFC0CB",
+  textColor: "#202124",
 });
 
 const BRIEFING_DIRECTIVES = {

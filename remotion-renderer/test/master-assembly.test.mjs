@@ -29,28 +29,35 @@ test("reframe events follow natural speech pauses and cuts, not each word", () =
   assert.deepEqual(buildJumpFrames(clips, words, effectCues), [3, 36, 90]);
 });
 
-test("sound design maps a low impact hook, subtle word pops, graphics, and transitions", () => {
+test("sound design maps one clean pop per caption/card and whooshes only to cuts", () => {
   assert.deepEqual(
     buildSoundEffectCues(clips, effects, words, effectCues),
     [
-      { kind: "impact", startFrame: 3, durationFrames: 18 },
-      { kind: "swoosh", startFrame: 3, durationFrames: 12 },
-      { kind: "pop", startFrame: 36, durationFrames: 8 },
-      { kind: "ding", startFrame: 36, durationFrames: 10 },
+      { kind: "pop", startFrame: 3, durationFrames: 8 },
       { kind: "pop", startFrame: 40, durationFrames: 8 },
       { kind: "swoosh", startFrame: 90, durationFrames: 12 },
     ].sort((left, right) => left.startFrame - right.startFrame || left.kind.localeCompare(right.kind)),
   );
 });
 
-test("camera motion eases out an 8% hook and eases between phrases to 1.06x", () => {
+test("camera has no abrupt 8% hook and uses smoothstep capped at 1.06x", () => {
   const filter = buildZoompanFilter([5, 10, 120]);
-  assert.match(filter, /1\.0800/u);
-  assert.match(filter, /0\.0800\*\(on-90\)\/12/u);
+  assert.doesNotMatch(filter, /1\.0800/u);
+  assert.match(filter, /\*\(3-2\*/u);
   assert.match(filter, /1\.0600-/u);
   assert.match(filter, /between\(on\\,120\\,132\)/u);
   assert.doesNotMatch(filter, /between\(on\\,5\\,/u);
   assert.throws(() => buildZoompanFilter([-1]), /enteros no negativos/u);
+  assert.throws(() => buildZoompanFilter([], { reframeScale: 1.08 }), /resolución/u);
+});
+
+test("every audited caption start gets a pop; shared frames are deduplicated", () => {
+  const captionGroups = [{ start: 0.17 }, { start: 1.2 }, { start: 2.1 }];
+  const result = buildSoundEffectCues([], [], [], [], 30, {
+    captionGroups, overlays: [{ startFrame: 36 }],
+  });
+  assert.deepEqual(result.map((cue) => [cue.kind, cue.startFrame]),
+    [["pop", 6], ["pop", 36], ["pop", 63]]);
 });
 
 test("caption-linked sound effects stay off when showSubtitles is disabled", () => {

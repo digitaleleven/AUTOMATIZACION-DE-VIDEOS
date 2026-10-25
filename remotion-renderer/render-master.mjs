@@ -44,6 +44,7 @@ import {
 } from "./src/render-profile.mjs";
 import { resolveCaptionStyle } from "./src/caption-style.mjs";
 import { buildCreativeOverlays } from "./src/creative-overlays.mjs";
+import { prepareCaptionTrack } from "./src/caption-coverage.mjs";
 import { runLocalProcess as run } from "./src/local-process.mjs";
 
 const PACKAGE_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -281,6 +282,7 @@ try {
   const transcript = JSON.parse(await readFile(transcriptPath, "utf8"));
   const sourceWords = parseWhisperWordTimings(transcript);
   const wordTimings = mapWordTimingsToOutput(sourceWords, clips, FULL_FPS);
+  const captionTrack = prepareCaptionTrack(transcript, clips, FULL_FPS);
   if (wordTimings.length === 0) {
     throw new Error("No hay marcas de palabra temporales válidas para la edición.");
   }
@@ -332,7 +334,7 @@ try {
     wordTimings,
     plan.effect_cues,
     FULL_FPS,
-    { includeCaptionEffects: showSubtitles, overlays: productCues },
+    { includeCaptionEffects: showSubtitles, overlays: productCues, captionGroups: captionTrack.groups },
   ).filter((cue) => cue.startFrame + cue.durationFrames <= durationInFrames);
   const soundEffectsInRender = soundEffects.filter(
     (cue) => cue.startFrame < renderFrameCount,
@@ -381,6 +383,7 @@ try {
     promoText: creativeOverlays.promo?.text ?? null,
     imageOverlays: creativeOverlays.images,
     cardOverlays: creativeOverlays.cards,
+    captionGroups: captionTrack.groups,
   };
   const browserOptions = { enableMultiProcessOnLinux: true };
   const composition = await selectComposition({
@@ -405,6 +408,8 @@ try {
   }
 
   const overlayStarted = performance.now();
+  let lastProgressBucket = -1;
+  console.log("stage=remotion_graphics");
   await renderMedia({
     composition,
     serveUrl,
@@ -415,11 +420,19 @@ try {
     browserExecutable: CHROMIUM,
     chromiumOptions: browserOptions,
     logLevel: "info",
+    onProgress: ({ renderedFrames }) => {
+      const bucket = Math.floor(renderedFrames / 100);
+      if (Number.isFinite(bucket) && bucket > lastProgressBucket) {
+        console.log(`overlay_rendered_frames=${renderedFrames}/${renderFrameCount}`);
+        lastProgressBucket = bucket;
+      }
+    },
     ffmpegOverride: ({ args }) => [
       ...args.slice(0, -1), "-threads", "2", args[args.length - 1],
     ],
   });
   const overlaySeconds = (performance.now() - overlayStarted) / 1000;
+  console.log("stage=verify_graphics");
   const overlayProbe = await probe(overlayPath, true);
   const overlayVideo = overlayProbe.streams?.find((stream) => stream.codec_type === "video");
   const overlayAudio = overlayProbe.streams?.find((stream) => stream.codec_type === "audio");
@@ -459,9 +472,11 @@ try {
   });
   const inputHashBefore = await hashFile(inputPath);
   const masterStarted = performance.now();
+  console.log("stage=ffmpeg_master");
   await run("ffmpeg", [
     "-nostdin", "-n", "-hide_banner", "-loglevel", "error",
     "-filter_complex_threads", "1",
+    "-progress", "pipe:1", "-stats_period", "10",
     "-threads", "2", "-i", inputPath,
     "-threads", "2", "-i", overlayPath,
     "-filter_complex", filterComplex,
@@ -476,7 +491,7 @@ try {
     "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
     "-movflags", "+faststart",
     outputPath,
-  ]);
+  ], { onStdout: (chunk) => process.stdout.write(chunk) });
   const masterSeconds = (performance.now() - masterStarted) / 1000;
   const outputStat = await stat(outputPath);
   if (outputStat.size === 0) throw new Error("FFmpeg produjo un MP4 vacío.");
@@ -520,6 +535,7 @@ try {
     status: "verified",
     renderMode: renderFrameCount < durationInFrames ? "preview" : "full",
     requestedFrames: renderFrameCount,
+    timings: { remotionOverlaySeconds: overlaySeconds, ffmpegMasterSeconds: masterSeconds },
     input: {
       path: inputPath,
       durationSeconds: sourceDuration,
@@ -541,10 +557,11 @@ try {
         wordTimings: wordTimings.length,
         effects,
         creativeOverlays,
+        captionCoverage: captionTrack.audit,
         soundEffects: soundEffectsInRender,
         scheduledSoundEffects: soundEffects.length,
         jumpFrames,
-        zoom: "gancho inicial 1.08x durante 3 s con salida suave; reencuadres 1.06x suaves en frases y pausas",
+        zoom: "reencuadres 1.00x → 1.06x → 1.00x con smoothstep en frases/productos; sin salto inicial",
       },
       stage2: {
         renderer: "FFmpeg",

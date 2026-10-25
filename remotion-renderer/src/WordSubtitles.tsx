@@ -12,7 +12,7 @@ import {
   activeWordIndex,
   groupTimedWords,
 } from "./caption-timing.mjs";
-import type { TimedWord } from "./caption-timing.mjs";
+import type { TimedWord, CaptionGroup } from "./caption-timing.mjs";
 
 export type CaptionStyle = {
   fontFamily: string;
@@ -22,8 +22,8 @@ export type CaptionStyle = {
 
 const DEFAULT_CAPTION_STYLE: CaptionStyle = {
   fontFamily: "Montserrat",
-  highlightColor: "#FF2A85",
-  textColor: "#FFFFFF",
+  highlightColor: "#FFC0CB",
+  textColor: "#202124",
 };
 
 const captionContainerStyle: CSSProperties = {
@@ -55,14 +55,16 @@ export const WordSubtitles: FC<{
   fps: number;
   showSubtitles?: boolean;
   captionStyle?: CaptionStyle;
+  captionGroups?: CaptionGroup[];
 }> = ({
   words,
   fps,
   showSubtitles = true,
   captionStyle = DEFAULT_CAPTION_STYLE,
+  captionGroups,
 }) => {
   const frame = useCurrentFrame();
-  const groups = useMemo(() => groupTimedWords(words, 1, 3), [words]);
+  const groups = useMemo(() => captionGroups ?? groupTimedWords(words, 1, 3), [words, captionGroups]);
   const seconds = frame / fps;
   const group = activeCaptionGroup(groups, seconds);
   if (!showSubtitles || !group) return null;
@@ -105,7 +107,9 @@ export const WordSubtitles: FC<{
                 key={`${word.start.toFixed(4)}-${index}`}
                 style={{
                   display: "inline-block",
-                  color: textColor,
+                  color: isActive ? textColor : "#FFFFFF",
+                  WebkitTextStroke: isActive ? "0px transparent" : "1.5px #101010",
+                  textShadow: isActive ? "0 1px 2px rgba(0,0,0,0.15)" : "0 3px 8px #101010",
                   backgroundColor: isActive
                     ? highlightColor
                     : "transparent",

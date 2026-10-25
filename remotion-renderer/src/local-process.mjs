@@ -6,6 +6,7 @@ export function runLocalProcess(command, args, {
   timeoutMs = 2 * 60 * 60 * 1000,
   maxStdoutBytes = 2 * 1024 * 1024,
   maxStderrBytes = 128 * 1024,
+  onStdout,
 } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
@@ -44,6 +45,7 @@ export function runLocalProcess(command, args, {
       process.removeListener("SIGINT", interrupted);
     };
     child.stdout.on("data", (chunk) => {
+      if (onStdout) onStdout(chunk.toString("utf8"));
       stdout += chunk.toString("utf8");
       if (Buffer.byteLength(stdout) > maxStdoutBytes) {
         stdout = Buffer.from(stdout).subarray(0, maxStdoutBytes).toString("utf8");

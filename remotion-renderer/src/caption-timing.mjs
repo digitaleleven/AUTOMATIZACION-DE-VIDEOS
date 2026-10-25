@@ -207,7 +207,7 @@ export function activeCaptionGroup(groups, seconds) {
 export function activeWordIndex(group, seconds) {
   for (let index = group.words.length - 1; index >= 0; index -= 1) {
     const word = group.words[index];
-    if (seconds >= word.start && seconds < word.end) return index;
+    if (word.highlight !== false && seconds >= word.start && seconds < word.end) return index;
   }
   return -1;
 }

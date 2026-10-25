@@ -8,3 +8,4 @@
 - [Ritmo de subtítulos](caption-style.md) — MATRIX MOTION limita cada grupo a 1–3 palabras y resalta por separado solo la palabra hablada.
 - [Conversión HDR HLG a SDR](hlg-sdr-color.md) — La responsable rechazó Q03E por dominante amarilla; ninguna curva probada la neutralizó sin una referencia blanca fiable.
 - [Semántica de cortes FFmpeg](ffmpeg-cut-timelines.md) — Los intervalos de silencio son rangos que se eliminan; conviértelos a su complemento y verifica duración y fotogramas.
+- [Entrega de vídeos grandes](large-video-delivery.md) — Adjuntos limitados a 100 MiB; entregar másteres grandes por enlace autenticado, sin recomprimirlos.

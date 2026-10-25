@@ -12,7 +12,7 @@ import {
 import type { CSSProperties, FC } from "react";
 import { WordSubtitles } from "./WordSubtitles";
 import type { CaptionStyle } from "./WordSubtitles";
-import type { TimedWord } from "./caption-timing.mjs";
+import type { TimedWord, CaptionGroup } from "./caption-timing.mjs";
 import type { TimedVectorEffect } from "./full-edit-timeline.mjs";
 import {
   FULL_DURATION_IN_FRAMES,
@@ -68,6 +68,7 @@ type FullEditProps = {
   promoText: string | null;
   imageOverlays: TimedImageOverlay[];
   cardOverlays: TimedCardOverlay[];
+  captionGroups: CaptionGroup[] | undefined;
 };
 
 const SOUND_EFFECT_FILES: Record<SoundEffectCue["kind"], string> = {
@@ -310,6 +311,7 @@ const FullEdit: FC<FullEditProps> = ({
   promoText,
   imageOverlays,
   cardOverlays,
+  captionGroups,
 }) => (
   <AbsoluteFill style={{ backgroundColor: "transparent" }}>
     {titleOverlay && (
@@ -343,6 +345,7 @@ const FullEdit: FC<FullEditProps> = ({
       fps={FULL_FPS}
       showSubtitles={showSubtitles}
       captionStyle={captionStyle}
+      captionGroups={captionGroups}
     />
     {soundEffects.map((cue, index) => (
       <SoundEffect key={`${cue.kind}-${cue.startFrame}-${index}`} cue={cue} />
@@ -369,10 +372,11 @@ export const FullRemotionRoot: FC = () => (
       promoText: null,
       imageOverlays: [],
       cardOverlays: [],
+      captionGroups: undefined,
       captionStyle: {
         fontFamily: "Montserrat",
-        highlightColor: "#FF2A85",
-        textColor: "#FFFFFF",
+        highlightColor: "#FFC0CB",
+        textColor: "#202124",
       },
     }}
   />

@@ -2,6 +2,7 @@ export interface TimedWord {
   text: string;
   start: number;
   end: number;
+  highlight?: boolean;
 }
 
 export interface CaptionGroup {

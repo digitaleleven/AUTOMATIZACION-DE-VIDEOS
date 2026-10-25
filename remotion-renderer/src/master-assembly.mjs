@@ -1,3 +1,5 @@
+import { groupTimedWords } from "./caption-timing.mjs";
+
 const normalizeWord = (value) =>
   String(value ?? "")
     .normalize("NFD")
@@ -53,7 +55,7 @@ export function buildSoundEffectCues(
   wordTimings,
   effectCues,
   fps = 30,
-  { includeCaptionEffects = true, overlays = [] } = {},
+  { includeCaptionEffects = true, overlays = [], captionGroups } = {},
 ) {
   const cues = [];
   const add = (kind, startFrame, durationFrames) => {
@@ -65,21 +67,8 @@ export function buildSoundEffectCues(
   for (const effect of effects) add("pop", effect.startFrame, 8);
   for (const cue of overlays) add("pop", cue.startFrame, 8);
   if (includeCaptionEffects) {
-    const firstWord = wordTimings.find(
-      (word) => Number.isFinite(Number(word.start)) && Number(word.start) >= 0,
-    );
-    if (firstWord && firstWord.start <= 3) {
-      const hookFrame = Math.round(firstWord.start * fps);
-      add("impact", hookFrame, 18);
-      add("swoosh", hookFrame, 12);
-    }
-    const phraseFrames = buildNaturalReframeFrames(wordTimings, fps);
-    for (const frame of phraseFrames.slice(1)) add("pop", frame, 8);
-  }
-  for (const cue of effectCues) {
-    const trigger = normalizeWord(cue.trigger_word);
-    const word = wordTimings.find((item) => normalizeWord(item.text) === trigger);
-    if (word) add("ding", Math.round(word.start * fps), 10);
+    const groups = captionGroups ?? groupTimedWords(wordTimings, 1, 3);
+    for (const group of groups) add("pop", Math.ceil(group.start * fps), 8);
   }
 
   const unique = new Map();
@@ -95,9 +84,9 @@ export function buildZoompanFilter(
     width = 1080,
     height = 1920,
     fps = 30,
-    hookDurationFrames = fps * 3,
+    hookDurationFrames = 0,
     easingFrames = 12,
-    hookScale = 1.08,
+    hookScale = 1.06,
     reframeScale = 1.06,
   } = {},
 ) {
@@ -110,8 +99,8 @@ export function buildZoompanFilter(
     !Number.isInteger(fps) || fps <= 0 ||
     !Number.isInteger(hookDurationFrames) || hookDurationFrames < 0 ||
     !Number.isInteger(easingFrames) || easingFrames <= 0 ||
-    !Number.isFinite(hookScale) || hookScale < 1 || hookScale > 1.12 ||
-    !Number.isFinite(reframeScale) || reframeScale < 1 || reframeScale > 1.08
+    !Number.isFinite(hookScale) || hookScale < 1 || hookScale > 1.06 ||
+    !Number.isFinite(reframeScale) || reframeScale < 1 || reframeScale > 1.06
   ) {
     throw new Error("La resolución y tasa de fotogramas deben ser enteras y positivas.");
   }
@@ -120,8 +109,12 @@ export function buildZoompanFilter(
     .map((frame) => {
       const riseEnd = frame + easingFrames;
       const fallEnd = riseEnd + easingFrames;
-      return `if(between(on\\,${frame}\\,${riseEnd})\\,1+${(reframeScale - 1).toFixed(4)}*(on-${frame})/${easingFrames}` +
-        `\\,if(between(on\\,${riseEnd}\\,${fallEnd})\\,${reframeScale.toFixed(4)}-${(reframeScale - 1).toFixed(4)}*(on-${riseEnd})/${easingFrames}\\,1))`;
+      const smooth = (start) => {
+        const t = `((on-${start})/${easingFrames})`;
+        return `(${t}*${t}*(3-2*${t}))`;
+      };
+      return `if(between(on\\,${frame}\\,${riseEnd})\\,1+${(reframeScale - 1).toFixed(4)}*${smooth(frame)}` +
+        `\\,if(between(on\\,${riseEnd}\\,${fallEnd})\\,${reframeScale.toFixed(4)}-${(reframeScale - 1).toFixed(4)}*${smooth(riseEnd)}\\,1))`;
     });
   const reframeExpression = reframePulses.reduce(
     (expression, pulse) => `max(${expression}\\,${pulse})`,
