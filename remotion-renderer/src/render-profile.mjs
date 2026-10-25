@@ -69,7 +69,7 @@ export const buildColorManagedProxyFilter = (
     if (toneMap === "direct") {
       colorTransform =
         "zscale=primariesin=bt2020:transferin=arib-std-b67:matrixin=bt2020nc:rangein=limited:" +
-        "primaries=bt709:transfer=bt709:matrix=bt709:range=limited:c=topleft";
+        "primaries=bt709:transfer=bt709:matrix=bt709:range=limited:npl=1000:c=topleft";
     } else {
       colorTransform =
         "zscale=primariesin=bt2020:transferin=arib-std-b67:matrixin=bt2020nc:rangein=limited:" +
@@ -109,7 +109,7 @@ export const buildColorManagedProxyFilter = (
 
   const directEq =
     toneMap === "direct"
-      ? ",eq=brightness=-0.08:contrast=1.05:saturation=0.88:gamma=0.95"
+      ? ",eq=contrast=0.92:brightness=-0.05:gamma=0.85:saturation=0.92"
       : "";
   return `${colorTransform},${scaleAndPad}${directEq},setsar=1,fps=${fps},format=${REMOTION_RENDER_PROFILE.pixelFormat}`;
 };
