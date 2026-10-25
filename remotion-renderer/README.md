@@ -5,7 +5,41 @@ aplicación Python, el panel ni Shotstack. El navegador de render se ejecuta con
 resolución de hosts externos bloqueada. El render no recibe clave de licencia
 ni llama al servicio de seguimiento de Remotion.
 
-## Muestra Mobius con capa creativa ligera
+## Prueba directa BT.709 sin tone mapping
+
+Esta variante conserva una conversión explícita de HLG BT.2020 a BT.709 con
+`zscale`, pero omite el filtro `tonemap`. Después aplica los valores EQ
+solicitados. `format=yuv420p` se aplica al final; cambiar solo el formato de
+píxel no convierte HLG a SDR.
+
+```sh
+ffmpeg -y \
+  -i "$PWD/generated-artifacts/drive-inspection/IMG_1254.MOV" \
+  -map 0:v:0 -map 0:a:0 -t 12 \
+  -vf "zscale=primariesin=bt2020:transferin=arib-std-b67:matrixin=bt2020nc:rangein=limited:primaries=bt709:transfer=bt709:matrix=bt709:range=limited:c=topleft,scale=1080:1920:force_original_aspect_ratio=decrease:flags=lanczos,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,eq=brightness=-0.08:contrast=1.05:saturation=0.88:gamma=0.95,setsar=1,fps=30,format=yuv420p" \
+  -c:v libx264 -preset ultrafast -crf 17 -g 1 -keyint_min 1 -sc_threshold 0 -pix_fmt yuv420p \
+  -color_range tv -colorspace bt709 -color_primaries bt709 -color_trc bt709 \
+  -c:a aac -b:a 192k -ac 2 -ar 48000 \
+  "$PWD/generated-artifacts/drive-inspection/q03c-control/proxy_30fps_allintra_1080_direct-eq.mp4"
+
+pnpm --dir remotion-renderer run render:sample -- \
+  --input "$PWD/generated-artifacts/drive-inspection/IMG_1254.MOV" \
+  --transcript "$PWD/generated-artifacts/drive-inspection/q03a/transcription-corrected.json" \
+  --proxy "$PWD/generated-artifacts/drive-inspection/q03c-control/proxy_30fps_allintra_1080_direct-eq.mp4" \
+  --render-frames 150 \
+  --output "$PWD/remotion-renderer/generated-artifacts/remotion/allintra-direct-eq-30fps-1080.mp4"
+
+ffmpeg -y -ss 2.5 \
+  -i "$PWD/remotion-renderer/generated-artifacts/remotion/allintra-direct-eq-30fps-1080.mp4" \
+  -frames:v 1 -update 1 \
+  "$PWD/remotion-renderer/generated-artifacts/remotion/allintra-direct-eq-30fps-1080-frame-2.5.png"
+```
+
+La conversión directa evita `tonemap` y la etapa RGB lineal, pero conserva la
+declaración correcta de la entrada/salida. Este camino puede recortar altas
+luces HLG; la imagen requiere revisión visual y no se integra automáticamente.
+
+## Experimento Mobius anterior (conservado)
 
 El proxy se limita a los 12 segundos de fuente que necesita la composición.
 Se selecciona la primera pista AAC para no intentar decodificar pistas
@@ -39,7 +73,7 @@ ffmpeg -y -ss 2.5 \
 La muestra usa `OffthreadVideo` y renderiza solo 150 fotogramas (5 segundos).
 El proxy conserva H.264 All-Intra, 30 FPS y audio AAC; el controlador verifica
 metadatos y que todos los fotogramas sean I-frames antes de abrir Chromium.
-Mobius se ejecuta en RGB lineal con `param=0.5`: FFmpeg documenta la opción
+El experimento Mobius se ejecutó en RGB lineal con `param=0.5`: FFmpeg documenta la opción
 `param`, no `jnc`. La escala Lanczos y el padding se aplican después de la
 conversión a BT.709 para evitar escalar el material HLG antes de mapear tonos.
 
@@ -55,13 +89,14 @@ pnpm --dir remotion-renderer run render:sample -- \
   --output "$PWD/remotion-renderer/generated-artifacts/remotion/sample-corrected.mp4"
 ```
 
-El script valida con FFprobe el perfil de color de entrada. La muestra usa una
-conversión explícita HLG BT.2020 limitado → RGB lineal → Mobius (`param=0.5`) →
-BT.709 limitado. El perfil Hable se conserva como valor por defecto para la
-prueba Q-02; los perfiles desconocidos se rechazan en vez de etiquetarse como
-BT.709. El proxy de muestra es Lanczos, 1080 × 1920 y 30 FPS para los 12
-segundos que cubren los segmentos; se extrae únicamente el audio AAC principal
-a PCM temporal. El MOV original no se altera.
+El script valida con FFprobe el perfil de color de entrada. El modo directo
+convierte HLG BT.2020 limitado a BT.709 limitado con `zscale`, omite el tone
+mapping y aplica los ajustes EQ documentados arriba. Hable se conserva para la
+prueba Q-02 y Mobius permanece disponible solo como alternativa de comparación;
+los perfiles desconocidos se rechazan en vez de etiquetarse como BT.709. Los
+proxies de muestra son Lanczos, 1080 × 1920 y 30 FPS para los 12 segundos que
+cubren los segmentos; se extrae únicamente el audio AAC principal a PCM temporal.
+El MOV original no se altera.
 
 La composición recibe solo palabras con marcas temporales reales de Whisper.
 Mapea las palabras completas que caen dentro de los segmentos; omite las que

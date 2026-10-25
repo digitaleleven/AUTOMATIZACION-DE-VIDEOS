@@ -274,8 +274,7 @@ try {
     console.log(`prepared_proxy_all_intra=${JSON.stringify(allIntraInfo)}`);
   } else {
     const proxyFilter = buildColorManagedProxyFilter(inputVideo, FPS, {
-      toneMap: "mobius",
-      mobiusParam: 0.5,
+      toneMap: "direct",
     });
     await run("ffmpeg", [
       "-nostdin",

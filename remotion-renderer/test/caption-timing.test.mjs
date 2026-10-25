@@ -176,6 +176,24 @@ test("Mobius is applied in linear RGB before BT.709 and outputs a padded 1080p p
   );
 });
 
+test("direct HLG conversion bypasses tone mapping but converts to BT.709 before EQ", () => {
+  const filter = buildColorManagedProxyFilter({
+    color_range: "tv",
+    color_space: "bt2020nc",
+    color_transfer: "arib-std-b67",
+    color_primaries: "bt2020",
+  }, 30, { toneMap: "direct" });
+
+  const zscale = filter.indexOf("zscale=primariesin=bt2020");
+  const scale = filter.indexOf("scale=1080:1920");
+  const eq = filter.indexOf("eq=brightness=-0.08:contrast=1.05:saturation=0.88:gamma=0.95");
+  assert.ok(zscale >= 0 && zscale < scale && scale < eq);
+  assert.match(filter, /primaries=bt709:transfer=bt709:matrix=bt709:range=limited/);
+  assert.match(filter, /pad=1080:1920:\(ow-iw\)\/2:\(oh-ih\)\/2/);
+  assert.match(filter, /format=yuv420p/);
+  assert.doesNotMatch(filter, /tonemap=|gbrpf32le/);
+});
+
 test("unsupported or incomplete source color metadata fails explicitly", () => {
   assert.throws(
     () => buildColorManagedProxyFilter({

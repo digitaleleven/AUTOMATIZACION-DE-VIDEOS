@@ -42,7 +42,7 @@ export const buildColorManagedProxyFilter = (
   fps = REMOTION_RENDER_PROFILE.fps,
   { toneMap = "hable", mobiusParam = 0.5 } = {},
 ) => {
-  if (!["hable", "mobius"].includes(toneMap)) {
+  if (!["hable", "mobius", "direct"].includes(toneMap)) {
     throw new Error(`Curva de mapeo tonal no admitida: ${toneMap}`);
   }
   if (toneMap === "mobius" && (!Number.isFinite(mobiusParam) || mobiusParam <= 0)) {
@@ -66,13 +66,19 @@ export const buildColorManagedProxyFilter = (
     if (rangeIn !== "limited") {
       throw new Error("La entrada HLG BT.2020 no declara rango limitado; no se aplicará una conversión supuesta.");
     }
-    colorTransform =
-      "zscale=primariesin=bt2020:transferin=arib-std-b67:matrixin=bt2020nc:rangein=limited:" +
-      "primaries=bt2020:transfer=linear:matrix=gbr:range=full:npl=100," +
-      `format=gbrpf32le,tonemap=tonemap=${toneMap}:` +
-      (toneMap === "mobius" ? `param=${mobiusParam},` : "desat=0,") +
-      "zscale=primariesin=bt2020:transferin=linear:matrixin=gbr:rangein=full:" +
-      "primaries=bt709:transfer=bt709:matrix=bt709:range=limited";
+    if (toneMap === "direct") {
+      colorTransform =
+        "zscale=primariesin=bt2020:transferin=arib-std-b67:matrixin=bt2020nc:rangein=limited:" +
+        "primaries=bt709:transfer=bt709:matrix=bt709:range=limited:c=topleft";
+    } else {
+      colorTransform =
+        "zscale=primariesin=bt2020:transferin=arib-std-b67:matrixin=bt2020nc:rangein=limited:" +
+        "primaries=bt2020:transfer=linear:matrix=gbr:range=full:npl=100," +
+        `format=gbrpf32le,tonemap=tonemap=${toneMap}:` +
+        (toneMap === "mobius" ? `param=${mobiusParam},` : "desat=0,") +
+        "zscale=primariesin=bt2020:transferin=linear:matrixin=gbr:rangein=full:" +
+        "primaries=bt709:transfer=bt709:matrix=bt709:range=limited:c=topleft";
+    }
   } else if (
     video.color_transfer === "bt709" &&
     video.color_primaries === "bt709" &&
@@ -80,7 +86,7 @@ export const buildColorManagedProxyFilter = (
   ) {
     colorTransform =
       `zscale=primariesin=bt709:transferin=bt709:matrixin=bt709:rangein=${rangeIn}:` +
-      "primaries=bt709:transfer=bt709:matrix=bt709:range=limited";
+        "primaries=bt709:transfer=bt709:matrix=bt709:range=limited:c=topleft";
   } else {
     throw new Error(
       `Perfil de entrada no admitido para esta prueba: ${JSON.stringify({
@@ -93,7 +99,7 @@ export const buildColorManagedProxyFilter = (
   }
 
   const scaleAndPad =
-    toneMap === "mobius"
+    toneMap !== "hable"
       ? `scale=${REMOTION_RENDER_PROFILE.width}:${REMOTION_RENDER_PROFILE.height}:` +
         "force_original_aspect_ratio=decrease:flags=lanczos," +
         `pad=${REMOTION_RENDER_PROFILE.width}:${REMOTION_RENDER_PROFILE.height}:(ow-iw)/2:(oh-ih)/2`
@@ -101,5 +107,9 @@ export const buildColorManagedProxyFilter = (
         "force_original_aspect_ratio=increase:flags=lanczos," +
         `crop=${REMOTION_RENDER_PROFILE.width}:${REMOTION_RENDER_PROFILE.height}`;
 
-  return `${colorTransform},${scaleAndPad},setsar=1,fps=${fps},format=${REMOTION_RENDER_PROFILE.pixelFormat}`;
+  const directEq =
+    toneMap === "direct"
+      ? ",eq=brightness=-0.08:contrast=1.05:saturation=0.88:gamma=0.95"
+      : "";
+  return `${colorTransform},${scaleAndPad}${directEq},setsar=1,fps=${fps},format=${REMOTION_RENDER_PROFILE.pixelFormat}`;
 };
