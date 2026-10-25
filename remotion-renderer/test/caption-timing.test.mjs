@@ -11,10 +11,11 @@ import {
   DURATION_IN_FRAMES,
   FPS,
   SEGMENTS,
-  getSourceTrimWindow,
+  getSourceClipWindow,
 } from "../src/edit-timeline.mjs";
 import {
   buildColorManagedProxyFilter,
+  hasVisualContent,
   REMOTION_RENDER_PROFILE,
 } from "../src/render-profile.mjs";
 
@@ -49,18 +50,17 @@ test("only complete word timings inside kept clips are mapped to output time", (
   assert.equal(DURATION_IN_FRAMES, 285);
 });
 
-test("Remotion source trim windows use absolute end times after the start", () => {
+test("Remotion source clips use frame-based trim and duration props", () => {
   const windows = SEGMENTS.map(({ sourceStart, frames }) =>
-    getSourceTrimWindow(sourceStart, frames, FPS),
+    getSourceClipWindow(sourceStart, frames, 600),
   );
 
   assert.deepEqual(windows, [
-    { trimBefore: 0, trimAfter: 2 },
-    { trimBefore: 5, trimAfter: 7.5 },
-    { trimBefore: 10, trimAfter: 12 },
+    { trimBefore: 0, durationInFrames: 100 },
+    { trimBefore: 250, durationInFrames: 125 },
+    { trimBefore: 500, durationInFrames: 100 },
   ]);
-  assert.ok(windows.every(({ trimBefore, trimAfter }) => trimAfter > trimBefore));
-  assert.throws(() => getSourceTrimWindow(0, 0, FPS), /Invalid source trim values/);
+  assert.throws(() => getSourceClipWindow(500, 200, 600), /Invalid source clip frame range/);
 });
 
 test("caption groups stay within four words and highlight one timed word", () => {
@@ -140,4 +140,10 @@ test("unsupported or incomplete source color metadata fails explicitly", () => {
     }),
     /rango de color explícito/,
   );
+});
+
+test("visual signal validation rejects black renders", () => {
+  assert.equal(hasVisualContent([18, 19, 20, 22, 21, 20]), false);
+  assert.equal(hasVisualContent([18, 120, 160, 140, 22, 130]), true);
+  assert.equal(hasVisualContent([128, 160]), false);
 });

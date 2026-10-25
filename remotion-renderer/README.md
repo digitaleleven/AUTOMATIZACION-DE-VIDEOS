@@ -14,7 +14,7 @@ Whisper con palabras y tiempos, y una ruta de salida nueva:
 pnpm --dir remotion-renderer run render:sample -- \
   --input "$PWD/generated-artifacts/drive-inspection/IMG_1254.MOV" \
   --transcript "$PWD/generated-artifacts/drive-inspection/q03a/transcription-corrected.json" \
-  --output "$PWD/remotion-renderer/generated-artifacts/remotion/sample.mp4"
+  --output "$PWD/remotion-renderer/generated-artifacts/remotion/sample-corrected.mp4"
 ```
 
 El script valida con FFprobe el perfil de color de entrada. Para HLG BT.2020
@@ -34,7 +34,8 @@ concurrencia 1, cero reintentos, dos hilos FFmpeg para OffthreadVideo, un
 máximo de 32 MiB de caché de vídeo y sin codificación paralela; el proxy también
 limita a dos hilos el procesado FFmpeg. Los temporales se eliminan al terminar.
 FFprobe comprueba duración, dimensiones, FPS, códec, pixel format, etiquetas de
-color y audio, y FFmpeg decodifica la salida completa. Los registros e informe
+color y audio, FFmpeg decodifica la salida completa y se verifica que el área
+central no quede negra en la mayoría de los fotogramas. Los registros e informe
 se guardan junto al MP4; los fallos conservan `error.log`.
 
 Para verificar los algoritmos y tipos sin renderizar:

@@ -25,6 +25,7 @@ import {
 } from "./src/edit-timeline.mjs";
 import {
   buildColorManagedProxyFilter,
+  hasVisualContent,
   REMOTION_RENDER_PROFILE,
 } from "./src/render-profile.mjs";
 
@@ -133,6 +134,8 @@ let outputPath;
 let outputDirectory;
 let workDirectory;
 let succeeded = false;
+let reportPath;
+let errorLogPath;
 
 try {
   const args = parseArguments(process.argv.slice(2));
@@ -140,6 +143,9 @@ try {
   outputPath = path.resolve(args.output);
   const transcriptPath = path.resolve(args.transcript);
   outputDirectory = path.dirname(outputPath);
+  const outputStem = path.basename(outputPath, path.extname(outputPath));
+  reportPath = path.join(outputDirectory, `${outputStem}.report.json`);
+  errorLogPath = path.join(outputDirectory, `${outputStem}.error.log`);
   await mkdir(outputDirectory, { recursive: true });
 
   if (path.extname(inputPath).toLowerCase() !== ".mov" &&
@@ -389,6 +395,30 @@ try {
     "-",
   ]);
   if (decodeCheck.stderr.trim()) console.log(`ffmpeg_decode_warnings=${decodeCheck.stderr.trim()}`);
+  const visualCheck = await run("ffmpeg", [
+    "-nostdin",
+    "-hide_banner",
+    "-v",
+    "info",
+    "-i",
+    outputPath,
+    "-vf",
+    "fps=1,crop=iw*0.8:ih*0.6:iw*0.1:ih*0.15,signalstats,metadata=print:file=-",
+    "-an",
+    "-f",
+    "null",
+    "-",
+  ]);
+  const visualLog = `${visualCheck.stdout}\n${visualCheck.stderr}`;
+  const visualLumaSamples = [
+    ...visualLog.matchAll(/lavfi\.signalstats\.YAVG=([\d.]+)/g),
+  ].map((match) => Number(match[1]));
+  const visualContent = hasVisualContent(visualLumaSamples);
+  if (!visualContent) {
+    throw new Error(
+      `Output is decodable but the central picture area is black or too dark in most sampled frames: ${JSON.stringify(visualLumaSamples)}`,
+    );
+  }
 
   const inputHashAfter = await hashFile(inputPath);
   if (inputHashAfter !== inputHashBefore) {
@@ -401,7 +431,8 @@ try {
     proxy: { path: proxyPath, probe: proxyProbe, expectedSourceSeconds: SAMPLE_SOURCE_SECONDS },
     renderProfile: REMOTION_RENDER_PROFILE,
     output: { path: outputPath, sizeBytes: outputStat.size, probe: outputProbe },
-    validation,
+    validation: { ...validation, visualContent },
+    visualLumaSamples,
     renderSeconds,
     sourceSizeBytes: inputStat.size,
     temporaryDirectoryBytesBeforeCleanup: await directoryBytes(outputDirectory),
@@ -411,7 +442,7 @@ try {
     },
   };
   await writeFile(
-    path.join(outputDirectory, "report.json"),
+    reportPath,
     `${JSON.stringify(report, null, 2)}\n`,
     { flag: "wx" },
   );
@@ -420,12 +451,13 @@ try {
   console.log(`output_probe=${JSON.stringify(outputProbe)}`);
   console.log(`source_unchanged=${inputHashBefore === inputHashAfter}`);
   console.log("ffmpeg_decode_check=passed");
+  console.log(`visual_luma_samples=${JSON.stringify(visualLumaSamples)}`);
   succeeded = true;
 } catch (error) {
   const errorText = formatError(error);
   console.error(errorText);
-  if (outputDirectory) {
-    await writeFile(path.join(outputDirectory, "error.log"), `${errorText}\n`).catch(() => {});
+  if (errorLogPath) {
+    await writeFile(errorLogPath, `${errorText}\n`, { flag: "wx" }).catch(() => {});
   }
   if (outputPath) await rm(outputPath, { force: true }).catch(() => {});
   process.exitCode = 1;

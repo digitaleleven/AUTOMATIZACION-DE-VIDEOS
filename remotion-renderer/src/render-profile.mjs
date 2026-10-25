@@ -14,6 +14,15 @@ export const REMOTION_RENDER_PROFILE = Object.freeze({
   offthreadVideoCacheSizeInBytes: 32 * 1024 * 1024,
 });
 
+export const hasVisualContent = (lumaSamples, threshold = 40) => {
+  const values = lumaSamples.filter(
+    (value) => Number.isFinite(value) && value >= 0 && value <= 255,
+  );
+  if (values.length < 3) return false;
+  const visibleSamples = values.filter((value) => value >= threshold).length;
+  return visibleSamples >= Math.ceil(values.length / 2);
+};
+
 export const buildColorManagedProxyFilter = (video) => {
   const rangeIn =
     video.color_range === "tv" ? "limited" :

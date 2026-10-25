@@ -11,20 +11,21 @@ export const DURATION_IN_FRAMES =
   SEGMENTS.reduce((sum, segment) => sum + segment.frames, 0) -
   TRANSITION_FRAMES * (SEGMENTS.length - 1);
 
-export const getSourceTrimWindow = (sourceStart, frames, fps = FPS) => {
+export const getSourceClipWindow = (sourceStart, frames, sourceDurationInFrames) => {
   if (
     !Number.isInteger(sourceStart) ||
     sourceStart < 0 ||
     !Number.isInteger(frames) ||
     frames <= 0 ||
-    !Number.isFinite(fps) ||
-    fps <= 0
+    !Number.isInteger(sourceDurationInFrames) ||
+    sourceDurationInFrames <= 0 ||
+    sourceStart + frames > sourceDurationInFrames
   ) {
-    throw new Error("Invalid source trim values.");
+    throw new Error("Invalid source clip frame range.");
   }
 
   return {
-    trimBefore: sourceStart / fps,
-    trimAfter: (sourceStart + frames) / fps,
+    trimBefore: sourceStart,
+    durationInFrames: frames,
   };
 };
