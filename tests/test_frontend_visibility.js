@@ -5,6 +5,7 @@ const test = require("node:test");
 const vm = require("node:vm");
 
 const appSource = fs.readFileSync(path.join(__dirname, "../web/app.js"), "utf8");
+const indexSource = fs.readFileSync(path.join(__dirname, "../web/index.html"), "utf8");
 const helperStart = appSource.indexOf("const HIDDEN_TEST_UPLOAD_IDS = new Set(");
 const helperEnd = appSource.indexOf("\n\nconst state =", helperStart);
 assert.notEqual(helperStart, -1, "test-only visibility IDs should exist in app.js");
@@ -35,4 +36,22 @@ test("the six known test uploads are hidden without hiding future uploads by fil
 
 test("invalid library values produce an empty visible list", () => {
   assert.deepEqual(Array.from(context.filterItems(null)), []);
+});
+
+test("the three legacy result links and their sections stay hidden without removing their media sources", () => {
+  const hiddenResults = [
+    ["resultado-fase1", "/media/outputs/IMG_1254-MATRIX-MOTION-FASE1.mp4"],
+    ["resultado-mm003", "/media/outputs/IMG_1254-MATRIX-MOTION-MM003.mp4"],
+    ["resultado-mm004", "/media/outputs/IMG_1254-MATRIX-MOTION-MM004.mp4"],
+  ];
+
+  for (const [id, mediaPath] of hiddenResults) {
+    const navLink = indexSource.match(new RegExp(`<button\\b[^>]*data-scroll="${id}"[^>]*>`));
+    const section = indexSource.match(new RegExp(`<section\\b[^>]*id="${id}"[^>]*>`));
+    assert.ok(navLink, `sidebar item ${id} should remain in markup`);
+    assert.ok(section, `result section ${id} should remain in markup`);
+    assert.match(navLink[0], /\shidden(?:\s|>)/, `${id} sidebar item should be hidden`);
+    assert.match(section[0], /\shidden(?:\s|>)/, `${id} result section should be hidden`);
+    assert.ok(indexSource.includes(mediaPath), `${id} media should be preserved`);
+  }
 });
