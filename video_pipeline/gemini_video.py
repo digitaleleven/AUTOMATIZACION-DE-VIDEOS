@@ -21,24 +21,36 @@ logger = logging.getLogger(__name__)
 GEMINI_MODEL = "gemini-3.8-flash"
 FILES_UPLOAD_URL = "https://generativelanguage.googleapis.com/upload/v1beta/files"
 API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
-MAX_ANALYSIS_BYTES = 1024 * 1024 * 1024
+MAX_ANALYSIS_BYTES = 2 * 1024 * 1024 * 1024
 MAX_WORDS = 12_000
 
 _ANALYSIS_SCHEMA = {
     "type": "OBJECT",
     "properties": {
         "summary": {"type": "STRING"},
-        "spoken_language": {"type": "STRING"},
-        "words": {
+        "key_moments": {
             "type": "ARRAY",
             "items": {
                 "type": "OBJECT",
                 "properties": {
-                    "text": {"type": "STRING"},
                     "start_seconds": {"type": "NUMBER"},
                     "end_seconds": {"type": "NUMBER"},
+                    "label": {"type": "STRING"},
+                    "reason": {"type": "STRING"},
                 },
-                "required": ["text", "start_seconds", "end_seconds"],
+                "required": ["start_seconds", "end_seconds", "label", "reason"],
+            },
+        },
+        "suggested_zooms": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "start_seconds": {"type": "NUMBER"},
+                    "end_seconds": {"type": "NUMBER"},
+                    "reason": {"type": "STRING"},
+                },
+                "required": ["start_seconds", "end_seconds", "reason"],
             },
         },
         "suggested_cuts": {
@@ -53,9 +65,19 @@ _ANALYSIS_SCHEMA = {
                 "required": ["start_seconds", "end_seconds", "reason"],
             },
         },
+        "copy_and_seo": {
+            "type": "OBJECT",
+            "properties": {
+                "hook": {"type": "STRING"},
+                "caption": {"type": "STRING"},
+                "seo_title": {"type": "STRING"},
+                "hashtags": {"type": "ARRAY", "items": {"type": "STRING"}},
+            },
+            "required": ["hook", "caption", "seo_title", "hashtags"],
+        },
         "warnings": {"type": "ARRAY", "items": {"type": "STRING"}},
     },
-    "required": ["summary", "spoken_language", "words", "suggested_cuts", "warnings"],
+    "required": ["summary", "key_moments", "suggested_zooms", "suggested_cuts", "copy_and_seo", "warnings"],
 }
 
 
@@ -64,79 +86,94 @@ class GeminiAnalysisError(RuntimeError):
 
 
 def validate_gemini_analysis(raw: Any, duration_seconds: float) -> dict[str, Any]:
-    """Validate untrusted model JSON; never treat its cut ideas as applied edits."""
+    """Validate visual moments, zoom windows, human-reviewed cuts and social copy."""
     if not isinstance(raw, dict):
         raise GeminiAnalysisError("Gemini devolvió una respuesta que no es un objeto JSON.")
     summary = raw.get("summary", "")
-    language = raw.get("spoken_language", "")
-    words_raw = raw.get("words")
+    moments_raw = raw.get("key_moments")
+    zooms_raw = raw.get("suggested_zooms")
     cuts_raw = raw.get("suggested_cuts")
+    copy_raw = raw.get("copy_and_seo")
     warnings_raw = raw.get("warnings")
     if (
         not isinstance(summary, str) or len(summary) > 1500
-        or not isinstance(language, str) or len(language) > 80
-        or not isinstance(words_raw, list) or len(words_raw) > MAX_WORDS
+        or not isinstance(moments_raw, list) or len(moments_raw) > 12
+        or not isinstance(zooms_raw, list) or len(zooms_raw) > 8
         or not isinstance(cuts_raw, list) or len(cuts_raw) > 12
+        or not isinstance(copy_raw, dict)
         or not isinstance(warnings_raw, list) or len(warnings_raw) > 20
     ):
         raise GeminiAnalysisError("Gemini devolvió campos fuera de los límites permitidos.")
 
-    words: list[dict[str, Any]] = []
-    previous_start = -1.0
-    for index, item in enumerate(words_raw):
-        if not isinstance(item, dict):
-            raise GeminiAnalysisError(f"El timestamp de palabra {index + 1} no es válido.")
-        text = item.get("text")
-        start = item.get("start_seconds")
-        end = item.get("end_seconds")
-        if (
-            not isinstance(text, str)
-            or not text.strip()
-            or len(text.strip()) > 80
-            or any(character.isspace() for character in text.strip())
-            or isinstance(start, bool)
-            or isinstance(end, bool)
-            or not isinstance(start, (int, float))
-            or not isinstance(end, (int, float))
-            or not math.isfinite(float(start))
-            or not math.isfinite(float(end))
-        ):
-            raise GeminiAnalysisError(f"El timestamp de palabra {index + 1} no es válido.")
-        start_value, end_value = float(start), float(end)
-        if (
-            start_value < 0
-            or end_value <= start_value
-            or end_value > duration_seconds + 0.05
-            or start_value < previous_start
-        ):
-            raise GeminiAnalysisError(f"El timestamp de palabra {index + 1} queda fuera del vídeo o desordenado.")
-        words.append({
-            "text": text.strip(),
-            "start": round(start_value, 3),
-            "end": round(min(end_value, duration_seconds), 3),
-        })
-        previous_start = start_value
+    def normalize_intervals(items: list[Any], field: str, max_items: int) -> list[dict[str, Any]]:
+        normalized: list[dict[str, Any]] = []
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                raise GeminiAnalysisError(f"La sugerencia {field} {index + 1} no es válida.")
+            start, end = item.get("start_seconds"), item.get("end_seconds")
+            reason = item.get("reason")
+            if (
+                isinstance(start, bool) or isinstance(end, bool)
+                or not isinstance(start, (int, float)) or not isinstance(end, (int, float))
+                or not math.isfinite(float(start)) or not math.isfinite(float(end))
+                or not isinstance(reason, str) or not reason.strip() or len(reason) > 240
+                or float(start) < 0 or float(end) <= float(start)
+                or float(end) > duration_seconds + 0.05
+            ):
+                raise GeminiAnalysisError(f"La sugerencia {field} {index + 1} queda fuera de límites.")
+            normalized.append({
+                "start_seconds": round(float(start), 3),
+                "end_seconds": round(min(float(end), duration_seconds), 3),
+                "reason": reason.strip(),
+                **({"label": str(item.get("label", "")).strip()[:80]} if field == "key_moments" else {}),
+            })
+        if len(normalized) > max_items:
+            raise GeminiAnalysisError(f"Gemini excedió el máximo de sugerencias {field}.")
+        normalized.sort(key=lambda item: item["start_seconds"])
+        for left, right in zip(normalized, normalized[1:]):
+            if right["start_seconds"] < left["end_seconds"]:
+                raise GeminiAnalysisError(f"Las sugerencias {field} se solapan.")
+        return normalized
 
-    suggested_cuts: list[dict[str, Any]] = []
-    for index, item in enumerate(cuts_raw):
-        if not isinstance(item, dict):
-            raise GeminiAnalysisError(f"La sugerencia de corte {index + 1} no es válida.")
-        reason = item.get("reason")
-        if not isinstance(reason, str) or len(reason) > 240:
-            raise GeminiAnalysisError(f"La justificación del corte {index + 1} no es válida.")
-        suggested_cuts.append({
-            "start_seconds": item.get("start_seconds"),
-            "end_seconds": item.get("end_seconds"),
-        })
+    moments = normalize_intervals(moments_raw, "key_moments", 12)
+    zooms_raw_normalized = normalize_intervals(zooms_raw, "suggested_zooms", 8)
+    cuts_raw_normalized = normalize_intervals(cuts_raw, "suggested_cuts", 12)
     try:
+        normalized_zooms = normalize_edit_plan(
+            {
+                "cuts": [],
+                "zooms": [
+                    {key: value for key, value in item.items() if key != "reason"} | {"effect": "zoomIn"}
+                    for item in zooms_raw_normalized
+                ],
+                "stickers": [],
+            },
+            duration_seconds,
+        )["zooms"]
         normalized_cuts = normalize_edit_plan(
-            {"cuts": suggested_cuts, "zooms": [], "stickers": []},
+            {"cuts": [{key: value for key, value in item.items() if key != "reason"} for item in cuts_raw_normalized],
+             "zooms": [], "stickers": []},
             duration_seconds,
         )["cuts"]
     except (EditPlanError, TypeError, ValueError):
-        raise GeminiAnalysisError("Las sugerencias de corte de Gemini no superaron la validación temporal.") from None
-    for cut, source in zip(normalized_cuts, cuts_raw, strict=True):
-        cut["reason"] = source["reason"].strip()
+        raise GeminiAnalysisError("Las sugerencias temporales de Gemini no superaron la validación.") from None
+    for item, source in zip(normalized_zooms, zooms_raw_normalized, strict=True):
+        item["reason"] = source["reason"]
+    for item, source in zip(normalized_cuts, cuts_raw_normalized, strict=True):
+        item["reason"] = source["reason"]
+
+    hook = copy_raw.get("hook")
+    caption = copy_raw.get("caption")
+    seo_title = copy_raw.get("seo_title")
+    hashtags = copy_raw.get("hashtags")
+    if (
+        not isinstance(hook, str) or len(hook) > 160
+        or not isinstance(caption, str) or len(caption) > 600
+        or not isinstance(seo_title, str) or len(seo_title) > 180
+        or not isinstance(hashtags, list) or len(hashtags) > 12
+        or any(not isinstance(tag, str) or len(tag) > 50 or not tag.startswith("#") for tag in hashtags)
+    ):
+        raise GeminiAnalysisError("Gemini devolvió copy/SEO fuera de los límites permitidos.")
 
     warnings = []
     for warning in warnings_raw:
@@ -145,9 +182,15 @@ def validate_gemini_analysis(raw: Any, duration_seconds: float) -> dict[str, Any
         warnings.append(warning.strip())
     return {
         "summary": summary.strip(),
-        "spoken_language": language.strip(),
-        "words": words,
+        "key_moments": moments,
+        "suggested_zooms": normalized_zooms,
         "suggested_cuts": normalized_cuts,
+        "copy_and_seo": {
+            "hook": hook.strip(),
+            "caption": caption.strip(),
+            "seo_title": seo_title.strip(),
+            "hashtags": [tag.strip() for tag in hashtags],
+        },
         "warnings": warnings,
     }
 
@@ -164,6 +207,7 @@ def analyze_video(
     *,
     duration_seconds: float,
     briefing: str = "",
+    transcript_text: str = "",
     timeout_seconds: int = 180,
     session: requests.Session | None = None,
 ) -> dict[str, Any]:
@@ -245,14 +289,17 @@ def analyze_video(
         if file_info.get("state") not in {None, "ACTIVE"}:
             raise GeminiAnalysisError("El proxy de vídeo no quedó disponible para análisis dentro del plazo.")
 
+        transcript_context = transcript_text.strip()[:12000] or "No hay transcripción disponible."
         prompt = (
-            "Analiza este vídeo vertical corto en español. Devuelve solo el JSON solicitado. "
-            "Transcribe las palabras audibles con timestamps palabra por palabra, en segundos "
-            "desde el inicio del archivo; no inventes ni completes palabras que no se entiendan. "
-            "Propón como máximo 12 intervalos eliminables, exclusivamente pausas muertas o repeticiones "
-            "prescindibles de al menos 0,05 s; no elimines habla importante. Las sugerencias son para "
-            "revisión humana y no deben tratarse como cortes ya aprobados. Conserva el contenido y sentido. "
-            f"Duración aproximada del archivo: {duration_seconds:.3f} s. "
+            "Analiza este vídeo vertical para una edición social profesional. Devuelve únicamente el JSON solicitado. "
+            "NO transcribas el audio ni generes tiempos de palabras: la transcripción autorizada viene de Whisper. "
+            "Usa la transcripción de referencia para contexto y copy, sin inventar nombres de productos, marcas, "
+            "beneficios, precios ni promociones. Detecta hasta 12 momentos visuales relevantes con tiempos reales. "
+            "Propón hasta 8 ventanas de zoom sutil (máximo 1.06x), sin movimientos bruscos y solo cuando el contenido "
+            "lo justifique. Propón hasta 12 cortes de pausas muertas, pero son sugerencias para revisión humana: "
+            "no las consideres aplicadas. Genera un hook, caption, título SEO y hasta 12 hashtags fieles al contenido. "
+            f"Duración del proxy: {duration_seconds:.3f} s. "
+            f"Transcripción Whisper de referencia: {transcript_context}. "
             f"Instrucciones del cliente: {briefing.strip() or 'sin instrucciones adicionales'}."
         )
         response = http.post(
@@ -308,9 +355,10 @@ def analyze_video(
             "remote_file_deleted": None,
         }
         logger.info(
-            "gemini_video_analysis_completed model=%s words=%s cuts=%s duration_seconds=%s",
+            "gemini_video_analysis_completed model=%s moments=%s zooms=%s cuts=%s duration_seconds=%s",
             GEMINI_MODEL,
-            len(analysis["words"]),
+            len(analysis["key_moments"]),
+            len(analysis["suggested_zooms"]),
             len(analysis["suggested_cuts"]),
             elapsed,
         )

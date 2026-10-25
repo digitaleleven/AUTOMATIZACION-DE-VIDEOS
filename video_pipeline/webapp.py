@@ -47,7 +47,7 @@ from .google_drive import (
     configured_drive_folders,
     parse_style_instructions,
 )
-from .media import MediaError, prepare_video_for_modal, probe_video, temporary_work_directory
+from .media import MediaError, make_analysis_clip, prepare_video_for_modal, probe_video, temporary_work_directory
 from .edit_plan import EditPlanError, edited_duration, normalize_edit_plan
 from .models import VideoInfo, WordTiming
 from .drive import (
@@ -69,8 +69,9 @@ from .pipeline import (
     sync_drive_media,
 )
 from .modal_pipeline import process_local_video_modal
-from .modal_renderer import modal_configuration_status
+from .modal_renderer import ModalRenderClient, modal_configuration_status
 from .gemini_video import analyze_video
+from .transcription import transcribe_video
 from .r2_storage import configuration_status as r2_configuration_status, upload_mp4 as upload_mp4_to_r2
 from .state import ProcessingLedger
 from .shotstack import ShotstackClient, ShotstackError
@@ -538,6 +539,25 @@ def _public_job(job: dict[str, Any]) -> dict[str, Any]:
         "format_bit_rate_bps": result.get("output_format_bit_rate_bps"),
         "duration_seconds": result.get("output_duration_seconds"),
     } if isinstance(result, dict) else {}
+    gemini_result = result.get("gemini_analysis", {}) if isinstance(result, dict) else {}
+    r2_result = result.get("r2_storage", {}) if isinstance(result, dict) else {}
+    public_gemini = {
+        "model": gemini_result.get("model"),
+        "summary": gemini_result.get("summary"),
+        "spoken_language": gemini_result.get("spoken_language"),
+        "words": gemini_result.get("words", []),
+        "suggested_cuts": gemini_result.get("suggested_cuts", []),
+        "suggested_cuts_applied": gemini_result.get("suggested_cuts_applied", False),
+        "warnings": gemini_result.get("warnings", []),
+        "usage": gemini_result.get("usage"),
+        "processing_seconds": gemini_result.get("processing_seconds"),
+        "remote_file_deleted": gemini_result.get("remote_file_deleted"),
+    } if isinstance(gemini_result, dict) else {}
+    public_r2 = {
+        "object_key": r2_result.get("object_key"),
+        "size_bytes": r2_result.get("size_bytes"),
+        "verified": r2_result.get("verified"),
+    } if isinstance(r2_result, dict) else {}
     return {
         "id": job["id"],
         "source_id": job["source_id"],
@@ -548,6 +568,8 @@ def _public_job(job: dict[str, Any]) -> dict[str, Any]:
         "estimated_cost_usd": job["estimated_cost_usd"],
         "edit_options": edit_options if isinstance(edit_options, dict) else {},
         "output_metadata": output_metadata,
+        "gemini_analysis": public_gemini,
+        "r2_storage": public_r2,
         "output_id": job["output_id"],
         "attempt_number": int(job.get("attempt_number") or 1),
         "retry_of_job_id": job.get("retry_of_job_id"),
@@ -1699,16 +1721,8 @@ class VideoPanel:
                     409,
                 )
 
-        minutes = video.duration / 60
-        openai_cost = (
-            0.0
-            if not transcription_required
-            else (
-                round(minutes * style.openai_price_per_audio_minute_usd, 4)
-                if style.openai_price_per_audio_minute_usd is not None
-                else None
-            )
-        )
+        openai_cost = 0.0
+        gemini_cost = None
         shotstack_cost = None
         modal_status = modal_configuration_status()
         drive_import = (
@@ -1815,8 +1829,11 @@ class VideoPanel:
                 ),
             },
             "api_plan": {
-                "openai_transcription": transcription_required,
-                "openai_transcription_chunks": transcription_chunks,
+                "openai_transcription": False,
+                "openai_transcription_chunks": 0,
+                "gemini_video_analysis": True,
+                "gemini_model": "gemini-3.8-flash",
+                "gemini_key_configured": bool(os.getenv("GEMINI_API_KEY")),
                 "renderer_backend": render_backend,
                 "shotstack_environment": None,
                 "shotstack_render_jobs": 0,
@@ -1831,11 +1848,14 @@ class VideoPanel:
             },
             "costs": {
                 "openai_usd": openai_cost,
+                "gemini_usd": gemini_cost,
                 "shotstack_usd": shotstack_cost,
                 "modal_compute_usd": None,
+                "r2_storage_usd": None,
                 "total_estimate_usd": estimate,
                 "estimate_note": (
-                    "El coste del cómputo Modal depende de duración y recursos; el panel no tiene una tarifa cotizada."
+                    "No hay una tarifa total cotizada ni verificada: Gemini depende de tokens de vídeo, Modal de cómputo "
+                    "y R2 de almacenamiento/egress. Se requiere confirmación de coste desconocido antes de iniciar."
                 ),
             },
             "destination": (
@@ -1915,12 +1935,6 @@ class VideoPanel:
         render_backend = edit_options.get("renderer_backend", "modal")
         if render_backend != "modal":
             raise PanelError("Shotstack está deshabilitado. No se enviará ningún render por ese motor.", 409)
-        if (
-            edit_options["subtitle_mode"] != "none"
-            and payload.get("authorize_openai_transcription") is not True
-        ):
-            raise PanelError("Falta autorizar el envío del audio a OpenAI para transcribirlo.", 403)
-
         render_mode = str(proposal["options"].get("render_mode") or "full")
         existing_status, existing_backend = self._source_render_state_for_mode(upload, render_mode)
         if existing_status in {"processing", "queued"}:
@@ -1944,9 +1958,10 @@ class VideoPanel:
                     409,
                 )
         health = self.health()
-        needs_openai = edit_options["subtitle_mode"] != "none"
-        if needs_openai and not health["openai_key_configured"]:
-            raise PanelError("Falta OPENAI_API_KEY en Secrets; no se inició ningún trabajo.", 409)
+        if not health.get("gemini_key_configured"):
+            raise PanelError("Falta GEMINI_API_KEY en Secrets; no se inició ningún trabajo.", 409)
+        if payload.get("authorize_gemini_analysis") is not True:
+            raise PanelError("Falta autorización explícita para enviar el proxy a Gemini.", 403)
         modal_status = health.get("modal") or {}
         if not modal_status.get("sdk_installed") or not modal_status.get("credentials_configured"):
             raise PanelError("Modal no está instalado o configurado en el servidor.", 409)
@@ -2298,9 +2313,17 @@ class VideoPanel:
             original_video = probe_video(source_path)
             update_phase("normalizing")
             with temporary_work_directory() as normalization_dir:
+                analysis_source = original_video
+                if edit_options.get("render_mode") == "quick_demo":
+                    clip_dir = Path(normalization_dir) / "analysis-source"
+                    analysis_source = make_analysis_clip(
+                        original_video,
+                        5.0,
+                        clip_dir,
+                    )
                 normalized_video, normalization_report = prepare_video_for_modal(
-                    original_video,
-                    normalization_dir,
+                    analysis_source,
+                    Path(normalization_dir) / "analysis-proxy",
                 )
                 modal_ledger = ProcessingLedger(
                     self.store.database_path.with_name("modal_processing.sqlite3")
@@ -2315,6 +2338,8 @@ class VideoPanel:
                     edit_options=edit_options,
                 )
                 modal_ledger_claimed = True
+                modal_renderer = ModalRenderClient()
+                modal_renderer.ensure_worker_available()
                 update_phase("analyzing_with_gemini")
                 gemini_analysis = analyze_video(
                     normalized_video.path,
@@ -2341,6 +2366,7 @@ class VideoPanel:
                     style=style,
                     subtitle_mode=edit_options["subtitle_mode"],
                     render_mode=edit_options.get("render_mode", "full"),
+                    modal_client=modal_renderer,
                     render_settings=edit_options.get("render_settings"),
                     creative_plan=edit_options.get("creative_plan"),
                     subtitle_words=gemini_words if edit_options["subtitle_mode"] == "dynamic" else None,
@@ -2350,6 +2376,7 @@ class VideoPanel:
                 result["gemini_analysis"] = gemini_analysis
                 result["gemini_analysis"]["suggested_cuts_applied"] = False
                 result["transcription_provider"] = "gemini-3.8-flash"
+                result["analysis_proxy_duration_seconds"] = normalized_video.duration
                 update_phase("uploading_to_r2")
                 result["r2_storage"] = upload_mp4_to_r2(result["output"], job_id)
                 result["source"] = str(source_path)

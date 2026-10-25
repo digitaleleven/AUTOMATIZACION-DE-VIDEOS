@@ -317,8 +317,9 @@ async function startProcessing(proposal, unknownCostAcknowledged) {
     body: JSON.stringify({
       proposal_id: proposal.proposal_id,
       unknown_cost_acknowledged: unknownCostAcknowledged,
+      authorize_paid_apis: byId("paid-consent").checked,
       authorize_modal_compute: proposal.api_plan?.renderer_backend === "modal",
-      authorize_openai_transcription: proposal.api_plan?.openai_transcription === true,
+      authorize_gemini_analysis: proposal.api_plan?.gemini_video_analysis === true,
     }),
   });
 }
@@ -461,11 +462,13 @@ function statusLabel(status) {
     downloading: "Descargando el resultado", completed: "Completado", complete: "Completado",
     failed: "Error", error: "Error", rejected: "No admitido",
     normalizing: "Preparando el formato del vídeo", preparing_captions: "Preparando subtítulos",
+    analyzing_with_gemini: "Analizando el proxy con Gemini 3.8 Flash",
     uploading: "Preparando el vídeo",
     uploading_captions: "Preparando subtítulos",
     uploading_to_modal: "Subiendo el trabajo a Modal",
     rendering_on_modal: "Renderizando con Remotion en Modal",
     downloading_from_modal: "Descargando el MP4 desde Modal",
+    uploading_to_r2: "Guardando el MP4 privado en R2",
     validating_output: "Comprobando el resultado", interrupted: "Interrumpido",
   };
   return labels[String(status || "").toLowerCase()] || (status ? String(status) : "No disponible");
@@ -534,7 +537,7 @@ function renderRecentVideos() {
 function renderSummary() {
   if (!state.libraryLoaded) return;
   const visibleItems = getVisibleLibraryItems(state.library);
-  const pendingStatuses = new Set(["ready", "pending", "queued", "processing", "transcribing", "rendering", "downloading", "normalizing", "preparing_captions", "uploading", "uploading_captions", "uploading_to_modal", "rendering_on_modal", "downloading_from_modal", "validating_output"]);
+  const pendingStatuses = new Set(["ready", "pending", "queued", "processing", "transcribing", "rendering", "downloading", "normalizing", "preparing_captions", "analyzing_with_gemini", "uploading", "uploading_captions", "uploading_to_modal", "rendering_on_modal", "downloading_from_modal", "uploading_to_r2", "validating_output"]);
   const processedStatuses = new Set(["completed", "complete"]);
   const errorStatuses = new Set(["failed", "error", "rejected", "interrupted"]);
   const count = (statuses) => visibleItems.filter((item) => statuses.has(String(item.status || "").toLowerCase())).length;
@@ -647,16 +650,18 @@ function renderEditProposal(proposal) {
     `Salida: MP4 ${edit.output_width || 1080} × ${edit.output_height || 1920} · ${edit.output_fps || "?"} FPS · calidad ${edit.output_quality || "?"}`,
     `Duración final prevista: ${Number.isFinite(outputDuration) ? `${outputDuration.toFixed(2)} s` : "no disponible"}`,
     `Subtítulos: ${modeLabels[edit.subtitle_mode] || "No disponible"}`,
-    `OpenAI: ${apiPlan.openai_transcription ? `transcripción prevista (${apiPlan.openai_transcription_chunks} fragmento/s)` : "no se llamará; coste de transcripción 0"}`,
+    `Gemini: análisis de vídeo con ${apiPlan.gemini_model || "modelo no disponible"} tras autorizar`,
+    "OpenAI: no se llamará; los timestamps del demo se obtienen del análisis Gemini.",
     `Audio: ${edit.keep_original_audio ? "se conserva el audio original (y se recorta junto al vídeo)" : "la entrada no tiene audio"}; no se añade música ni normalización`,
     `Logo: ${edit.logo_enabled ? "se usará el logo ya configurado" : "ninguno configurado"}`,
     `Encuadre: ${edit.framing || "no disponible"}`,
     `Cortes que se quitarán: ${cutsLabel}`,
     `Zooms: ${zoomsLabel}`,
     `Stickers con animación de zoom: ${stickersLabel}`,
-    "Gemini no se ha llamado: la ficha oficial de Gemini 1.5 Flash devuelve 404 y no aparece en el catálogo vigente. El análisis queda pendiente de elegir un modelo documentado.",
+    "Gemini 3.8 Flash analizará el proxy normalizado a 1080p después de autorizar; los cortes se mostrarán como sugerencias y no se aplicarán automáticamente.",
     `Destino: Cloudflare R2 privado · bucket ${proposal.destination || "matrix-motion-videos"}`,
-    `OpenAI estimado: ${formatCost(costs.openai_usd)}`,
+    `OpenAI: ${formatCost(costs.openai_usd)} (no se usa en este pipeline)`,
+    `Gemini: ${formatCost(costs.gemini_usd)} (no cotizado)`,
     `Cómputo Modal: ${formatCost(costs.modal_compute_usd)} (no cotizado)`,
     `Total estimado: ${formatCost(costs.total_estimate_usd)}`,
   ];
@@ -669,9 +674,8 @@ function renderEditProposal(proposal) {
   byId("unknown-cost-wrap").hidden = !unknownCost;
   byId("unknown-cost-consent").checked = false;
   byId("paid-consent").checked = false;
-  byId("paid-consent-copy").textContent = apiPlan.openai_transcription
-    ? "Autorizo enviar el audio a OpenAI para transcribirlo, el vídeo normalizado a Modal y el MP4 resultante al bucket privado de Cloudflare R2."
-    : "Autorizo enviar el vídeo normalizado a Modal y guardar el MP4 en el bucket privado de Cloudflare R2. No se usará OpenAI.";
+  byId("paid-consent-copy").textContent =
+    "Autorizo enviar el proxy normalizado 1080p a Gemini 3.8 Flash, la fuente original 4K a Modal para el render y guardar el MP4 en el bucket privado de Cloudflare R2.";
   byId("approve-render-button").querySelector("span").textContent = "Autorizar y crear en Modal";
   byId("render-approval").hidden = false;
   updateProcessButton();
@@ -974,12 +978,23 @@ function renderJob(job, sourceName = "") {
   const outputMetadataMarkup = ["completed", "complete"].includes(status) && dimensions
     ? `<div class="job-output-metadata"><strong>Mediciones reales de FFprobe</strong><span>${escapeHtml(dimensions.width)} × ${escapeHtml(dimensions.height)} · ${escapeHtml(metadata.fps ?? "FPS no disponible")} FPS · ${escapeHtml(metadata.video_codec || "códec no disponible")}</span><span>Bitrate: ${bitrate > 0 ? `${(bitrate / 1000000).toFixed(2)} Mbps` : "no informado por FFprobe"} · preset solicitado: ${escapeHtml(metadata.quality_preset || "no disponible")}</span><span>Duración final: ${Number.isFinite(Number(metadata.duration_seconds)) ? `${Number(metadata.duration_seconds).toFixed(2)} s` : "no disponible"}</span></div>`
     : "";
+  const gemini = job.gemini_analysis || {};
+  const suggestedCuts = Array.isArray(gemini.suggested_cuts) ? gemini.suggested_cuts : [];
+  const geminiMarkup = gemini.model
+    ? `<div class="job-output-metadata"><strong>Análisis de Gemini 3.8 Flash</strong><span>${escapeHtml(gemini.summary || "Sin resumen disponible")} · ${escapeHtml(gemini.spoken_language || "idioma no detectado")} · ${Array.isArray(gemini.words) ? gemini.words.length : 0} palabras temporizadas</span><span>Archivo temporal en Gemini eliminado: ${gemini.remote_file_deleted === true ? "sí" : "no confirmado"} · tokens: ${escapeHtml(gemini.usage?.total_tokens ?? "no informados")}</span><span>Los cortes sugeridos no se aplicaron; necesitan revisión humana.</span>${suggestedCuts.length ? `<ul>${suggestedCuts.map((cut) => `<li>${Number(cut.start_seconds).toFixed(2)}–${Number(cut.end_seconds).toFixed(2)} s · ${escapeHtml(cut.reason || "")}</li>`).join("")}</ul>` : "<span>Sin cortes sugeridos.</span>"}</div>`
+    : "";
+  const r2 = job.r2_storage || {};
+  const r2Markup = r2.object_key
+    ? `<div class="job-output-metadata"><strong>Cloudflare R2 privado</strong><span>${escapeHtml(r2.object_key)} · ${Number.isFinite(Number(r2.size_bytes)) ? `${(Number(r2.size_bytes) / 1048576).toFixed(1)} MiB` : "tamaño no disponible"} · verificación ${r2.verified === true ? "confirmada" : "pendiente"}</span></div>`
+    : "";
   byId("job-status-tag").textContent = statusLabel(job.status).toLocaleUpperCase("es");
   byId("job-content").innerHTML = `<div class="job-live">
     <div><strong>${escapeHtml(sourceName || "Procesamiento")}</strong><p>${escapeHtml(phase)} · Identificador ${escapeHtml(job.id ?? "No disponible")}</p>${progressMarkup}</div>
     <span class="job-progress-label">${escapeHtml(progressText)}</span>
     ${job.error ? `<div class="job-error">${escapeHtml(job.error)}</div>` : ""}
+    ${geminiMarkup}
     ${outputMetadataMarkup}
+    ${r2Markup}
   </div>`;
   const outputId = job.output_id || job.output?.id;
   if (outputId) showOutput(outputId);
@@ -1054,12 +1069,12 @@ function updateProcessButton() {
     || proposal.costs?.total_estimate_usd === undefined;
   const consentOk = byId("paid-consent").checked
     && (!unknownCost || byId("unknown-cost-consent").checked);
-  const needsOpenAI = proposal?.api_plan?.openai_transcription === true;
+  const needsGemini = proposal?.api_plan?.gemini_video_analysis === true;
   const missingApi = proposal && (
     proposal.api_plan?.renderer_backend !== "modal"
     || !proposal.api_plan?.modal_sdk_installed
     || !proposal.api_plan?.modal_credentials_configured
-    || (needsOpenAI && !proposal.api_plan?.openai_key_configured)
+    || (needsGemini && !proposal.api_plan?.gemini_key_configured)
   );
   byId("process-button").disabled = !item || Boolean(busy) || unavailable;
   byId("approve-render-button").disabled = !proposal || !consentOk || Boolean(missingApi) || Boolean(busy);
@@ -1495,10 +1510,8 @@ byId("approve-render-button").addEventListener("click", async () => {
     displayToast("Falta confirmar la autorización y el coste desconocido.", true);
     return;
   }
-  const usesOpenAI = proposal.api_plan?.openai_transcription === true;
-  const providerSummary = usesOpenAI
-    ? "OpenAI para transcribir el audio autorizado y Modal para un render Remotion."
-    : "Modal para un render Remotion; no se llamará a OpenAI.";
+  const providerSummary =
+    "Gemini 3.8 Flash analizará el proxy 1080p, Modal procesará la fuente original 4K y Cloudflare R2 guardará el MP4 de forma privada.";
   const costSummary = unknown
     ? "El coste total no está disponible y podría haber cargos."
     : `La estimación total es ${formatCost(proposal.costs.total_estimate_usd)}.`;

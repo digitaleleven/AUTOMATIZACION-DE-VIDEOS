@@ -1533,7 +1533,11 @@ class VideoPanelApiTests(unittest.TestCase):
             "unknown_cost_acknowledged": True,
         }
         with self.assertRaises(PanelError) as missing_approval:
-            self.panel.start_job({**base_payload, "authorize_paid_apis": False})
+            self.panel.start_job({
+                **base_payload,
+                "authorize_paid_apis": False,
+                "authorize_gemini_analysis": True,
+            })
         self.assertEqual(missing_approval.exception.status_code, 403)
 
         with (
@@ -1542,6 +1546,7 @@ class VideoPanelApiTests(unittest.TestCase):
                 "health",
                 return_value={
                     "openai_key_configured": False,
+                    "gemini_key_configured": True,
                     "shotstack_key_configured": True,
                     "shotstack_environment": "stage",
                     "modal": {
@@ -1556,8 +1561,9 @@ class VideoPanelApiTests(unittest.TestCase):
         ):
             job = self.panel.start_job({
                 **base_payload,
+                "authorize_paid_apis": True,
                 "authorize_modal_compute": True,
-                "authorize_openai_transcription": False,
+                "authorize_gemini_analysis": True,
             })
             self.assertEqual(job["edit_options"]["subtitle_mode"], "none")
             self.assertEqual(job["edit_options"]["output_fps"], 30)
@@ -1565,8 +1571,9 @@ class VideoPanelApiTests(unittest.TestCase):
             with self.assertRaises(PanelError) as repeated:
                 self.panel.start_job({
                     **base_payload,
+                    "authorize_paid_apis": True,
                     "authorize_modal_compute": True,
-                    "authorize_openai_transcription": False,
+                    "authorize_gemini_analysis": True,
                 })
 
         self.assertEqual(repeated.exception.status_code, 409)

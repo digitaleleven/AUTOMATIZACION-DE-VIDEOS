@@ -67,6 +67,7 @@ class ModalRenderClient:
 
     def __init__(self, modal_sdk: Any | None = None):
         self._modal = modal_sdk
+        self._worker = None
 
     def _sdk(self) -> Any:
         if self._modal is None:
@@ -80,6 +81,8 @@ class ModalRenderClient:
 
     def ensure_worker_available(self) -> None:
         """Resolve the deployed function before any transcription or source upload."""
+        if self._worker is not None:
+            return
         config = modal_configuration_status()
         if not config["sdk_installed"] or not config["credentials_configured"]:
             raise RuntimeError("Modal no está listo en el servidor; no se contactó al worker.")

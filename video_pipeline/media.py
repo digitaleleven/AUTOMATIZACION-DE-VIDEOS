@@ -201,6 +201,57 @@ def prepare_video_for_modal(
     }
 
 
+def make_analysis_clip(
+    video: VideoInfo,
+    duration_seconds: float,
+    work_dir: str | Path,
+) -> VideoInfo:
+    """Copy a short source-timeline prefix for Gemini without re-encoding the original."""
+    if duration_seconds <= 0:
+        raise ValueError("La duración de la muestra de análisis debe ser positiva.")
+    length = min(float(video.duration), float(duration_seconds))
+    source = Path(video.path).expanduser().resolve()
+    directory = Path(work_dir).expanduser().resolve()
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / f"{source.stem}-analysis-{length:.3f}s.mp4"
+    if target.exists() or target.resolve() == source:
+        raise MediaError("La muestra temporal de análisis requiere un archivo de salida nuevo.")
+    command = [
+        "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+        "-i", str(source), "-t", f"{length:.3f}",
+        "-map", "0:v:0", "-map", "0:a:0?",
+        "-c", "copy", "-avoid_negative_ts", "make_zero",
+        "-movflags", "+faststart", str(target),
+    ]
+    try:
+        subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=max(60, int(length * 20)),
+        )
+    except FileNotFoundError as exc:
+        raise MediaError("ffmpeg es necesario para crear la muestra temporal de análisis.") from exc
+    except subprocess.TimeoutExpired as exc:
+        target.unlink(missing_ok=True)
+        raise MediaError("FFmpeg agotó el tiempo al crear la muestra de análisis.") from exc
+    except subprocess.CalledProcessError as exc:
+        target.unlink(missing_ok=True)
+        logger.error("Gemini analysis clip creation failed: %s", (exc.stderr or "")[-1000:])
+        raise MediaError("No se pudo crear la muestra temporal para Gemini.") from None
+
+    result = probe_video(target)
+    if (
+        result.duration < min(length, video.duration) - 0.35
+        or result.duration > length + 0.35
+        or not result.has_audio
+    ):
+        target.unlink(missing_ok=True)
+        raise MediaError("La muestra de análisis no conserva duración y audio suficientes.")
+    return result
+
+
 def extract_audio_chunks(
     video: VideoInfo,
     work_dir: str | Path,
