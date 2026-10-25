@@ -33,7 +33,10 @@ import {
   buildMasterFilterComplex,
   buildSoundEffectCues,
 } from "./src/master-assembly.mjs";
-import { MASTER_OVERLAY_PROFILE } from "./src/master-render-profile.mjs";
+import {
+  MASTER_OVERLAY_PROFILE,
+  supportsAlphaOverlayPixelFormat,
+} from "./src/master-render-profile.mjs";
 import { buildColorManagedProxyFilter } from "./src/render-profile.mjs";
 
 const PACKAGE_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -359,7 +362,7 @@ try {
     overlayVideo.width !== FULL_WIDTH ||
     overlayVideo.height !== FULL_HEIGHT ||
     parseRate(overlayVideo.avg_frame_rate) !== FULL_FPS ||
-    overlayVideo.pix_fmt !== "yuva444p10le" ||
+    !supportsAlphaOverlayPixelFormat(overlayVideo.pix_fmt) ||
     Number(overlayVideo.nb_read_frames) !== durationInFrames ||
     overlayAudio?.codec_name !== "pcm_s16le" ||
     overlayAudio.sample_rate !== "48000" ||

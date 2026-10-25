@@ -6,7 +6,10 @@ import {
   buildSoundEffectCues,
   buildZoompanFilter,
 } from "../src/master-assembly.mjs";
-import { MASTER_OVERLAY_PROFILE } from "../src/master-render-profile.mjs";
+import {
+  MASTER_OVERLAY_PROFILE,
+  supportsAlphaOverlayPixelFormat,
+} from "../src/master-render-profile.mjs";
 
 const clips = [
   { sourceStart: 17, frames: 90, outputStart: 0 },
@@ -52,6 +55,9 @@ test("transparent Remotion overlay uses PNG frames with ProRes 4444 alpha and no
     maxRetries: 0,
     disallowParallelEncoding: true,
   });
+  assert.equal(supportsAlphaOverlayPixelFormat("yuva444p10le"), true);
+  assert.equal(supportsAlphaOverlayPixelFormat("yuva444p12le"), true);
+  assert.equal(supportsAlphaOverlayPixelFormat("yuv420p"), false);
 });
 
 test("FFmpeg graph trims source video and audio, overlays alpha graphics, and mixes SFX", () => {

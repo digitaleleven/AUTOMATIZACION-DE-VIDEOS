@@ -9,3 +9,11 @@ export const MASTER_OVERLAY_PROFILE = Object.freeze({
   maxRetries: 0,
   disallowParallelEncoding: true,
 });
+
+export const SUPPORTED_ALPHA_OVERLAY_PIXEL_FORMATS = Object.freeze([
+  "yuva444p10le",
+  "yuva444p12le",
+]);
+
+export const supportsAlphaOverlayPixelFormat = (pixelFormat) =>
+  SUPPORTED_ALPHA_OVERLAY_PIXEL_FORMATS.includes(pixelFormat);
