@@ -3,6 +3,7 @@ import { renderMedia, selectComposition } from "@remotion/renderer";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import {
+  copyFile,
   mkdir,
   mkdtemp,
   readdir,
@@ -79,10 +80,13 @@ const hashFile = async (filePath) => {
 const parseArguments = (args) => {
   const forwardedArgs = args[0] === "--" ? args.slice(1) : args;
   const parsed = {};
+  const allowedKeys = ["--input", "--output", "--transcript", "--proxy", "--render-frames"];
   for (let index = 0; index < forwardedArgs.length; index += 1) {
     const key = forwardedArgs[index];
-    if (!["--input", "--output", "--transcript"].includes(key) || !forwardedArgs[index + 1]) {
-      throw new Error("Usage: render-sample.mjs --input <video.mp4|video.mov> --transcript <whisper.json> --output <sample.mp4>");
+    if (!allowedKeys.includes(key) || !forwardedArgs[index + 1]) {
+      throw new Error(
+        "Usage: render-sample.mjs --input <original.mov> --transcript <whisper.json> --output <new.mp4> [--proxy <prepared-all-intra.mp4>] [--render-frames <count>]",
+      );
     }
     parsed[key.slice(2)] = forwardedArgs[++index];
   }
@@ -142,6 +146,18 @@ try {
   const inputPath = path.resolve(args.input);
   outputPath = path.resolve(args.output);
   const transcriptPath = path.resolve(args.transcript);
+  const preparedProxyPath = args.proxy ? path.resolve(args.proxy) : null;
+  const renderFrameCount = args["render-frames"] === undefined
+    ? DURATION_IN_FRAMES
+    : Number(args["render-frames"]);
+  if (
+    !Number.isInteger(renderFrameCount) ||
+    renderFrameCount <= 0 ||
+    renderFrameCount > DURATION_IN_FRAMES
+  ) {
+    throw new Error(`--render-frames must be an integer from 1 to ${DURATION_IN_FRAMES}.`);
+  }
+  const renderDurationSeconds = renderFrameCount / FPS;
   outputDirectory = path.dirname(outputPath);
   const outputStem = path.basename(outputPath, path.extname(outputPath));
   reportPath = path.join(outputDirectory, `${outputStem}.report.json`);
@@ -152,8 +168,8 @@ try {
       path.extname(inputPath).toLowerCase() !== ".mp4") {
     throw new Error("Input must be an MP4 or MOV file.");
   }
-  if (inputPath === outputPath) {
-    throw new Error("The output path must not overwrite the source video.");
+  if (inputPath === outputPath || preparedProxyPath === outputPath) {
+    throw new Error("The output path must not overwrite an input video or proxy.");
   }
   try {
     await stat(outputPath);
@@ -188,14 +204,16 @@ try {
   }
   if (!sourceFps) throw new Error("FFprobe did not return a valid source frame rate.");
 
-  const sourceFile = "source-proxy.mp4";
+  const sourceFile = preparedProxyPath
+    ? path.basename(preparedProxyPath)
+    : "source-proxy.mp4";
   const audioFile = inputAudio ? "source-audio.wav" : null;
 
   console.log(`input=${inputPath}`);
   console.log(`input_sha256=${inputHashBefore}`);
   console.log(`input_probe=${JSON.stringify(inputProbe)}`);
   console.log(
-    `composition=${REMOTION_RENDER_PROFILE.width}x${REMOTION_RENDER_PROFILE.height} ${FPS}fps ${DURATION_IN_FRAMES} frames`,
+    `composition=${REMOTION_RENDER_PROFILE.width}x${REMOTION_RENDER_PROFILE.height} ${FPS}fps ${DURATION_IN_FRAMES} frames; render_frames=${renderFrameCount}`,
   );
   console.log(`word_timestamps=${sourceWords.length}; mapped_sample_words=${wordTimings.length}`);
 
@@ -203,53 +221,100 @@ try {
   const publicDirectory = path.join(workDirectory, "public");
   await mkdir(publicDirectory, { recursive: true });
   const proxyPath = path.join(publicDirectory, sourceFile);
-  const proxyFilter = buildColorManagedProxyFilter(inputVideo);
-  await run("ffmpeg", [
-    "-nostdin",
-    "-hide_banner",
-    "-v",
-    "error",
-    "-threads",
-    String(REMOTION_RENDER_PROFILE.offthreadVideoThreads),
-    "-i",
-    inputPath,
-    "-map",
-    "0:v:0",
-    "-an",
-    "-vf",
-    proxyFilter,
-    "-frames:v",
-    String(SAMPLE_SOURCE_FRAMES),
-    "-c:v",
-    "libx264",
-    "-threads",
-    String(REMOTION_RENDER_PROFILE.offthreadVideoThreads),
-    "-preset",
-    REMOTION_RENDER_PROFILE.x264Preset,
-    "-crf",
-    String(REMOTION_RENDER_PROFILE.proxyCrf),
-    "-pix_fmt",
-    REMOTION_RENDER_PROFILE.pixelFormat,
-    "-color_range",
-    "tv",
-    "-colorspace",
-    REMOTION_RENDER_PROFILE.colorSpace,
-    "-color_primaries",
-    REMOTION_RENDER_PROFILE.colorSpace,
-    "-color_trc",
-    REMOTION_RENDER_PROFILE.colorSpace,
-    "-movflags",
-    "+faststart",
-    proxyPath,
-  ]);
-  const proxyProbe = await probe(proxyPath);
+  let proxyProbe;
+  if (preparedProxyPath) {
+    const preparedProxyStat = await stat(preparedProxyPath);
+    if (!preparedProxyStat.isFile() || preparedProxyStat.size === 0) {
+      throw new Error("Prepared proxy is not a non-empty regular file.");
+    }
+    const preparedProxyProbe = await probe(preparedProxyPath);
+    const preparedVideo = preparedProxyProbe.streams?.find(
+      (stream) => stream.codec_type === "video",
+    );
+    const preparedDuration = Number(preparedProxyProbe.format?.duration);
+    if (
+      preparedVideo?.codec_name !== "h264" ||
+      !preparedVideo.width ||
+      !preparedVideo.height ||
+      Math.abs(preparedVideo.width / preparedVideo.height - 9 / 16) > 0.001 ||
+      parseRate(preparedVideo.avg_frame_rate || preparedVideo.r_frame_rate) !== FPS ||
+      preparedVideo.pix_fmt !== "yuv420p" ||
+      preparedVideo.color_range !== "tv" ||
+      preparedVideo.color_space !== REMOTION_RENDER_PROFILE.colorSpace ||
+      preparedVideo.color_transfer !== REMOTION_RENDER_PROFILE.colorSpace ||
+      preparedVideo.color_primaries !== REMOTION_RENDER_PROFILE.colorSpace ||
+      !Number.isFinite(preparedDuration) ||
+      preparedDuration < SAMPLE_SOURCE_SECONDS
+    ) {
+      throw new Error(
+        `Prepared proxy metadata is incompatible: ${JSON.stringify({
+          duration: preparedProxyProbe.format?.duration,
+          video: preparedVideo,
+        })}`,
+      );
+    }
+    const { stdout: allIntraCsv } = await run("ffprobe", [
+      "-v",
+      "error",
+      "-select_streams",
+      "v:0",
+      "-show_entries",
+      "frame=key_frame,pict_type",
+      "-of",
+      "csv=p=0",
+      preparedProxyPath,
+    ]);
+    const allIntraInfo = parseAllIntraFrameInfo(allIntraCsv);
+    if (!allIntraInfo.allIntra || allIntraInfo.frameCount < SAMPLE_SOURCE_FRAMES) {
+      throw new Error(`Prepared proxy is not fully all-intra: ${JSON.stringify(allIntraInfo)}`);
+    }
+    await copyFile(preparedProxyPath, proxyPath);
+    proxyProbe = await probe(proxyPath);
+    console.log(`prepared_proxy_all_intra=${JSON.stringify(allIntraInfo)}`);
+  } else {
+    const proxyFilter = buildColorManagedProxyFilter(inputVideo);
+    await run("ffmpeg", [
+      "-nostdin",
+      "-hide_banner",
+      "-v",
+      "error",
+      "-threads",
+      String(REMOTION_RENDER_PROFILE.offthreadVideoThreads),
+      "-i",
+      inputPath,
+      "-map",
+      "0:v:0",
+      "-an",
+      "-vf",
+      proxyFilter,
+      "-frames:v",
+      String(SAMPLE_SOURCE_FRAMES),
+      "-c:v",
+      "libx264",
+      "-threads",
+      String(REMOTION_RENDER_PROFILE.offthreadVideoThreads),
+      "-preset",
+      REMOTION_RENDER_PROFILE.x264Preset,
+      "-crf",
+      String(REMOTION_RENDER_PROFILE.proxyCrf),
+      "-pix_fmt",
+      REMOTION_RENDER_PROFILE.pixelFormat,
+      "-color_range",
+      "tv",
+      "-colorspace",
+      REMOTION_RENDER_PROFILE.colorSpace,
+      "-color_primaries",
+      REMOTION_RENDER_PROFILE.colorSpace,
+      "-color_trc",
+      REMOTION_RENDER_PROFILE.colorSpace,
+      "-movflags",
+      "+faststart",
+      proxyPath,
+    ]);
+    proxyProbe = await probe(proxyPath);
+  }
   const proxyVideo = proxyProbe.streams?.find((stream) => stream.codec_type === "video");
-  if (
-    proxyVideo?.width !== REMOTION_RENDER_PROFILE.width ||
-    proxyVideo?.height !== REMOTION_RENDER_PROFILE.height ||
-    parseRate(proxyVideo.avg_frame_rate || proxyVideo.r_frame_rate) !== FPS ||
-    proxyVideo.pix_fmt !== "yuv420p"
-  ) {
+  if (!proxyVideo || parseRate(proxyVideo.avg_frame_rate || proxyVideo.r_frame_rate) !== FPS) {
     throw new Error(`The color-managed proxy failed validation: ${JSON.stringify(proxyVideo)}`);
   }
   const proxyFrameCount = Math.round(Number(proxyProbe.format?.duration) * FPS);
@@ -336,6 +401,7 @@ try {
     inputProps,
     codec: "h264",
     outputLocation: outputPath,
+    frameRange: [0, renderFrameCount - 1],
     browserExecutable: CHROMIUM,
     chromiumOptions: browserOptions,
     concurrency: REMOTION_RENDER_PROFILE.concurrency,
@@ -361,7 +427,7 @@ try {
   const outputDuration = Number(outputProbe.format?.duration);
   const outputFps = parseRate(outputVideo?.avg_frame_rate || outputVideo?.r_frame_rate);
   const validation = {
-    duration: Number.isFinite(outputDuration) && Math.abs(outputDuration - DURATION_SECONDS) <= 0.06,
+    duration: Number.isFinite(outputDuration) && Math.abs(outputDuration - renderDurationSeconds) <= 0.06,
     dimensions:
       outputVideo?.width === REMOTION_RENDER_PROFILE.width &&
       outputVideo?.height === REMOTION_RENDER_PROFILE.height,
@@ -429,7 +495,7 @@ try {
     input: { path: inputPath, sha256Before: inputHashBefore, sha256After: inputHashAfter },
     transcript: { path: transcriptPath, exactWordTimings: sourceWords.length, mappedToSample: wordTimings.length },
     proxy: { path: proxyPath, probe: proxyProbe, expectedSourceSeconds: SAMPLE_SOURCE_SECONDS },
-    renderProfile: REMOTION_RENDER_PROFILE,
+    renderProfile: { ...REMOTION_RENDER_PROFILE, renderFrameCount },
     output: { path: outputPath, sizeBytes: outputStat.size, probe: outputProbe },
     validation: { ...validation, visualContent },
     visualLumaSamples,

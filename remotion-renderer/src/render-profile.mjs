@@ -23,6 +23,20 @@ export const hasVisualContent = (lumaSamples, threshold = 40) => {
   return visibleSamples >= Math.ceil(values.length / 2);
 };
 
+export const parseAllIntraFrameInfo = (ffprobeCsv) => {
+  const rows = ffprobeCsv
+    .trim()
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => line.split(",").map((value) => value.trim()));
+  return {
+    frameCount: rows.length,
+    allIntra:
+      rows.length > 0 &&
+      rows.every(([keyFrame, pictureType]) => keyFrame === "1" && pictureType === "I"),
+  };
+};
+
 export const buildColorManagedProxyFilter = (video) => {
   const rangeIn =
     video.color_range === "tv" ? "limited" :

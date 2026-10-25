@@ -16,6 +16,7 @@ import {
 import {
   buildColorManagedProxyFilter,
   hasVisualContent,
+  parseAllIntraFrameInfo,
   REMOTION_RENDER_PROFILE,
 } from "../src/render-profile.mjs";
 
@@ -146,4 +147,15 @@ test("visual signal validation rejects black renders", () => {
   assert.equal(hasVisualContent([18, 19, 20, 22, 21, 20]), false);
   assert.equal(hasVisualContent([18, 120, 160, 140, 22, 130]), true);
   assert.equal(hasVisualContent([128, 160]), false);
+});
+
+test("all-intra verification requires every probed frame to be an I-frame", () => {
+  assert.deepEqual(parseAllIntraFrameInfo("1,I\n1,I\n1,I\n"), {
+    frameCount: 3,
+    allIntra: true,
+  });
+  assert.deepEqual(parseAllIntraFrameInfo("1,I\n0,P\n"), {
+    frameCount: 2,
+    allIntra: false,
+  });
 });
