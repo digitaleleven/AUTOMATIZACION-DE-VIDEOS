@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import shlex
 import shutil
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from video_pipeline.media import prepare_video_for_modal, probe_video
 
@@ -36,7 +39,25 @@ class ModalInputNormalizationTests(unittest.TestCase):
             )
             source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
 
-            normalized, report = prepare_video_for_modal(probe_video(source), output_dir)
+            real_ffmpeg = shutil.which("ffmpeg")
+            shim_dir = root / "ffmpeg-4.4-compat"
+            shim_dir.mkdir()
+            ffmpeg_shim = shim_dir / "ffmpeg"
+            ffmpeg_shim.write_text(
+                "#!/bin/sh\n"
+                "for arg in \"$@\"; do\n"
+                "  if [ \"$arg\" = \"-fps_mode\" ]; then\n"
+                "    echo \"Unrecognized option 'fps_mode'\" >&2\n"
+                "    exit 64\n"
+                "  fi\n"
+                "done\n"
+                f"exec {shlex.quote(real_ffmpeg)} \"$@\"\n",
+                encoding="utf-8",
+            )
+            ffmpeg_shim.chmod(0o755)
+            test_path = os.pathsep.join((str(shim_dir), os.environ.get("PATH", "")))
+            with patch.dict(os.environ, {"PATH": test_path}):
+                normalized, report = prepare_video_for_modal(probe_video(source), output_dir)
 
             self.assertTrue(Path(normalized.path).is_file())
             self.assertEqual((normalized.width, normalized.height), (1080, 1920))

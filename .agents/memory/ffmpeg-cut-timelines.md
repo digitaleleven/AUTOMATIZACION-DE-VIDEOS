@@ -10,3 +10,11 @@ Mantén los streams de overlays con PTS desde cero durante toda la duración de 
 **Why:** Un plan de intervalos que debían eliminarse se interpretó como intervalos que debían conservarse. FFmpeg terminó sin error, pero produjo solo 1,71 segundos de contenido más el redondeo de fotograma. La inspección del filtro `trim` y la coincidencia con la suma de esos intervalos identificó la causa; no era el framesync del overlay.
 
 **How to apply:** Al usar planes de silencios, cortes o retenciones con FFmpeg `trim`/`atrim` y `concat`, transforma explícitamente los intervalos y valida duración y fotogramas antes de presentar el resultado.
+
+### CFR compatible con FFmpeg 4.4
+
+En la normalización de producción, el filtro `fps=30` ya fija la cadencia constante. No añadir `-fps_mode cfr`: la compilación FFmpeg 4.4.2 de DigitalOcean no reconoce esa opción.
+
+**Why:** DigitalOcean rechazó la normalización antes de codificar con `Unrecognized option 'fps_mode'`; el filtro `fps` conserva la cadencia CFR sin esa opción más reciente.
+
+**How to apply:** mantener el filtro FPS y verificar con FFprobe la tasa, duración y pista de audio tras cambios de normalización; no afirmar que la versión local 6.x demuestra compatibilidad real con 4.4.2.

@@ -87,7 +87,8 @@ const main = () => {
   else args.push("-map", "1:a:0");
   args.push(
     "-vf", filter,
-    "-fps_mode", "cfr",
+    // The fps=30 filter sets constant frame timestamps and is supported by FFmpeg 4.4.
+    // Avoid -fps_mode, which is unavailable in the production FFmpeg 4.4.2 build.
     "-c:v", "libx264", "-preset", "medium", "-crf", "17",
     "-profile:v", "high", "-pix_fmt", REMOTION_RENDER_PROFILE.pixelFormat,
     "-threads", "2",
