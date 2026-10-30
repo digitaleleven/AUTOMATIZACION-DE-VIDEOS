@@ -11,3 +11,4 @@
 - [Entrega de vídeos grandes](large-video-delivery.md) — Adjuntos limitados a 100 MiB; entregar másteres grandes por enlace autenticado, sin recomprimirlos.
 - [Disco efímero de Modal](modal-ephemeral-disk.md) — La cuota predeterminada es 512 GiB; pedir menos se rechaza y pedir más escala la memoria facturable 20:1.
 - [Modal como motor único](modal-rendering-scope.md) — Reutiliza normalización solo por hash+perfil; original intacto y despliegue/renders requieren autorización expresa.
+- [Cancelación de Modal](modal-cancellation.md) — Los logs de cancelación indican que el runtime recibió un evento del control plane; una llamada síncrona desde SSH no conserva por sí sola un handle reanudable.
