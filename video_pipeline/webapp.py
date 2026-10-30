@@ -2848,7 +2848,12 @@ required minlength="16" {disabled}>
             raise PanelError("JSON no válido.") from exc
 
     def _send_static(self, relative: str, head: bool = False) -> None:
-        allowed = {"app.js", "upload-controller.js", "premium.css"}
+        allowed = {
+            "app.js",
+            "upload-controller.js",
+            "library-selection-controller.js",
+            "premium.css",
+        }
         if relative not in allowed and relative != "index.html":
             raise PanelError("No se encontró el recurso solicitado.", 404)
         path = Path(__file__).resolve().parent.parent / "web" / relative
@@ -2962,7 +2967,12 @@ required minlength="16" {disabled}>
             if self.command in {"GET", "HEAD"}:
                 if path == "/":
                     self._send_static("index.html", head)
-                elif path in {"/app.js", "/upload-controller.js", "/premium.css"}:
+                elif path in {
+                    "/app.js",
+                    "/upload-controller.js",
+                    "/library-selection-controller.js",
+                    "/premium.css",
+                }:
                     self._send_static(path.lstrip("/"), head)
                 elif path == "/api/session":
                     self._json({"csrf_token": session.csrf_token}, head=head)

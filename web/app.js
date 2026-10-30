@@ -1419,6 +1419,18 @@ document.querySelectorAll("[data-page]").forEach((button) => {
   button.addEventListener("click", () => setActivePage(button.dataset.page));
 });
 
+const librarySelectionController = window.MatrixMotionLibrarySelection.createLibrarySelectionController({
+  isAvailable: (id) => getVisibleLibraryItems(state.library).some((item) => String(item.id) === id),
+  setSelectedId: (id) => { state.selectedId = id; },
+  clearAuthorizations: () => {
+    byId("paid-consent").checked = false;
+    byId("unknown-cost-consent").checked = false;
+  },
+  setActivePage,
+  renderLibrary,
+  renderSelectedItem,
+});
+
 byId("library-list").addEventListener("click", (event) => {
   const actionButton = event.target.closest("[data-action]");
   if (actionButton?.dataset.action === "upload") {
@@ -1428,19 +1440,12 @@ byId("library-list").addEventListener("click", (event) => {
   }
   const recentButton = event.target.closest("[data-recent-id]");
   if (recentButton) {
-    state.selectedId = recentButton.dataset.recentId;
-    setActivePage("create");
-    renderLibrary();
-    renderSelectedItem();
+    librarySelectionController.selectExistingVideo(recentButton.dataset.recentId);
     return;
   }
   const itemButton = event.target.closest(".library-item");
   if (!itemButton) return;
-  state.selectedId = itemButton.dataset.id;
-  byId("paid-consent").checked = false;
-  byId("unknown-cost-consent").checked = false;
-  renderLibrary();
-  renderSelectedItem();
+  librarySelectionController.selectExistingVideo(itemButton.dataset.id);
 });
 const uploadController = window.MatrixMotionUploadController.createUploadController({
   upload: uploadVideo,

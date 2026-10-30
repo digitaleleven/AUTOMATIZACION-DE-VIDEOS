@@ -1146,6 +1146,15 @@ class VideoPanelApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertNotIn("authorizeRenderRetry", script.decode("utf-8"))
 
+    def test_existing_video_selection_controller_is_served_to_authenticated_panel(self):
+        status, _, body = self.request("GET", "/library-selection-controller.js")
+        self.assertEqual(status, 200)
+        self.assertIn(b"selectExistingVideo", body)
+        status, _, html = self.request("GET", "/")
+        self.assertEqual(status, 200)
+        page = html.decode("utf-8")
+        self.assertIn('<script src="/library-selection-controller.js" defer></script>', page)
+
     def test_render_retries_are_blocked_in_modal_only_mode(self):
         source_id, job_id, _, _ = self.create_failed_0415_attempt()
         payload = {
