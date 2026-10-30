@@ -275,9 +275,6 @@ class ModalRenderClient:
         self.ensure_worker_available()
         sdk = self._sdk()
         volume = sdk.Volume.from_name(MODAL_VOLUME_NAME, create_if_missing=True)
-        reload_volume = getattr(volume, "reload", None)
-        if callable(reload_volume):
-            reload_volume()
         started = time.monotonic()
         source_sha256 = _safe_sha256(source)
         render_source = (
@@ -347,8 +344,6 @@ class ModalRenderClient:
 
         if not isinstance(cache_result, dict) or cache_result.get("job_id") != job_id:
             raise RuntimeError("Modal devolvió una respuesta de normalización no reconocida.")
-        if callable(reload_volume):
-            reload_volume()
         remote_proxy_path = cache_result.get("normalized_proxy_path")
         expected_remote_path = f"{cache_prefix}/proxy.mp4"
         if remote_proxy_path != expected_remote_path:

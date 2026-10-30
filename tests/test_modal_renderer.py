@@ -253,6 +253,73 @@ class ModalRenderClientTests(unittest.TestCase):
         self.assertEqual(sdk.remote_calls, [])
         self.assertEqual(result.remote_processing_seconds, 0)
 
+    def test_4k_normalization_does_not_call_volume_reload_outside_modal_function(self):
+        source = self.root / "source.MOV"
+        source.write_bytes(b"keep-original-4k")
+        output = self.root / "master-4k-proxy.mp4"
+        job_id = "d" * 32
+        profile_id = modal_renderer.MASTER_4K_NORMALIZATION_PROFILE_ID
+        proxy = b"cached-4k-normalized-proxy"
+        source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+        prefix = f"normalized-cache/{source_hash}/{profile_id}"
+        profile = {
+            "width": 2160, "height": 3840, "fps": 30,
+            "codec": "h264", "pixel_format": "yuv420p", "color_range": "tv",
+            "color_primaries": "bt709", "color_transfer": "bt709",
+            "color_space": "bt709", "audio_codec": "aac",
+            "audio_sample_rate": 48000, "audio_channels": 2,
+            "duration_seconds": 59.98,
+        }
+        manifest = {
+            "source_sha256": source_hash,
+            "profile_id": profile_id,
+            "proxy_path": f"{prefix}/proxy.mp4",
+            "proxy_sha256": hashlib.sha256(proxy).hexdigest(),
+            "proxy_size_bytes": len(proxy),
+            "duration_seconds": 59.98,
+            "profile": profile,
+            "capabilities": {"ffmpeg_version": "ffmpeg test"},
+            "processing_seconds": 42.0,
+        }
+        volume = FakeVolume(b"unused")
+        volume.job_id = job_id
+        volume.files[f"{prefix}/manifest.json"] = json.dumps(manifest).encode()
+        volume.files[f"{prefix}/proxy.mp4"] = proxy
+        reload_calls = []
+
+        def forbidden_reload():
+            reload_calls.append(True)
+            raise RuntimeError("reload() can only be called from within a running function")
+
+        volume.reload = forbidden_reload
+        sdk = FakeSDK(volume, {})
+        source_profile = SimpleNamespace(
+            width=2160,
+            height=3840,
+            rotation=0,
+            duration=59.98,
+            color_range="tv",
+            color_primaries="bt2020",
+            color_transfer="arib-std-b67",
+            color_space="bt2020nc",
+        )
+        with (
+            patch.object(modal_renderer, "modal_configuration_status", return_value=_modal_status()),
+            patch("video_pipeline.media.probe_video", return_value=source_profile),
+        ):
+            result = modal_renderer.ModalRenderClient(sdk).normalize_input(
+                job_id=job_id,
+                input_path=source,
+                output_path=output,
+                profile_id=profile_id,
+            )
+
+        self.assertTrue(result.cache_hit)
+        self.assertEqual(result.profile_id, profile_id)
+        self.assertEqual(result.output_path.read_bytes(), proxy)
+        self.assertEqual(reload_calls, [])
+        self.assertEqual(sdk.remote_calls, [])
+
     def test_normalization_miss_stages_source_once_for_following_render(self):
         source, effects, plan, transcript, job_id, output, volume, sdk = _input_bundle(
             self.root, b"render-result"
