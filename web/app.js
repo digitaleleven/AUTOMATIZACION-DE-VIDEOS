@@ -504,11 +504,18 @@ function renderLibrary() {
   list.innerHTML = visibleItems.map((item) => {
     const name = item.original_filename || item.filename || `Archivo ${item.id}`;
     const status = String(item.status || "").toLowerCase();
-    const statusClass = ["failed", "error", "rejected"].includes(status) ? "status-error" : ["completed", "complete"].includes(status) ? "status-complete" : "";
+    const isError = window.MatrixMotionLibrarySelection.isErrorStatus(status);
+    const statusClass = isError ? "status-error" : ["completed", "complete"].includes(status) ? "status-complete" : "";
     const thumbnail = item.thumbnail_url
       ? `<img src="${escapeHtml(item.thumbnail_url)}" alt="" loading="lazy">`
       : `<span class="library-thumb-fallback">${escapeHtml(item.format || "VIDEO")}</span>`;
     const processing = ["queued", "processing"].includes(status);
+    const libraryAction = window.MatrixMotionLibrarySelection.getLibraryAction(status);
+    const primaryAction = libraryAction === "create"
+      ? `<button type="button" class="library-create-button" data-create-video="${escapeHtml(item.id)}">Crear con este vídeo</button>`
+      : libraryAction === "review_error"
+        ? `<button type="button" class="library-review-button" data-review-error="${escapeHtml(item.id)}">Revisar error</button>`
+        : "";
     return `<div class="library-item ${String(item.id) === String(state.selectedId) ? "selected" : ""}" data-id="${escapeHtml(item.id)}">
       <button type="button" class="library-item-select" data-id="${escapeHtml(item.id)}" aria-label="Seleccionar ${escapeHtml(name)}">
         <span class="library-thumb" aria-hidden="true">${thumbnail}</span>
@@ -518,8 +525,11 @@ function renderLibrary() {
         </span>
         <span class="library-item-status ${statusClass}">${escapeHtml(statusLabel(item.status))}</span>
       </button>
-      <button type="button" class="library-delete-button" data-delete-video="${escapeHtml(item.id)}"
-        aria-label="Eliminar ${escapeHtml(name)}" ${processing ? 'disabled title="No se puede eliminar mientras se procesa"' : ""}>Eliminar</button>
+      <span class="library-item-actions">
+        ${primaryAction}
+        <button type="button" class="library-delete-button" data-delete-video="${escapeHtml(item.id)}"
+          aria-label="Eliminar ${escapeHtml(name)}" ${processing ? 'disabled title="No se puede eliminar mientras se procesa"' : ""}>Eliminar</button>
+      </span>
     </div>`;
   }).join("");
 }
@@ -765,7 +775,12 @@ function renderSelectedItem() {
   if (itemOutput) showOutput(itemOutput);
   else hideOutput();
   if (item.error) {
-    byId("file-summary").insertAdjacentHTML("beforeend", `<div class="job-error">${escapeHtml(item.error)}</div>`);
+    byId("file-summary").insertAdjacentHTML("beforeend", `<div class="job-error" id="selected-video-error" role="alert" tabindex="-1">${escapeHtml(item.error)}</div>`);
+  } else if (window.MatrixMotionLibrarySelection.isErrorStatus(item.status)) {
+    byId("file-summary").insertAdjacentHTML(
+      "beforeend",
+      '<div class="job-error" id="selected-video-error" role="alert" tabindex="-1">Este vídeo tiene un error, pero el detalle no está disponible.</div>',
+    );
   }
   if (Array.isArray(item.attempt_history) && item.attempt_history.length) {
     const attemptsMarkup = item.attempt_history.map((attempt) => {
@@ -1426,6 +1441,9 @@ document.querySelectorAll("[data-page]").forEach((button) => {
 
 const librarySelectionController = window.MatrixMotionLibrarySelection.createLibrarySelectionController({
   isAvailable: (id) => getVisibleLibraryItems(state.library).some((item) => String(item.id) === id),
+  isErrorVideo: (id) => getVisibleLibraryItems(state.library).some(
+    (item) => String(item.id) === id && window.MatrixMotionLibrarySelection.isErrorStatus(item.status),
+  ),
   setSelectedId: (id) => { state.selectedId = id; },
   clearAuthorizations: () => {
     byId("paid-consent").checked = false;
@@ -1434,6 +1452,12 @@ const librarySelectionController = window.MatrixMotionLibrarySelection.createLib
   setActivePage,
   renderLibrary,
   renderSelectedItem,
+  focusError: () => {
+    const error = byId("selected-video-error");
+    if (!error) return;
+    error.focus({ preventScroll: true });
+    error.scrollIntoView?.({ behavior: "smooth", block: "center" });
+  },
 });
 
 const libraryDeleteController = window.MatrixMotionLibraryDelete.createLibraryDeleteController({
@@ -1466,6 +1490,20 @@ byId("library-list").addEventListener("click", (event) => {
     const id = deleteButton.dataset.deleteVideo;
     const item = getVisibleLibraryItems(state.library).find((entry) => String(entry.id) === id);
     if (item) void libraryDeleteController.deleteSelected(item);
+    return;
+  }
+  const createButton = event.target.closest("[data-create-video]");
+  if (createButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    librarySelectionController.createWithExistingVideo(createButton.dataset.createVideo);
+    return;
+  }
+  const reviewButton = event.target.closest("[data-review-error]");
+  if (reviewButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    librarySelectionController.reviewVideoError(reviewButton.dataset.reviewError);
     return;
   }
   const actionButton = event.target.closest("[data-action]");

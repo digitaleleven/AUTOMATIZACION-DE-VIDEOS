@@ -245,6 +245,12 @@ h2 { margin: 0; color: #2a3b30; font-size: 22px; font-weight: 680; letter-spacin
 .library-item:last-child { border-bottom: 0; }
 .library-item:hover, .library-item.selected { background: #edf2e9; }
 .library-item-select { display: grid; width: 100%; min-width: 0; grid-template-columns: 62px minmax(0, 1fr) auto; align-items: center; gap: 13px; padding: 0; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.library-item-actions { display: flex; flex-direction: column; align-items: stretch; gap: 6px; }
+.library-create-button, .library-review-button { min-height: 31px; padding: 6px 9px; border-radius: 8px; font: inherit; font-size: 9px; font-weight: 750; white-space: nowrap; cursor: pointer; }
+.library-create-button { border: 1px solid var(--forest); background: var(--forest); color: #fff; }
+.library-create-button:hover { filter: brightness(.94); }
+.library-review-button { border: 1px solid #dfb5b7; background: #fffafa; color: var(--danger); }
+.library-review-button:hover { background: var(--danger-soft); }
 .library-delete-button { flex: 0 0 auto; padding: 7px 9px; border: 1px solid #e8caca; border-radius: 8px; background: #fffafa; color: var(--danger); font: inherit; font-size: 9px; font-weight: 700; cursor: pointer; }
 .library-delete-button:hover:not(:disabled) { background: var(--danger-soft); }
 .library-delete-button:disabled { cursor: not-allowed; opacity: .55; }

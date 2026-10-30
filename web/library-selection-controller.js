@@ -6,6 +6,21 @@
     root.MatrixMotionLibrarySelection = moduleApi;
   }
 })(globalThis, function createLibrarySelectionControllerModule() {
+  const errorStatuses = new Set([
+    "failed", "error", "rejected", "interrupted", "render_failed", "upload_failed",
+  ]);
+
+  function isErrorStatus(status) {
+    return errorStatuses.has(String(status || "").toLowerCase());
+  }
+
+  function getLibraryAction(status) {
+    const normalized = String(status || "").toLowerCase();
+    if (normalized === "ready") return "create";
+    if (isErrorStatus(normalized)) return "review_error";
+    return null;
+  }
+
   function createLibrarySelectionController(options) {
     function selectExistingVideo(videoId) {
       const id = String(videoId ?? "");
@@ -19,8 +34,20 @@
       return true;
     }
 
-    return { selectExistingVideo };
+    function createWithExistingVideo(videoId) {
+      return selectExistingVideo(videoId);
+    }
+
+    function reviewVideoError(videoId) {
+      const id = String(videoId ?? "");
+      if (!id || options.isErrorVideo?.(id) === false) return false;
+      if (!selectExistingVideo(id)) return false;
+      options.focusError?.(id);
+      return true;
+    }
+
+    return { selectExistingVideo, createWithExistingVideo, reviewVideoError };
   }
 
-  return { createLibrarySelectionController };
+  return { createLibrarySelectionController, getLibraryAction, isErrorStatus };
 });

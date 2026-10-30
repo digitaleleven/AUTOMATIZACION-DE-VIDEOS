@@ -1150,6 +1150,8 @@ class VideoPanelApiTests(unittest.TestCase):
         status, _, body = self.request("GET", "/library-selection-controller.js")
         self.assertEqual(status, 200)
         self.assertIn(b"selectExistingVideo", body)
+        self.assertIn(b"createWithExistingVideo", body)
+        self.assertIn(b"reviewVideoError", body)
         status, _, delete_script = self.request("GET", "/library-delete-controller.js")
         self.assertEqual(status, 200)
         self.assertIn(b"deleteSelected", delete_script)
@@ -1161,6 +1163,8 @@ class VideoPanelApiTests(unittest.TestCase):
         status, _, app_script = self.request("GET", "/app.js")
         self.assertEqual(status, 200)
         self.assertIn(b"data-delete-video", app_script)
+        self.assertIn(b"Crear con este v\xc3\xaddeo", app_script)
+        self.assertIn(b"Revisar error", app_script)
 
     def test_library_deletion_removes_only_selected_source_and_keeps_results_and_other_videos(self):
         first_source = self.root / "selected.mov"
