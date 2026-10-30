@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, statSync, unlinkSync } from "node:fs";
 import {
   APPROVED_MASTER_COLOR_PROFILE,
+  NORMALIZATION_PROFILES,
   REMOTION_RENDER_PROFILE,
   buildColorManagedProxyFilter,
 } from "./render-profile.mjs";
@@ -50,15 +51,35 @@ const frameRate = (value) => {
 const main = () => {
   const [inputPath, outputPath, qualityArg] = process.argv.slice(2);
   if (!inputPath || !outputPath || process.argv.length > 5) {
-    fail("Uso: normalize-input.mjs INPUT.mp4|mov OUTPUT.mp4 [--master-proxy]");
+    fail("Uso: normalize-input.mjs INPUT.mp4|mov OUTPUT.mp4 [--master-proxy|--master-4k-proxy]");
   }
-  if (qualityArg !== undefined && qualityArg !== "--master-proxy") {
+  const normalizationProfile = qualityArg === "--master-4k-proxy"
+    ? NORMALIZATION_PROFILES.master2160p
+    : qualityArg === "--master-proxy" || qualityArg === undefined
+      ? NORMALIZATION_PROFILES.analysis1080p
+      : null;
+  if (!normalizationProfile) {
     fail("La opción de calidad de normalización no es válida.");
   }
   if (inputPath === outputPath || existsSync(outputPath)) {
     fail("La normalización requiere una salida nueva; no se sobrescriben archivos.");
   }
   const source = probe(inputPath);
+  if (normalizationProfile === NORMALIZATION_PROFILES.master2160p) {
+    const rotation = Number(
+      source.video.side_data_list?.find((item) => item.rotation !== undefined)?.rotation ??
+      source.video.tags?.rotate ??
+      0,
+    );
+    let displayWidth = Number(source.video.width || 0);
+    let displayHeight = Number(source.video.height || 0);
+    if (Math.abs(rotation) % 180 === 90) {
+      [displayWidth, displayHeight] = [displayHeight, displayWidth];
+    }
+    if (displayWidth < 2160 || displayHeight < 3840) {
+      fail("La normalización máster 4K requiere una fuente vertical de 2160 × 3840 o superior.");
+    }
+  }
   const selectedAudio = source.audios.find(
     (stream) => !["apac", "unknown"].includes(String(stream.codec_name || "").toLowerCase()),
   );
@@ -67,11 +88,11 @@ const main = () => {
   }
   const filter = buildColorManagedProxyFilter(
     source.video,
-    REMOTION_RENDER_PROFILE.fps,
+    normalizationProfile.fps,
     {
       ...APPROVED_MASTER_COLOR_PROFILE,
-      width: REMOTION_RENDER_PROFILE.width,
-      height: REMOTION_RENDER_PROFILE.height,
+      width: normalizationProfile.width,
+      height: normalizationProfile.height,
     },
   );
   const args = [
@@ -92,7 +113,7 @@ const main = () => {
     "-vf", filter,
     // The fps=30 filter sets constant frame timestamps and is supported by FFmpeg 4.4.
     // Avoid -fps_mode, which is unavailable in the production FFmpeg 4.4.2 build.
-    "-c:v", "libx264", "-preset", "medium", "-crf", qualityArg ? "12" : "17",
+    "-c:v", "libx264", "-preset", "medium", "-crf", String(normalizationProfile.crf),
     "-profile:v", "high", "-pix_fmt", REMOTION_RENDER_PROFILE.pixelFormat,
     "-threads", "2",
     "-c:a", "aac", "-b:a", "192k", "-ac", "2", "-ar", "48000",
@@ -108,10 +129,10 @@ const main = () => {
     const audio = output.audios[0];
     if (
       video.codec_name !== "h264" ||
-      video.width !== REMOTION_RENDER_PROFILE.width ||
-      video.height !== REMOTION_RENDER_PROFILE.height ||
+      video.width !== normalizationProfile.width ||
+      video.height !== normalizationProfile.height ||
       video.pix_fmt !== "yuv420p" ||
-      Math.abs(frameRate(video.avg_frame_rate || video.r_frame_rate) - 30) > 0.05 ||
+      Math.abs(frameRate(video.avg_frame_rate || video.r_frame_rate) - normalizationProfile.fps) > 0.05 ||
       video.color_primaries !== "bt709" ||
       video.color_transfer !== "bt709" ||
       video.color_space !== "bt709" ||
@@ -125,6 +146,14 @@ const main = () => {
       fail("FFprobe rechazó el perfil generado; se eliminará la copia temporal.");
     }
     console.log(JSON.stringify({
+      profile_id: normalizationProfile.id,
+      width: video.width,
+      height: video.height,
+      fps: frameRate(video.avg_frame_rate || video.r_frame_rate),
+      color_range: video.color_range,
+      color_primaries: video.color_primaries,
+      color_transfer: video.color_transfer,
+      color_space: video.color_space,
       source_color_profile: {
         color_range: source.video.color_range,
         color_primaries: source.video.color_primaries,

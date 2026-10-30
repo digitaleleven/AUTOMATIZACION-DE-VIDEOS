@@ -14,6 +14,27 @@ export const REMOTION_RENDER_PROFILE = Object.freeze({
   offthreadVideoCacheSizeInBytes: 32 * 1024 * 1024,
 });
 
+export const NORMALIZATION_PROFILES = Object.freeze({
+  analysis1080p: Object.freeze({
+    id: "matrix-sdr-bt709-1080x1920-30-crf12-v1",
+    width: 1080,
+    height: 1920,
+    fps: 30,
+    crf: 12,
+    maxBytes: 2 * 1024 ** 3,
+    cliFlag: "--master-proxy",
+  }),
+  master2160p: Object.freeze({
+    id: "matrix-sdr-bt709-2160x3840-30-crf17-v1",
+    width: 2160,
+    height: 3840,
+    fps: 30,
+    crf: 17,
+    maxBytes: 8 * 1024 ** 3,
+    cliFlag: "--master-4k-proxy",
+  }),
+});
+
 export const APPROVED_MASTER_COLOR_PROFILE = Object.freeze({
   toneMap: "direct",
   visualPass: true,

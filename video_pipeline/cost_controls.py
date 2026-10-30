@@ -20,6 +20,7 @@ MODAL_RENDER_MEMORY_GIB = 16
 MAX_NORMALIZATION_SECONDS = 20 * 60
 MAX_RENDER_SECONDS = 60 * 60
 MAX_NORMALIZED_PROXY_GIB = 2
+MAX_4K_NORMALIZED_PROXY_GIB = 8
 MAX_RENDER_OUTPUT_GIB = 4
 MAX_BUDGETED_VIDEO_SECONDS = 1800
 MODAL_EGRESS_USD_PER_GIB = 0.04
@@ -34,6 +35,15 @@ class JobBudgetEstimate:
     modal_compute_usd: float
     gemini_usd: float
     whisper_usd: float
+    modal_egress_usd: float
+    persistent_storage_usd: float
+    buffer_usd: float
+
+
+@dataclass(frozen=True)
+class NormalizationBudgetEstimate:
+    maximum_usd: float
+    modal_compute_usd: float
     modal_egress_usd: float
     persistent_storage_usd: float
     buffer_usd: float
@@ -88,6 +98,35 @@ def estimate_job_budget(duration_seconds: float) -> JobBudgetEstimate:
         persistent_storage_usd=round(storage, 4),
         buffer_usd=MISCELLANEOUS_BUDGET_BUFFER_USD,
     )
+
+
+def estimate_4k_normalization_budget() -> NormalizationBudgetEstimate:
+    """Conservative static estimate for one 20-minute 4K normalization."""
+    modal_compute = MAX_NORMALIZATION_SECONDS * (
+        MODAL_RENDER_CPU_CORES * MODAL_CPU_USD_PER_CORE_SECOND
+        + MODAL_RENDER_MEMORY_GIB * MODAL_MEMORY_USD_PER_GIB_SECOND
+    )
+    egress = MAX_4K_NORMALIZED_PROXY_GIB * MODAL_EGRESS_USD_PER_GIB
+    storage = MAX_4K_NORMALIZED_PROXY_GIB * MODAL_VOLUME_USD_PER_GIB_MONTH
+    maximum = modal_compute + egress + storage + MISCELLANEOUS_BUDGET_BUFFER_USD
+    return NormalizationBudgetEstimate(
+        maximum_usd=round(maximum, 4),
+        modal_compute_usd=round(modal_compute, 4),
+        modal_egress_usd=round(egress, 4),
+        persistent_storage_usd=round(storage, 4),
+        buffer_usd=MISCELLANEOUS_BUDGET_BUFFER_USD,
+    )
+
+
+def enforce_4k_normalization_budget() -> NormalizationBudgetEstimate:
+    estimate = estimate_4k_normalization_budget()
+    if estimate.maximum_usd > MAX_JOB_BUDGET_USD:
+        raise RuntimeError(
+            f"El coste estimado de normalización 4K (${estimate.maximum_usd:.4f}) "
+            f"supera el límite interno de ${MAX_JOB_BUDGET_USD:.2f}; "
+            "se bloqueó la conversión."
+        )
+    return estimate
 
 
 def enforce_job_budget(duration_seconds: float) -> JobBudgetEstimate:

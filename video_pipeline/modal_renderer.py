@@ -23,8 +23,25 @@ MODAL_FUNCTION_NAME = "render_master"
 MODAL_VOLUME_NAME = "matrix-motion-render-staging"
 MAX_SOURCE_BYTES = 2 * 1024**3
 MAX_OUTPUT_BYTES = 4 * 1024**3
-MAX_NORMALIZED_PROXY_BYTES = 2 * 1024**3
 NORMALIZATION_PROFILE_ID = "matrix-sdr-bt709-1080x1920-30-crf12-v1"
+MASTER_4K_NORMALIZATION_PROFILE_ID = "matrix-sdr-bt709-2160x3840-30-crf17-v1"
+NORMALIZATION_PROFILE_SPECS = {
+    NORMALIZATION_PROFILE_ID: {
+        "width": 1080,
+        "height": 1920,
+        "fps": 30,
+        "max_bytes": 2 * 1024**3,
+        "cli_flag": "--master-proxy",
+    },
+    MASTER_4K_NORMALIZATION_PROFILE_ID: {
+        "width": 2160,
+        "height": 3840,
+        "fps": 30,
+        "max_bytes": 8 * 1024**3,
+        "cli_flag": "--master-4k-proxy",
+    },
+}
+MAX_NORMALIZED_PROXY_BYTES = 8 * 1024**3
 JOB_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 
 
@@ -161,12 +178,18 @@ class ModalRenderClient:
             return None
 
     @staticmethod
-    def _validate_normalized_profile(profile: Any) -> dict[str, Any]:
+    def _validate_normalized_profile(
+        profile: Any,
+        profile_id: str = NORMALIZATION_PROFILE_ID,
+    ) -> dict[str, Any]:
+        spec = NORMALIZATION_PROFILE_SPECS.get(profile_id)
+        if spec is None:
+            raise RuntimeError("Modal devolvió un perfil de normalización no admitido.")
         if not isinstance(profile, dict):
             raise RuntimeError("Modal no devolvió metadatos FFprobe del proxy.")
         expected = {
-            "width": 1080,
-            "height": 1920,
+            "width": spec["width"],
+            "height": spec["height"],
             "codec": "h264",
             "pixel_format": "yuv420p",
             "color_range": "tv",
@@ -184,8 +207,8 @@ class ModalRenderClient:
             duration = float(profile.get("duration_seconds"))
         except (TypeError, ValueError):
             raise RuntimeError("Modal devolvió metadatos de cadencia o duración no válidos.") from None
-        if abs(fps - 30) > 0.05 or duration <= 0:
-            raise RuntimeError("El proxy Modal debe conservar 30 FPS y una duración positiva.")
+        if abs(fps - spec["fps"]) > 0.05 or duration <= 0:
+            raise RuntimeError("El proxy Modal no conserva los FPS del perfil o tiene duración inválida.")
         return profile
 
     def normalize_input(
@@ -195,6 +218,7 @@ class ModalRenderClient:
         input_path: str | Path,
         render_source_path: str | Path | None = None,
         output_path: str | Path,
+        profile_id: str = NORMALIZATION_PROFILE_ID,
         progress_callback: Callable[[str], None] | None = None,
     ) -> ModalNormalizationResult:
         """Normalize on Modal once per source/profile and return a verified local proxy."""
@@ -210,6 +234,13 @@ class ModalRenderClient:
             raise ValueError("Modal solo admite archivos .MOV o .MP4.")
         if destination.exists():
             raise FileExistsError("Se rechaza sobrescribir un proxy normalizado existente.")
+        profile_spec = NORMALIZATION_PROFILE_SPECS.get(profile_id)
+        if profile_spec is None:
+            raise ValueError("Perfil de normalización Modal no admitido.")
+        if profile_id == MASTER_4K_NORMALIZATION_PROFILE_ID:
+            from .cost_controls import enforce_4k_normalization_budget
+
+            enforce_4k_normalization_budget()
 
         self.ensure_worker_available()
         sdk = self._sdk()
@@ -224,7 +255,7 @@ class ModalRenderClient:
             if render_source_path is not None else source
         )
         source_is_render_source = source == render_source
-        cache_prefix = f"normalized-cache/{source_sha256}/{NORMALIZATION_PROFILE_ID}"
+        cache_prefix = f"normalized-cache/{source_sha256}/{profile_id}"
         cache_manifest_path = f"{cache_prefix}/manifest.json"
         cache_manifest_bytes = self._read_volume_small(volume, cache_manifest_path)
         cache_result: dict[str, Any] | None = None
@@ -235,16 +266,16 @@ class ModalRenderClient:
                 raise RuntimeError("El manifiesto de la caché Modal está malformado; se bloqueó una conversión nueva.") from None
             if (
                 cached.get("source_sha256") != source_sha256
-                or cached.get("profile_id") != NORMALIZATION_PROFILE_ID
+                or cached.get("profile_id") != profile_id
                 or cached.get("proxy_path") != f"{cache_prefix}/proxy.mp4"
             ):
                 raise RuntimeError("La caché Modal no coincide con el origen y perfil solicitados.")
-            self._validate_normalized_profile(cached.get("profile"))
+            self._validate_normalized_profile(cached.get("profile"), profile_id)
             cache_result = {
                 "job_id": job_id,
                 "normalized_proxy_path": cached["proxy_path"],
                 "source_sha256": source_sha256,
-                "profile_id": NORMALIZATION_PROFILE_ID,
+                "profile_id": profile_id,
                 "proxy_sha256": cached.get("proxy_sha256"),
                 "proxy_size_bytes": cached.get("proxy_size_bytes"),
                 "duration_seconds": cached.get("duration_seconds"),
@@ -264,7 +295,7 @@ class ModalRenderClient:
                 "job_id": job_id,
                 "source_name": remote_source_name,
                 "source_sha256": source_sha256,
-                "profile_id": NORMALIZATION_PROFILE_ID,
+                "profile_id": profile_id,
             }
             with tempfile.TemporaryDirectory(prefix="matrix-motion-normalize-stage-") as staging:
                 manifest_path = Path(staging) / "normalization.json"
@@ -297,11 +328,11 @@ class ModalRenderClient:
         except (TypeError, ValueError):
             expected_size = 0
         expected_hash = cache_result.get("proxy_sha256")
-        if expected_size <= 0 or expected_size > MAX_NORMALIZED_PROXY_BYTES:
-            raise RuntimeError("Modal devolvió un proxy normalizado fuera del límite de 2 GiB.")
+        if expected_size <= 0 or expected_size > profile_spec["max_bytes"]:
+            raise RuntimeError("Modal devolvió un proxy normalizado fuera del límite del perfil.")
         if not isinstance(expected_hash, str) or not re.fullmatch(r"[a-f0-9]{64}", expected_hash):
             raise RuntimeError("Modal devolvió un checksum no válido para el proxy normalizado.")
-        normalized_profile = self._validate_normalized_profile(cache_result.get("profile"))
+        normalized_profile = self._validate_normalized_profile(cache_result.get("profile"), profile_id)
 
         if progress_callback:
             progress_callback("downloading_normalized_proxy")
@@ -315,8 +346,8 @@ class ModalRenderClient:
                     if not isinstance(chunk, (bytes, bytearray)):
                         raise RuntimeError("Modal envió un bloque de proxy no binario.")
                     size += len(chunk)
-                    if size > MAX_NORMALIZED_PROXY_BYTES:
-                        raise RuntimeError("La descarga del proxy superó el límite de 2 GiB.")
+                    if size > profile_spec["max_bytes"]:
+                        raise RuntimeError("La descarga del proxy superó el límite del perfil.")
                     digest.update(chunk)
                     output.write(chunk)
                 output.flush()
@@ -330,7 +361,9 @@ class ModalRenderClient:
 
         self._normalized_jobs[job_id] = {
             "source_sha256": source_sha256,
-            "profile_id": NORMALIZATION_PROFILE_ID,
+            "profile_id": profile_id,
+            "width": normalized_profile["width"],
+            "height": normalized_profile["height"],
             "remote_proxy_path": remote_proxy_path,
             "proxy_sha256": expected_hash,
         }
@@ -441,6 +474,14 @@ class ModalRenderClient:
         if normalized_state and normalized_state.get("source_sha256") != source_sha256:
             # An analysis clip may have its own cache entry; never attach it to a
             # render of the complete original.
+            normalized_state = None
+        if normalized_state and (
+            normalized_state.get("width") != expected_width
+            or normalized_state.get("height") != expected_height
+        ):
+            # A lower-resolution analysis proxy must never become the source for
+            # a higher-resolution master; the renderer derives its scene source
+            # from the untouched master instead.
             normalized_state = None
         if progress_callback:
             progress_callback("uploading_to_modal")

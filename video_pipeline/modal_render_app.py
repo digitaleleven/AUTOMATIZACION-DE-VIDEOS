@@ -47,8 +47,25 @@ _WORKER_OUTPUT_PROFILES = {
 }
 _WORKER_OUTPUT_FPS = {25, 30, 50, 60}
 NORMALIZATION_PROFILE_ID = "matrix-sdr-bt709-1080x1920-30-crf12-v1"
+MASTER_4K_NORMALIZATION_PROFILE_ID = "matrix-sdr-bt709-2160x3840-30-crf17-v1"
+NORMALIZATION_PROFILE_SPECS = {
+    NORMALIZATION_PROFILE_ID: {
+        "width": 1080,
+        "height": 1920,
+        "fps": 30,
+        "max_bytes": 2 * 1024**3,
+        "cli_flag": "--master-proxy",
+    },
+    MASTER_4K_NORMALIZATION_PROFILE_ID: {
+        "width": 2160,
+        "height": 3840,
+        "fps": 30,
+        "max_bytes": 8 * 1024**3,
+        "cli_flag": "--master-4k-proxy",
+    },
+}
 NORMALIZATION_TIMEOUT_SECONDS = 20 * 60
-MAX_NORMALIZED_PROXY_BYTES = 2 * 1024**3
+MAX_NORMALIZED_PROXY_BYTES = 8 * 1024**3
 
 app = modal.App(name=APP_NAME)
 staging_volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
@@ -183,7 +200,13 @@ def _probe_video_profile(path: Path) -> dict[str, Any]:
     }
 
 
-def _probe_normalized_proxy(path: Path) -> dict[str, Any]:
+def _probe_normalized_proxy(
+    path: Path,
+    *,
+    expected_width: int = 1080,
+    expected_height: int = 1920,
+    expected_fps: int = 30,
+) -> dict[str, Any]:
     result = _run_checked(
         [
             "ffprobe", "-v", "error", "-show_streams", "-show_format",
@@ -215,8 +238,8 @@ def _probe_normalized_proxy(path: Path) -> dict[str, Any]:
     }
     if (
         profile["codec"] != "h264"
-        or (profile["width"], profile["height"]) != (1080, 1920)
-        or abs(profile["fps"] - 30) > 0.05
+        or (profile["width"], profile["height"]) != (expected_width, expected_height)
+        or abs(profile["fps"] - expected_fps) > 0.05
         or profile["pixel_format"] != "yuv420p"
         or profile["color_range"] != "tv"
         or profile["color_primaries"] != "bt709"
@@ -260,10 +283,15 @@ def _verify_ffmpeg_capabilities() -> dict[str, str]:
     }
 
 
-def _normalization_cache_paths(source_sha256: str) -> tuple[Path, Path]:
+def _normalization_cache_paths(
+    source_sha256: str,
+    profile_id: str = NORMALIZATION_PROFILE_ID,
+) -> tuple[Path, Path]:
     if not re.fullmatch(r"[a-f0-9]{64}", source_sha256):
         raise ValueError("Checksum de origen no válido para la caché de normalización.")
-    base = VOLUME_MOUNT / "normalized-cache" / source_sha256 / NORMALIZATION_PROFILE_ID
+    if profile_id not in NORMALIZATION_PROFILE_SPECS:
+        raise ValueError("Perfil de normalización Modal no admitido.")
+    base = VOLUME_MOUNT / "normalized-cache" / source_sha256 / profile_id
     return base / "proxy.mp4", base / "manifest.json"
 
 
@@ -272,17 +300,26 @@ def _validate_cached_normalized_proxy(
     manifest_path: Path,
     *,
     source_sha256: str,
+    profile_id: str = NORMALIZATION_PROFILE_ID,
 ) -> dict[str, Any]:
+    spec = NORMALIZATION_PROFILE_SPECS.get(profile_id)
+    if spec is None:
+        raise ValueError("Perfil de caché de normalización no admitido.")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if (
         manifest.get("source_sha256") != source_sha256
-        or manifest.get("profile_id") != NORMALIZATION_PROFILE_ID
+        or manifest.get("profile_id") != profile_id
         or manifest.get("proxy_size_bytes") != proxy_path.stat().st_size
         or manifest.get("proxy_sha256") != _file_sha256(proxy_path)
     ):
         raise RuntimeError("La caché normalizada existe, pero su manifiesto o checksum no coincide.")
-    profile = _probe_normalized_proxy(proxy_path)
-    if abs(float(manifest.get("duration_seconds") or 0) - profile["duration_seconds"]) > 1 / 30:
+    profile = _probe_normalized_proxy(
+        proxy_path,
+        expected_width=spec["width"],
+        expected_height=spec["height"],
+        expected_fps=spec["fps"],
+    )
+    if abs(float(manifest.get("duration_seconds") or 0) - profile["duration_seconds"]) > 1 / spec["fps"]:
         raise RuntimeError("La duración guardada en la caché normalizada no coincide con FFprobe.")
     return {
         **manifest,
@@ -296,7 +333,9 @@ def _normalize_staged_source(remote_job: Path, job_id: str) -> dict[str, Any]:
     started = time.monotonic()
     request_path = remote_job / "normalization.json"
     request = json.loads(request_path.read_text(encoding="utf-8"))
-    if request.get("job_id") != job_id or request.get("profile_id") != NORMALIZATION_PROFILE_ID:
+    profile_id = str(request.get("profile_id") or "")
+    spec = NORMALIZATION_PROFILE_SPECS.get(profile_id)
+    if request.get("job_id") != job_id or spec is None:
         raise ValueError("La solicitud de normalización no coincide con el perfil aprobado.")
     source_sha256 = str(request.get("source_sha256") or "")
     source_name = str(request.get("source_name") or "")
@@ -312,7 +351,7 @@ def _normalize_staged_source(remote_job: Path, job_id: str) -> dict[str, Any]:
     if _file_sha256(staged_source) != source_sha256:
         raise RuntimeError("El checksum del origen subido a Modal no coincide.")
 
-    proxy_path, cache_manifest_path = _normalization_cache_paths(source_sha256)
+    proxy_path, cache_manifest_path = _normalization_cache_paths(source_sha256, profile_id)
     capabilities = _verify_ffmpeg_capabilities()
     if proxy_path.exists() or cache_manifest_path.exists():
         if not proxy_path.is_file() or not cache_manifest_path.is_file():
@@ -321,6 +360,7 @@ def _normalize_staged_source(remote_job: Path, job_id: str) -> dict[str, Any]:
             proxy_path,
             cache_manifest_path,
             source_sha256=source_sha256,
+            profile_id=profile_id,
         )
 
     local_dir = Path(tempfile.mkdtemp(prefix=f"matrix-normalize-{job_id}-"))
@@ -334,16 +374,21 @@ def _normalize_staged_source(remote_job: Path, job_id: str) -> dict[str, Any]:
                 str(REMOTE_RENDERER / "src/normalize-input.mjs"),
                 str(local_source),
                 str(local_proxy),
-                "--master-proxy",
+                spec["cli_flag"],
             ],
             timeout=NORMALIZATION_TIMEOUT_SECONDS,
         )
-        if not local_proxy.is_file() or not 0 < local_proxy.stat().st_size <= MAX_NORMALIZED_PROXY_BYTES:
-            raise RuntimeError("El proxy de normalización está vacío o supera 2 GiB.")
-        profile = _probe_normalized_proxy(local_proxy)
+        if not local_proxy.is_file() or not 0 < local_proxy.stat().st_size <= spec["max_bytes"]:
+            raise RuntimeError("El proxy de normalización está vacío o supera el límite del perfil.")
+        profile = _probe_normalized_proxy(
+            local_proxy,
+            expected_width=spec["width"],
+            expected_height=spec["height"],
+            expected_fps=spec["fps"],
+        )
         cache_manifest = {
             "source_sha256": source_sha256,
-            "profile_id": NORMALIZATION_PROFILE_ID,
+            "profile_id": profile_id,
             "proxy_path": proxy_path.relative_to(VOLUME_MOUNT).as_posix(),
             "proxy_sha256": _file_sha256(local_proxy),
             "proxy_size_bytes": local_proxy.stat().st_size,
@@ -577,7 +622,7 @@ def render_master(job_id: str, operation: str = "render") -> dict[str, Any]:
                 or ".." in Path(normalized_proxy_path).parts
                 or manifest.get("normalized_proxy_source_sha256") != manifest.get("source_sha256")
                 or not re.fullmatch(r"[a-f0-9]{64}", str(manifest.get("normalized_proxy_sha256") or ""))
-                or manifest.get("normalization_profile_id") != NORMALIZATION_PROFILE_ID
+                or manifest.get("normalization_profile_id") not in NORMALIZATION_PROFILE_SPECS
             ):
                 raise ValueError("La referencia al proxy reutilizable no es válida.")
             staged_proxy = VOLUME_MOUNT / normalized_proxy_path
