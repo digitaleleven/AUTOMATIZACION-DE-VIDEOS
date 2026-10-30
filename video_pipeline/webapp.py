@@ -2489,6 +2489,7 @@ class VideoPanel:
         modal_ledger: ProcessingLedger | None = None
         modal_ledger_claimed = False
         modal_renderer: ModalRenderClient | None = None
+        normalization_completed = False
         result: dict[str, Any] | None = None
         try:
             source_path = self._source_path(upload)
@@ -2556,6 +2557,7 @@ class VideoPanel:
                     progress_callback=update_phase,
                 )
                 normalized_video = probe_video(normalization_result.output_path)
+                normalization_completed = True
                 update_phase("normalized_proxy_verified")
                 whisper_words = []
                 if edit_options["subtitle_mode"] != "none":
@@ -2693,6 +2695,12 @@ class VideoPanel:
             )
         except Exception as exc:
             logger.exception("Video job %s failed", job_id)
+            if (
+                normalization_completed
+                and modal_renderer is not None
+                and not modal_renderer.render_was_submitted(job_id)
+            ):
+                modal_renderer.cleanup_staged_job(job_id)
             if modal_ledger is not None and modal_ledger_claimed:
                 try:
                     modal_ledger.mark_failed(

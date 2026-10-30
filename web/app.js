@@ -569,7 +569,7 @@ function renderRecentVideos() {
 function renderSummary() {
   if (!state.libraryLoaded) return;
   const visibleItems = getVisibleLibraryItems(state.library);
-  const pendingStatuses = new Set(["ready", "pending", "queued", "processing", "transcribing", "transcribing_with_whisper", "rendering", "downloading", "normalizing", "preparing_captions", "analyzing_with_gemini", "uploading", "uploading_captions", "uploading_to_modal", "rendering_on_modal", "downloading_from_modal", "uploading_to_r2", "validating_output"]);
+  const pendingStatuses = new Set(["ready", "pending", "queued", "processing", "transcribing", "transcribing_with_whisper", "rendering", "downloading", "normalizing", "normalizing_on_modal", "uploading_normalization_source", "downloading_normalized_proxy", "checking_modal_worker", "normalized_proxy_verified", "preparing_captions", "analyzing_with_gemini", "uploading", "uploading_captions", "uploading_to_modal", "rendering_on_modal", "downloading_from_modal", "uploading_to_r2", "validating_output"]);
   const processedStatuses = new Set(["completed", "complete"]);
   const errorStatuses = new Set(["failed", "error", "rejected", "interrupted"]);
   const count = (statuses) => visibleItems.filter((item) => statuses.has(String(item.status || "").toLowerCase())).length;
@@ -1083,7 +1083,7 @@ function renderJob(job, sourceName = "") {
     ? `<div class="job-output-metadata"><strong>Normalización reutilizable</strong><span>Perfil ${escapeHtml(normalization.profile_id)} · caché ${normalization.cache_hit === true ? "reutilizada" : "generada"} · Modal ${Number.isFinite(Number(normalization.remote_processing_seconds)) ? `${Number(normalization.remote_processing_seconds).toFixed(1)} s` : "tiempo no disponible"}</span><span>${escapeHtml(normalizedProfile.width ?? 0)} × ${escapeHtml(normalizedProfile.height ?? 0) || "—"} · ${escapeHtml(normalizedProfile.fps ?? "—")} FPS · ${escapeHtml(normalizedProfile.color_primaries || "color no informado")} / ${escapeHtml(normalizedProfile.color_transfer || "transferencia no informada")} / ${escapeHtml(normalizedProfile.color_range || "rango no informado")}</span><span>Comprobación de FFmpeg: ${escapeHtml(normalization.capabilities?.ffmpeg_version || "versión no registrada")}; filtros ${escapeHtml(normalization.capabilities?.filters || "no verificados")}</span></div>`
     : "";
   const budgetMarkup = Number.isFinite(Number(budget.maximum_usd))
-    ? `<div class="job-output-metadata"><strong>Límite conservador estimado</strong><span>Máximo calculado para el trabajo: ${formatCost(budget.maximum_usd)} (tope interno: $1.50). Incluye tiempos máximos de Modal, límites de tokens, Whisper, transferencia, almacenamiento y margen.</span></div>`
+    ? `<div class="job-output-metadata"><strong>Techo de coste estimado</strong><span>Estimación ${formatCost(budget.maximum_usd)} (tope interno: $1.50); usa tarifas estáticas no verificadas en vivo y no equivale a una cotización de proveedor. Considera tiempos máximos de Modal, límites de tokens, Whisper, transferencia, almacenamiento y margen.</span></div>`
     : "";
   const r2Markup = r2.object_key
     ? `<div class="job-output-metadata"><strong>Almacenamiento privado</strong><span>${escapeHtml(whiteLabelText(r2.object_key))} · ${Number.isFinite(Number(r2.size_bytes)) ? `${(Number(r2.size_bytes) / 1048576).toFixed(1)} MiB` : "tamaño no disponible"} · verificación ${r2.verified === true ? "confirmada" : "pendiente"}</span></div>`

@@ -13,10 +13,12 @@ test("accepts the worker's real 4K/60 argument pattern with an empty optional br
     "--briefing", "",
     "--caption-style-json", '{"highlight_color":"#FFC0CB"}',
     "--width", "2160", "--height", "3840", "--fps", "60",
+    "--normalized-video", "/tmp/proxy-bt709.mp4",
   ]);
   assert.equal(parsed["--briefing"], "");
   assert.equal(parsed["--width"], "2160");
   assert.equal(parsed["--fps"], "60");
+  assert.equal(parsed["--normalized-video"], "/tmp/proxy-bt709.mp4");
 });
 
 test("preserves nonempty briefing text without interpreting it as shell input", () => {

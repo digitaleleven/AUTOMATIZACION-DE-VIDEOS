@@ -12,7 +12,7 @@ from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import parse_qs, quote, urlencode, urlsplit
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from video_pipeline.auth import OwnerAuth
 from video_pipeline.google_drive import DriveOAuthConfig, GoogleDriveError, GoogleDriveOAuth
@@ -157,6 +157,116 @@ class VideoPanelApiTests(unittest.TestCase):
             self.assertEqual(job["status"], "failed")
             self.assertEqual(job["phase"], "interrupted")
             self.assertIn("El servicio se reinició", job["error"])
+
+    def test_job_phase_timing_is_persisted_and_returned_to_panel(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = Path(temp_dir) / "phase-timing.sqlite3"
+            store = DashboardStore(database)
+            source_id = "d" * 32
+            job_id = "e" * 32
+            store.add_upload(
+                source_id, "source.mov", "source.mov", "f" * 64, 12, {"duration": 1}
+            )
+            store.create_job(job_id, source_id, 1.25, {})
+            store.update_job(job_id, status="processing", phase="normalizing_on_modal")
+            store.update_job(job_id, status="processing", phase="analyzing_with_gemini")
+
+            job = store.get_job(job_id)
+
+        self.assertEqual([entry["phase"] for entry in job["phase_history"]], ["queued", "normalizing_on_modal"])
+        self.assertTrue(all(entry["duration_seconds"] >= 0 for entry in job["phase_history"]))
+        self.assertEqual(job["phase"], "analyzing_with_gemini")
+        self.assertGreaterEqual(job["phase_elapsed_seconds"], 0)
+
+    def test_job_coordinator_uses_modal_proxy_before_analysis_and_render(self):
+        source_path = self.panel.input_dir / "coordinator-source.mov"
+        source_path.parent.mkdir(parents=True, exist_ok=True)
+        source_path.write_bytes(b"original remains intact")
+        output_path = self.root / "coordinator-output.mp4"
+        output_path.write_bytes(b"render result")
+        normalized_path = self.root / "normalized-proxy.mp4"
+        normalized_path.write_bytes(b"normalized proxy")
+        source_hash = __import__("hashlib").sha256(source_path.read_bytes()).hexdigest()
+        upload_id = "a" * 32
+        job_id = "b" * 32
+        self.panel.store.add_upload(
+            upload_id,
+            source_path.name,
+            source_path.name,
+            source_hash,
+            source_path.stat().st_size,
+            {"duration": 2.0},
+        )
+        edit_options = {
+            "renderer_backend": "modal",
+            "render_mode": "full",
+            "subtitle_mode": "none",
+            "creative_plan": {},
+            "style_notes": "",
+            "render_settings": {},
+        }
+        self.panel.store.create_job(job_id, upload_id, 0.5, edit_options)
+        upload = self.panel.store.get_upload(upload_id)
+        source_info = SimpleNamespace(
+            path=source_path, duration=2.0, width=2160, height=3840,
+            video_codec="hevc", audio_codec="aac", fps=30.0,
+        )
+        proxy_info = SimpleNamespace(
+            path=normalized_path, duration=2.0, width=1080, height=1920,
+            video_codec="h264", audio_codec="aac", fps=30.0,
+            pixel_format="yuv420p", color_range="tv", color_primaries="bt709",
+            color_transfer="bt709", color_space="bt709",
+        )
+        normalization_result = SimpleNamespace(
+            output_path=normalized_path,
+            public_dict=lambda: {
+                "profile_id": "matrix-sdr-bt709-1080x1920-30-crf12-v1",
+                "cache_hit": False,
+                "size_bytes": normalized_path.stat().st_size,
+                "profile": {"width": 1080, "height": 1920, "fps": 30.0},
+                "capabilities": {"ffmpeg_version": "mock"},
+            },
+        )
+        normalize_input = Mock(return_value=normalization_result)
+        modal_client = SimpleNamespace(
+            ensure_worker_available=lambda: None,
+            normalize_input=normalize_input,
+            render_was_submitted=lambda _job_id: True,
+        )
+        render_result = {"output": str(output_path), "estimated_cost_usd": 0.3}
+
+        with (
+            patch("video_pipeline.webapp.probe_video", side_effect=[source_info, proxy_info]),
+            patch("video_pipeline.webapp.ModalRenderClient", return_value=modal_client),
+            patch("video_pipeline.webapp.analyze_video", return_value={
+                "summary": "Mocked analysis",
+                "suggested_zooms": [],
+                "suggested_cuts": [],
+                "copy_and_seo": {},
+            }) as analyze,
+            patch("video_pipeline.webapp.detect_silence_cut_suggestions", return_value=[]),
+            patch("video_pipeline.webapp.process_local_video_modal", return_value=render_result) as render,
+            patch("video_pipeline.webapp.upload_mp4_to_r2", return_value={
+                "object_key": "mock/output.mp4",
+                "url": "https://r2.invalid/mock/output.mp4",
+            }),
+            patch("video_pipeline.webapp.prepare_video_for_modal") as local_normalizer,
+        ):
+            self.panel._run_job(
+                job_id,
+                upload,
+                0.5,
+                self.panel.style,
+                edit_options,
+            )
+
+        self.assertEqual(source_path.read_bytes(), b"original remains intact")
+        self.assertEqual(analyze.call_args.args[0], normalized_path)
+        self.assertEqual(render.call_args.args[0], source_path)
+        self.assertEqual(normalize_input.call_args.kwargs["input_path"], source_path)
+        self.assertEqual(normalize_input.call_args.kwargs["render_source_path"], source_path)
+        self.assertFalse(local_normalizer.called)
+        self.assertEqual(self.panel.store.get_job(job_id)["status"], "completed")
 
     def setUp(self):
         self.env_patcher = patch.dict(

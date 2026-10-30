@@ -575,6 +575,7 @@ def render_master(job_id: str, operation: str = "render") -> dict[str, Any]:
                 not isinstance(normalized_proxy_path, str)
                 or not normalized_proxy_path.startswith("normalized-cache/")
                 or ".." in Path(normalized_proxy_path).parts
+                or manifest.get("normalized_proxy_source_sha256") != manifest.get("source_sha256")
                 or not re.fullmatch(r"[a-f0-9]{64}", str(manifest.get("normalized_proxy_sha256") or ""))
                 or manifest.get("normalization_profile_id") != NORMALIZATION_PROFILE_ID
             ):

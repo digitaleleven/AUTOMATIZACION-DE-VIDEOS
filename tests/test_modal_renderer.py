@@ -302,6 +302,75 @@ class ModalRenderClientTests(unittest.TestCase):
         manifest = json.loads(volume.uploads[f"/jobs/{job_id}/manifest.json"])
         self.assertEqual(manifest["normalized_proxy_path"], cache_path)
 
+    def test_cleanup_removes_only_job_staging_and_preserves_cache_path(self):
+        volume = FakeVolume(b"unused")
+        volume.job_id = "c" * 32
+        sdk = FakeSDK(volume, {})
+        client = modal_renderer.ModalRenderClient(sdk)
+        job_id = "c" * 32
+        client._staged_jobs.add(job_id)
+
+        with patch.object(modal_renderer, "modal_configuration_status", return_value=_modal_status()):
+            self.assertTrue(client.cleanup_staged_job(job_id))
+
+        self.assertEqual(volume.removals, [(f"jobs/{job_id}", True)])
+        self.assertFalse(any("normalized-cache/" in path for path, _ in volume.removals))
+        self.assertFalse(client.cleanup_staged_job("invalid"))
+
+    def test_quick_analysis_proxy_is_not_attached_to_full_source_render(self):
+        source, effects, plan, transcript, job_id, output, volume, sdk = _input_bundle(
+            self.root, b"full-render-result"
+        )
+        analysis_source = self.root / "analysis-clip.mov"
+        analysis_source.write_bytes(b"five-second-analysis-clip")
+        analysis_hash = hashlib.sha256(analysis_source.read_bytes()).hexdigest()
+        cache_path = (
+            f"normalized-cache/{analysis_hash}/{modal_renderer.NORMALIZATION_PROFILE_ID}/proxy.mp4"
+        )
+        proxy = b"analysis-only-proxy"
+        sdk.results_by_operation["normalize"] = {
+            "job_id": job_id,
+            "normalized_proxy_path": cache_path,
+            "source_sha256": analysis_hash,
+            "profile_id": modal_renderer.NORMALIZATION_PROFILE_ID,
+            "proxy_sha256": hashlib.sha256(proxy).hexdigest(),
+            "proxy_size_bytes": len(proxy),
+            "duration_seconds": 1.0,
+            "profile": {
+                "width": 1080, "height": 1920, "fps": 30,
+                "codec": "h264", "pixel_format": "yuv420p", "color_range": "tv",
+                "color_primaries": "bt709", "color_transfer": "bt709",
+                "color_space": "bt709", "audio_codec": "aac",
+                "audio_sample_rate": 48000, "audio_channels": 2,
+                "duration_seconds": 1.0,
+            },
+            "capabilities": {"ffmpeg_version": "ffmpeg test"},
+            "cache_hit": False,
+            "processing_seconds": 1.0,
+        }
+        volume.files[cache_path] = proxy
+        client = modal_renderer.ModalRenderClient(sdk)
+        with patch.object(modal_renderer, "modal_configuration_status", return_value=_modal_status()):
+            client.normalize_input(
+                job_id=job_id,
+                input_path=analysis_source,
+                render_source_path=source,
+                output_path=self.root / "analysis-proxy-output.mp4",
+            )
+            client.render(
+                job_id=job_id,
+                input_path=source,
+                transcript=transcript,
+                plan=plan,
+                effects_dir=effects,
+                output_path=output,
+                show_subtitles=False,
+            )
+
+        render_manifest = json.loads(volume.uploads[f"/jobs/{job_id}/manifest.json"])
+        self.assertNotIn("normalized_proxy_path", render_manifest)
+        self.assertEqual(volume.uploads[f"/jobs/{job_id}/source.mov"], b"unmodified original bytes")
+
     def test_render_client_accepts_4k_60_and_passes_profile_to_worker(self):
         source, effects, plan, transcript, job_id, output, volume, sdk = _input_bundle(
             self.root,

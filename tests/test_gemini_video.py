@@ -25,6 +25,7 @@ class FakeResponse:
 class FakeGeminiSession:
     def __init__(self):
         self.calls = []
+        self.token_count = 120
 
     def post(self, url, *, headers, json=None, data=None, timeout=None):
         self.calls.append(("POST", url, headers, json, data, timeout))
@@ -38,6 +39,8 @@ class FakeGeminiSession:
                 "mimeType": "video/mp4",
                 "state": "ACTIVE",
             }})
+        if ":countTokens" in url:
+            return FakeResponse({"totalTokens": self.token_count})
         return FakeResponse({
             "candidates": [{
                 "content": {"parts": [{"text": __import__("json").dumps({
@@ -137,8 +140,26 @@ class GeminiVideoTests(unittest.TestCase):
         self.assertEqual(fake.uploaded_bytes, b"small test video")
         generation = next(call for call in fake.calls if ":generateContent" in call[1])
         self.assertEqual(generation[1].split("/models/", 1)[1].split(":", 1)[0], "gemini-3.8-flash")
+        self.assertTrue(any(":countTokens" in call[1] for call in fake.calls))
+        self.assertEqual(generation[3]["generationConfig"]["maxOutputTokens"], 4096)
+        self.assertLess(result["estimated_cost_usd"], result["preflight_max_cost_usd"])
         self.assertTrue(any(call[0] == "DELETE" for call in fake.calls))
         self.assertNotIn("test-only-not-real", generation[1])
+
+    def test_token_preflight_blocks_generation_above_budget(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "analysis.mp4"
+            path.write_bytes(b"small test video")
+            fake = FakeGeminiSession()
+            fake.token_count = 150_001
+            with patch.dict("os.environ", {"GEMINI_API_KEY": "test-only-not-real"}):
+                with self.assertRaisesRegex(GeminiAnalysisError, "supera el límite de tokens"):
+                    analyze_video(
+                        path,
+                        duration_seconds=5.0,
+                        session=fake,
+                    )
+        self.assertFalse(any(":generateContent" in call[1] for call in fake.calls))
 
     def test_missing_key_fails_before_network(self):
         with tempfile.TemporaryDirectory() as temp_dir:

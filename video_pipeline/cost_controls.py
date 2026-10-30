@@ -9,6 +9,7 @@ import math
 MAX_JOB_BUDGET_USD = 1.50
 MAX_GEMINI_INPUT_TOKENS = 150_000
 MAX_GEMINI_OUTPUT_TOKENS = 4_096
+# Static planning rates only; the app cannot query live provider/account billing here.
 GEMINI_INPUT_USD_PER_MILLION = 0.75
 GEMINI_OUTPUT_USD_PER_MILLION = 3.75
 WHISPER_USD_PER_AUDIO_MINUTE = 0.006
@@ -20,6 +21,7 @@ MAX_NORMALIZATION_SECONDS = 20 * 60
 MAX_RENDER_SECONDS = 60 * 60
 MAX_NORMALIZED_PROXY_GIB = 2
 MAX_RENDER_OUTPUT_GIB = 4
+MAX_BUDGETED_VIDEO_SECONDS = 1800
 MODAL_EGRESS_USD_PER_GIB = 0.04
 MODAL_VOLUME_USD_PER_GIB_MONTH = 0.09
 R2_STORAGE_USD_PER_GIB_MONTH = 0.015
@@ -56,6 +58,8 @@ def estimate_gemini_cost_usd(input_tokens: int, output_tokens: int) -> float:
 def estimate_job_budget(duration_seconds: float) -> JobBudgetEstimate:
     if isinstance(duration_seconds, bool) or not math.isfinite(float(duration_seconds)) or duration_seconds <= 0:
         raise ValueError("La duración del vídeo no permite estimar el presupuesto.")
+    if duration_seconds > MAX_BUDGETED_VIDEO_SECONDS:
+        raise ValueError("El límite presupuestario admite vídeos de hasta 30 minutos.")
     compute_seconds = MAX_NORMALIZATION_SECONDS + MAX_RENDER_SECONDS
     modal_compute = compute_seconds * (
         MODAL_RENDER_CPU_CORES * MODAL_CPU_USD_PER_CORE_SECOND
@@ -65,7 +69,7 @@ def estimate_job_budget(duration_seconds: float) -> JobBudgetEstimate:
         MAX_GEMINI_INPUT_TOKENS,
         MAX_GEMINI_OUTPUT_TOKENS,
     )
-    whisper = min(float(duration_seconds), 1800.0) / 60 * WHISPER_USD_PER_AUDIO_MINUTE
+    whisper = float(duration_seconds) / 60 * WHISPER_USD_PER_AUDIO_MINUTE
     egress = (
         MAX_NORMALIZED_PROXY_GIB + MAX_RENDER_OUTPUT_GIB
     ) * MODAL_EGRESS_USD_PER_GIB

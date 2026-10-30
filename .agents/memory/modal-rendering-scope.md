@@ -42,3 +42,11 @@ Las sugerencias de corte de Gemini son candidatas: solo se aplican donde el dete
 **Why:** los cortes basados solo en texto pueden truncar voz, y aplicar zoom tanto en FFmpeg como en Remotion duplica el movimiento.
 
 **How to apply:** al ampliar el plan Python→Modal→Remotion, mantener la corroboración local de pausas, el límite de cortes y el mapeo de tiempos fuente a salida. No afirmar que el montaje de un vídeo real está validado sin render y revisión.
+
+### Normalización remota reutilizable
+
+La copia de normalización puede reutilizarse solo si coinciden el hash completo del original y una revisión explícita del perfil; nunca sustituye al original como fuente maestra. No purgar la caché de forma automática sin una política de retención aprobada.
+
+**Why:** se autorizó mover la conversión pesada a Modal para evitar el timeout de DigitalOcean, conservando fuentes y resultados y evitando conversiones duplicadas.
+
+**How to apply:** antes de una operación real, comprobar que la imagen desplegada tiene `zscale`, `tonemap`, codificador H.264 y decodificador HEVC; el código local solo deja esa comprobación preparada y no demuestra disponibilidad remota.

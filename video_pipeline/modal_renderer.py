@@ -110,6 +110,8 @@ class ModalRenderClient:
         self._worker = None
         self._normalized_jobs: dict[str, dict[str, Any]] = {}
         self._staged_sources: dict[str, str] = {}
+        self._staged_jobs: set[str] = set()
+        self._render_started_jobs: set[str] = set()
 
     def _sdk(self) -> Any:
         if self._modal is None:
@@ -275,6 +277,7 @@ class ModalRenderClient:
                 with volume.batch_upload() as batch:
                     batch.put_file(str(source), f"/{remote_prefix}/{remote_source_name}")
                     batch.put_file(str(manifest_path), f"/{remote_prefix}/normalization.json")
+                self._staged_jobs.add(job_id)
             if progress_callback:
                 progress_callback("normalizing_on_modal")
             cache_result = self._worker.remote(job_id, "normalize")
@@ -350,6 +353,32 @@ class ModalRenderClient:
             capabilities=cache_result.get("capabilities") if isinstance(cache_result.get("capabilities"), dict) else None,
         )
 
+    def render_was_submitted(self, job_id: str) -> bool:
+        return job_id in self._render_started_jobs
+
+    def cleanup_staged_job(self, job_id: str) -> bool:
+        """Remove only the per-job staging copy; retain the content-addressed proxy cache."""
+        if (
+            not JOB_ID_PATTERN.fullmatch(job_id or "")
+            or job_id not in self._staged_jobs
+            or self.render_was_submitted(job_id)
+        ):
+            return False
+        try:
+            volume = self._sdk().Volume.from_name(MODAL_VOLUME_NAME, create_if_missing=True)
+            volume.remove_file(f"jobs/{job_id}", recursive=True)
+        except Exception as exc:
+            logger.warning(
+                "modal_normalization_staging_cleanup_failed job_id=%s error_type=%s",
+                job_id,
+                type(exc).__name__,
+            )
+            return False
+        self._staged_sources.pop(job_id, None)
+        self._normalized_jobs.pop(job_id, None)
+        self._staged_jobs.discard(job_id)
+        return True
+
     def render(
         self,
         *,
@@ -409,6 +438,10 @@ class ModalRenderClient:
         staged_source_sha256 = self._staged_sources.get(job_id)
         source_already_staged = staged_source_sha256 == source_sha256
         normalized_state = self._normalized_jobs.get(job_id)
+        if normalized_state and normalized_state.get("source_sha256") != source_sha256:
+            # An analysis clip may have its own cache entry; never attach it to a
+            # render of the complete original.
+            normalized_state = None
         if progress_callback:
             progress_callback("uploading_to_modal")
 
@@ -439,6 +472,7 @@ class ModalRenderClient:
                             {
                                 "normalized_proxy_path": normalized_state["remote_proxy_path"],
                                 "normalized_proxy_sha256": normalized_state["proxy_sha256"],
+                                "normalized_proxy_source_sha256": normalized_state["source_sha256"],
                                 "normalization_profile_id": normalized_state["profile_id"],
                             }
                             if normalized_state else {}
@@ -469,6 +503,7 @@ class ModalRenderClient:
 
         if progress_callback:
             progress_callback("rendering_on_modal")
+        self._render_started_jobs.add(job_id)
         result = self._worker.remote(job_id, "render")
         if not isinstance(result, dict) or result.get("job_id") != job_id:
             raise RuntimeError("Modal devolvió una respuesta de trabajo no reconocida.")
@@ -529,6 +564,7 @@ class ModalRenderClient:
             volume.remove_file(remote_prefix, recursive=True)
             self._staged_sources.pop(job_id, None)
             self._normalized_jobs.pop(job_id, None)
+            self._staged_jobs.discard(job_id)
         except Exception as exc:  # Cleanup failure must not invalidate a verified local MP4.
             temporary_storage_cleaned = False
             logger.warning(
