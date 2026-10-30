@@ -119,6 +119,15 @@ class ModalNormalizationResult:
         }
 
 
+@dataclass(frozen=True)
+class ModalNormalizationSubmission:
+    job_id: str
+    function_call_id: str
+    source_sha256: str
+    profile_id: str
+    submitted_at: float
+
+
 class ModalRenderClient:
     """Uploads per-job inputs to a Modal Volume and downloads the result locally."""
 
@@ -410,6 +419,117 @@ class ModalRenderClient:
             profile=normalized_profile,
             capabilities=cache_result.get("capabilities") if isinstance(cache_result.get("capabilities"), dict) else None,
         )
+
+    def submit_normalization_detached(
+        self,
+        *,
+        job_id: str,
+        input_path: str | Path,
+        output_path: str | Path,
+        profile_id: str = MASTER_4K_NORMALIZATION_PROFILE_ID,
+        on_submitted: Callable[[str], None],
+    ) -> ModalNormalizationSubmission | ModalNormalizationResult:
+        """Submit normalization without waiting on the caller's SSH/session lifetime."""
+        if not JOB_ID_PATTERN.fullmatch(job_id or ""):
+            raise ValueError("Identificador de trabajo Modal no válido.")
+        source = Path(input_path).expanduser().resolve()
+        destination = Path(output_path).expanduser().resolve()
+        if not source.is_file() or source.stat().st_size <= 0:
+            raise ValueError("El vídeo fuente no existe o está vacío.")
+        if source.stat().st_size > MAX_SOURCE_BYTES or source.suffix.lower() not in {".mov", ".mp4"}:
+            raise ValueError("El origen Modal no cumple los límites de tamaño o formato.")
+        if destination.exists():
+            raise FileExistsError("Se rechaza sobrescribir un proxy normalizado existente.")
+        profile_spec = NORMALIZATION_PROFILE_SPECS.get(profile_id)
+        if profile_spec is None:
+            raise ValueError("Perfil de normalización Modal no admitido.")
+
+        if profile_id == MASTER_4K_NORMALIZATION_PROFILE_ID:
+            from .media import probe_video
+            from .cost_controls import enforce_4k_normalization_budget
+
+            source_profile = probe_video(source)
+            display_width, display_height = source_profile.width, source_profile.height
+            if abs(int(round(source_profile.rotation or 0))) % 180 == 90:
+                display_width, display_height = display_height, display_width
+            if display_width < 2160 or display_height < 3840 or abs(source_profile.duration - 59.98) > 0.5:
+                raise ValueError("La normalización máster requiere el original vertical 2160×3840 de 59,98 s.")
+            is_hlg = (
+                source_profile.color_range == "tv"
+                and source_profile.color_primaries == "bt2020"
+                and source_profile.color_transfer == "arib-std-b67"
+                and source_profile.color_space == "bt2020nc"
+            )
+            is_sdr_bt709 = (
+                source_profile.color_range in {"tv", "pc"}
+                and source_profile.color_primaries == "bt709"
+                and source_profile.color_transfer == "bt709"
+                and source_profile.color_space == "bt709"
+            )
+            if not (is_hlg or is_sdr_bt709):
+                raise ValueError("La entrada debe estar etiquetada HLG BT.2020 o SDR BT.709.")
+            enforce_4k_normalization_budget()
+
+        source_sha256 = _safe_sha256(source)
+        cached_result = self.recover_cached_normalization(
+            input_path=source,
+            output_path=destination,
+            profile_id=profile_id,
+        )
+        if cached_result is not None:
+            return cached_result
+
+        self.ensure_worker_available()
+        sdk = self._sdk()
+        volume = sdk.Volume.from_name(MODAL_VOLUME_NAME, create_if_missing=True)
+        remote_prefix = f"jobs/{job_id}"
+        manifest = {
+            "job_id": job_id,
+            "source_name": f"source{source.suffix.lower()}",
+            "source_sha256": source_sha256,
+            "profile_id": profile_id,
+        }
+        with tempfile.TemporaryDirectory(prefix="matrix-motion-normalize-submit-") as staging:
+            manifest_path = Path(staging) / "normalization.json"
+            manifest_path.write_text(
+                json.dumps(manifest, separators=(",", ":")),
+                encoding="utf-8",
+            )
+            with volume.batch_upload() as batch:
+                batch.put_file(str(source), f"/{remote_prefix}/source{source.suffix.lower()}")
+                batch.put_file(str(manifest_path), f"/{remote_prefix}/normalization.json")
+
+        try:
+            function_call = self._worker.spawn(job_id, "normalize")
+        except BaseException:
+            # The control plane may have accepted the call despite a lost reply.
+            # The supervisor must mark this reservation unknown and never resubmit it.
+            raise
+        function_call_id = str(function_call.object_id)
+        if not function_call_id:
+            raise RuntimeError("Modal aceptó el envío sin devolver un ID recuperable.")
+        on_submitted(function_call_id)
+        return ModalNormalizationSubmission(
+            job_id=job_id,
+            function_call_id=function_call_id,
+            source_sha256=source_sha256,
+            profile_id=profile_id,
+            submitted_at=time.time(),
+        )
+
+    def poll_normalization_call(self, function_call_id: str) -> dict[str, Any] | None:
+        """Read a detached call result without submitting or cancelling work."""
+        if not function_call_id.startswith("fc-") or len(function_call_id) > 128:
+            raise ValueError("ID de ejecución Modal no válido.")
+        sdk = self._sdk()
+        function_call = sdk.FunctionCall.from_id(function_call_id)
+        try:
+            result = function_call.get(timeout=0)
+        except TimeoutError:
+            return None
+        if not isinstance(result, dict):
+            raise RuntimeError("Modal devolvió un resultado de normalización no reconocido.")
+        return result
 
     def recover_cached_normalization(
         self,
