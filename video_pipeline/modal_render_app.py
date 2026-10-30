@@ -16,11 +16,12 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
 import time
 from fractions import Fraction
-from typing import Any
+from typing import Any, Callable
 
 import modal
 
@@ -111,15 +112,69 @@ renderer_image = (
 )
 
 
-def _run_checked(args: list[str], *, timeout: int = 3600) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+def _terminate_process_group(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+        process.wait(timeout=10)
+    except (ProcessLookupError, subprocess.TimeoutExpired):
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
+
+
+def _run_checked(
+    args: list[str],
+    *,
+    timeout: int = 3600,
+    progress_callback: Callable[[float], None] | None = None,
+    progress_interval_seconds: float = 30,
+) -> subprocess.CompletedProcess[str]:
+    if progress_callback is None:
+        return subprocess.run(
+            args,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=os.environ.copy(),
+        )
+
+    started = time.monotonic()
+    process = subprocess.Popen(
         args,
-        check=True,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        timeout=timeout,
         env=os.environ.copy(),
+        start_new_session=True,
     )
+    try:
+        while True:
+            remaining = timeout - (time.monotonic() - started)
+            if remaining <= 0:
+                _terminate_process_group(process)
+                stdout, stderr = process.communicate()
+                raise subprocess.TimeoutExpired(args, timeout, output=stdout, stderr=stderr)
+            try:
+                stdout, stderr = process.communicate(
+                    timeout=min(progress_interval_seconds, remaining)
+                )
+                break
+            except subprocess.TimeoutExpired:
+                progress_callback(time.monotonic() - started)
+        completed = subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
+        if process.returncode:
+            raise subprocess.CalledProcessError(
+                process.returncode, args, output=stdout, stderr=stderr
+            )
+        return completed
+    except BaseException:
+        _terminate_process_group(process)
+        raise
 
 
 def _safe_diagnostic_text(value: Any, limit: int = 8000) -> str:
@@ -139,7 +194,7 @@ def _safe_diagnostic_text(value: Any, limit: int = 8000) -> str:
     return text[-limit:]
 
 
-def _worker_failure_diagnostic(job_id: str, exc: Exception) -> dict[str, Any]:
+def _worker_failure_diagnostic(job_id: str, exc: BaseException) -> dict[str, Any]:
     is_process = isinstance(exc, (subprocess.CalledProcessError, subprocess.TimeoutExpired))
     return {
         "job_id": job_id,
@@ -156,12 +211,45 @@ def _worker_failure_diagnostic(job_id: str, exc: Exception) -> dict[str, Any]:
     }
 
 
-def _persist_worker_failure(remote_job: Path, job_id: str, exc: Exception) -> dict[str, Any]:
+def _persist_worker_failure(remote_job: Path, job_id: str, exc: BaseException) -> dict[str, Any]:
     diagnostic = _worker_failure_diagnostic(job_id, exc)
     # Exclusive creation preserves the first failure rather than overwriting history.
     with (remote_job / "failure.json").open("x", encoding="utf-8") as stream:
         json.dump(diagnostic, stream, ensure_ascii=False, indent=2)
     return diagnostic
+
+
+def _persist_worker_state(
+    job_id: str,
+    *,
+    status: str,
+    phase: str,
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Commit an append-only event and latest phase to the shared Modal Volume."""
+    remote_job = VOLUME_MOUNT / "jobs" / job_id
+    timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    event = {
+        "job_id": job_id,
+        "status": status,
+        "phase": phase,
+        "details": details or {},
+        "recorded_at": timestamp,
+    }
+    events_path = remote_job / "worker-events.jsonl"
+    with events_path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    state_path = remote_job / "worker-state.json"
+    temporary = state_path.with_name("worker-state.json.part")
+    temporary.write_text(
+        json.dumps(event, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    os.replace(temporary, state_path)
+    staging_volume.commit()
+    return event
 
 
 def _file_sha256(path: Path) -> str:
@@ -329,7 +417,12 @@ def _validate_cached_normalized_proxy(
     }
 
 
-def _normalize_staged_source(remote_job: Path, job_id: str) -> dict[str, Any]:
+def _normalize_staged_source(
+    remote_job: Path,
+    job_id: str,
+    *,
+    progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
+) -> dict[str, Any]:
     started = time.monotonic()
     request_path = remote_job / "normalization.json"
     request = json.loads(request_path.read_text(encoding="utf-8"))
@@ -351,6 +444,8 @@ def _normalize_staged_source(remote_job: Path, job_id: str) -> dict[str, Any]:
     if _file_sha256(staged_source) != source_sha256:
         raise RuntimeError("El checksum del origen subido a Modal no coincide.")
 
+    if progress_callback:
+        progress_callback("source_verified", {"source_sha256": source_sha256})
     proxy_path, cache_manifest_path = _normalization_cache_paths(source_sha256, profile_id)
     capabilities = _verify_ffmpeg_capabilities()
     if proxy_path.exists() or cache_manifest_path.exists():
@@ -368,6 +463,8 @@ def _normalize_staged_source(remote_job: Path, job_id: str) -> dict[str, Any]:
         local_source = local_dir / source_name
         local_proxy = local_dir / "normalized-proxy.mp4"
         shutil.copyfile(staged_source, local_source)
+        if progress_callback:
+            progress_callback("normalizing", None)
         _run_checked(
             [
                 "node",
@@ -377,7 +474,16 @@ def _normalize_staged_source(remote_job: Path, job_id: str) -> dict[str, Any]:
                 spec["cli_flag"],
             ],
             timeout=NORMALIZATION_TIMEOUT_SECONDS,
+            progress_callback=(
+                (lambda elapsed: progress_callback(
+                    "normalizing",
+                    {"elapsed_seconds": round(elapsed, 1), "heartbeat": True},
+                ))
+                if progress_callback else None
+            ),
         )
+        if progress_callback:
+            progress_callback("verifying_output", None)
         if not local_proxy.is_file() or not 0 < local_proxy.stat().st_size <= spec["max_bytes"]:
             raise RuntimeError("El proxy de normalización está vacío o supera el límite del perfil.")
         profile = _probe_normalized_proxy(
@@ -398,6 +504,14 @@ def _normalize_staged_source(remote_job: Path, job_id: str) -> dict[str, Any]:
             "processing_seconds": round(time.monotonic() - started, 3),
             "cache_hit": False,
         }
+        if progress_callback:
+            progress_callback(
+                "publishing_cache",
+                {
+                    "proxy_size_bytes": local_proxy.stat().st_size,
+                    "processing_seconds": cache_manifest["processing_seconds"],
+                },
+            )
         proxy_path.parent.mkdir(parents=True, exist_ok=True)
         proxy_tmp = proxy_path.with_name("proxy.mp4.part")
         manifest_tmp = cache_manifest_path.with_name("manifest.json.part")
@@ -562,8 +676,45 @@ def render_master(job_id: str, operation: str = "render") -> dict[str, Any]:
     if (remote_job / "failure.json").exists():
         raise RuntimeError("El trabajo Modal ya falló; no se permite reenviar este identificador.")
     if operation == "normalize":
+        current_phase = "worker_started"
+
+        def progress(phase: str, details: dict[str, Any] | None = None) -> None:
+            nonlocal current_phase
+            current_phase = phase
+            try:
+                _persist_worker_state(
+                    job_id,
+                    status="running",
+                    phase=phase,
+                    details=details,
+                )
+            except Exception as progress_error:
+                # A heartbeat failure must not terminate an otherwise healthy conversion.
+                print(
+                    f"matrix_progress_persistence_failed phase={phase} "
+                    f"type={type(progress_error).__name__}",
+                    flush=True,
+                )
+
         try:
-            manifest = _normalize_staged_source(remote_job, job_id)
+            _persist_worker_state(job_id, status="running", phase=current_phase)
+            manifest = _normalize_staged_source(
+                remote_job,
+                job_id,
+                progress_callback=progress,
+            )
+            _persist_worker_state(
+                job_id,
+                status="completed",
+                phase="result_committed",
+                details={
+                    "source_sha256": manifest["source_sha256"],
+                    "profile_id": manifest["profile_id"],
+                    "proxy_sha256": manifest["proxy_sha256"],
+                    "proxy_size_bytes": manifest["proxy_size_bytes"],
+                    "processing_seconds": manifest.get("processing_seconds"),
+                },
+            )
             return {
                 "job_id": job_id,
                 "normalized_proxy_path": manifest["proxy_path"],
@@ -577,14 +728,33 @@ def render_master(job_id: str, operation: str = "render") -> dict[str, Any]:
                 "cache_hit": manifest["cache_hit"],
                 "processing_seconds": manifest.get("processing_seconds"),
             }
-        except Exception as exc:
+        except BaseException as exc:
+            error_name = type(exc).__name__
+            cancelled = (
+                error_name in {"InputCancellation", "CancelledError", "GeneratorExit"}
+                or "cancel" in error_name.lower()
+            )
             diagnostic = _worker_failure_diagnostic(job_id, exc)
             try:
-                _persist_worker_failure(remote_job, job_id, exc)
+                if not (remote_job / "failure.json").exists():
+                    _persist_worker_failure(remote_job, job_id, exc)
                 staging_volume.commit()
-            except Exception as persist_error:
+                _persist_worker_state(
+                    job_id,
+                    status="cancelled" if cancelled else "failed",
+                    phase=current_phase,
+                    details={
+                        "error_type": error_name,
+                        "returncode": diagnostic["returncode"],
+                        "timeout_seconds": diagnostic["timeout_seconds"],
+                        "message": diagnostic["message"],
+                    },
+                )
+            except BaseException as persist_error:
                 print(f"matrix_failure_persistence_failed type={type(persist_error).__name__}", flush=True)
             print(f"matrix_normalization_failed {json.dumps(diagnostic, ensure_ascii=False)}", flush=True)
+            if not isinstance(exc, Exception):
+                raise
             details = diagnostic["stderr"][-2000:] or diagnostic["message"]
             raise RuntimeError(
                 f"Normalización Modal: {diagnostic['error_type']}; "

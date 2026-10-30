@@ -1,12 +1,14 @@
 import json
 import contextlib
 import io
+import hashlib
 from pathlib import Path
 import signal
 import tempfile
 import time
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from scripts.normalize_modal_4k_once import (
     MASTER_4K_NORMALIZATION_PROFILE_ID,
@@ -14,13 +16,35 @@ from scripts.normalize_modal_4k_once import (
     append_history,
     build_parser,
     claim_normalization_attempt,
+    main,
+    record_termination_signals,
     recover_interrupted_attempt,
     record_terminal_outcome,
+)
+from video_pipeline.modal_execution_store import ModalExecutionStore
+from video_pipeline.modal_renderer import (
+    ModalNormalizationSubmission,
+    ModalSubmissionUnknownError,
 )
 from video_pipeline.state import ProcessingLedger, RetryNotAllowedError
 
 
 class NormalizeModal4KRetryTests(unittest.TestCase):
+    def test_termination_handler_tracks_ssh_sighup(self):
+        registrations = []
+        with (
+            patch("scripts.normalize_modal_4k_once.signal.getsignal", return_value=None),
+            patch(
+                "scripts.normalize_modal_4k_once.signal.signal",
+                side_effect=lambda signum, _handler: registrations.append(signum),
+            ),
+        ):
+            with record_termination_signals():
+                pass
+        self.assertIn(signal.SIGTERM, registrations)
+        self.assertIn(signal.SIGINT, registrations)
+        self.assertIn(signal.SIGHUP, registrations)
+
     def test_cli_exposes_manual_retry_flag_only(self):
         self.assertFalse(build_parser().parse_args([]).retry_failed)
         self.assertTrue(build_parser().parse_args(["--retry-failed"]).retry_failed)
@@ -28,6 +52,121 @@ class NormalizeModal4KRetryTests(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()):
             with self.assertRaises(SystemExit):
                 build_parser().parse_args(["--retry-failed", "--recover-only"])
+
+    def test_main_persists_detached_call_id_and_original_without_waiting_for_result(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.MOV"
+            output = root / "output.mp4"
+            source.write_bytes(b"immutable source fixture")
+            store_path = root / "modal-executions.sqlite3"
+            submitted = []
+
+            class FakeClient:
+                def recover_cached_normalization(self, **_kwargs):
+                    return None
+
+                def submit_normalization_detached(self, **kwargs):
+                    kwargs["on_phase"]("uploading_fixture")
+                    kwargs["on_submitted"]("fc-simulated-id")
+                    submitted.append(kwargs["job_id"])
+                    return ModalNormalizationSubmission(
+                        job_id=kwargs["job_id"],
+                        function_call_id="fc-simulated-id",
+                        source_sha256="",
+                        profile_id=MASTER_4K_NORMALIZATION_PROFILE_ID,
+                        submitted_at=time.time(),
+                    )
+
+            fake_client = FakeClient()
+            profile = SimpleNamespace(
+                width=2160, height=3840, duration=59.98, rotation=0,
+                color_range="tv", color_primaries="bt2020",
+                color_transfer="arib-std-b67", color_space="bt2020nc",
+            )
+            with (
+                patch("scripts.normalize_modal_4k_once.probe_video", return_value=profile),
+                patch(
+                    "scripts.normalize_modal_4k_once.enforce_4k_normalization_budget",
+                    return_value=SimpleNamespace(maximum_usd=1.3),
+                ),
+                patch("scripts.normalize_modal_4k_once.LEDGER_PATH", root / "legacy.sqlite3"),
+                patch("scripts.normalize_modal_4k_once.HISTORY_DIR", root / "history"),
+                patch("scripts.normalize_modal_4k_once.ModalRenderClient", return_value=fake_client),
+            ):
+                arguments = [
+                    "--source", str(source),
+                    "--output", str(output),
+                    "--execution-store", str(store_path),
+                ]
+                code = main(arguments)
+                with self.assertRaises(SystemExit):
+                    main(arguments)
+
+            self.assertEqual(code, 0)
+            self.assertEqual(source.read_bytes(), b"immutable source fixture")
+            self.assertFalse(output.exists())
+            self.assertEqual(len(submitted), 1)
+            store = ModalExecutionStore(store_path)
+            record = store.latest_for_source(
+                hashlib.sha256(source.read_bytes()).hexdigest(),
+                MASTER_4K_NORMALIZATION_PROFILE_ID,
+            )
+            self.assertEqual(record.status, "submitted")
+            self.assertEqual(record.function_call_id, "fc-simulated-id")
+            self.assertEqual(ProcessingLedger(root / "legacy.sqlite3").get(record.source_sha256)["attempts"], 1)
+
+    def test_uncertain_submission_stores_call_id_and_blocks_automatic_resubmission(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.MOV"
+            output = root / "output.mp4"
+            source.write_bytes(b"immutable source fixture")
+            store_path = root / "modal-executions.sqlite3"
+
+            class FakeClient:
+                def recover_cached_normalization(self, **_kwargs):
+                    return None
+
+                def submit_normalization_detached(self, **kwargs):
+                    kwargs["on_submitted"]("fc-uncertain-id")
+                    raise ModalSubmissionUnknownError(
+                        "lost reply", function_call_id="fc-uncertain-id"
+                    )
+
+            profile = SimpleNamespace(
+                width=2160, height=3840, duration=59.98, rotation=0,
+                color_range="tv", color_primaries="bt2020",
+                color_transfer="arib-std-b67", color_space="bt2020nc",
+            )
+            with (
+                patch("scripts.normalize_modal_4k_once.probe_video", return_value=profile),
+                patch(
+                    "scripts.normalize_modal_4k_once.enforce_4k_normalization_budget",
+                    return_value=SimpleNamespace(maximum_usd=1.3),
+                ),
+                patch("scripts.normalize_modal_4k_once.LEDGER_PATH", root / "legacy.sqlite3"),
+                patch("scripts.normalize_modal_4k_once.HISTORY_DIR", root / "history"),
+                patch("scripts.normalize_modal_4k_once.ModalRenderClient", return_value=FakeClient()),
+            ):
+                self.assertEqual(
+                    main([
+                        "--source", str(source),
+                        "--output", str(output),
+                        "--execution-store", str(store_path),
+                    ]),
+                    1,
+                )
+
+            record = ModalExecutionStore(store_path).latest_for_source(
+                hashlib.sha256(source.read_bytes()).hexdigest(),
+                MASTER_4K_NORMALIZATION_PROFILE_ID,
+            )
+            self.assertEqual(record.status, "submission_unknown")
+            self.assertEqual(record.function_call_id, "fc-uncertain-id")
+            self.assertEqual(ProcessingLedger(root / "legacy.sqlite3").get(record.source_sha256)["attempts"], 1)
+            self.assertEqual(source.read_bytes(), b"immutable source fixture")
+            self.assertFalse(output.exists())
 
     def test_one_manual_retry_preserves_failure_and_blocks_a_third_attempt(self):
         with tempfile.TemporaryDirectory() as temp_dir:

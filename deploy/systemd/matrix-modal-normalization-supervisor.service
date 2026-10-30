@@ -1,0 +1,20 @@
+[Unit]
+Description=MATRIX MOTION Modal normalization supervisor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust user, paths, and Python environment to the DigitalOcean installation.
+User=matrix-motion
+Group=matrix-motion
+WorkingDirectory=/opt/matrix-motion
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/matrix-motion/.venv/bin/python scripts/modal_normalization_supervisor.py --watch
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target

@@ -15,11 +15,23 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from video_pipeline.cost_controls import enforce_4k_normalization_budget
+from video_pipeline.cost_controls import (
+    MAX_JOB_BUDGET_USD,
+    enforce_4k_normalization_budget,
+)
 from video_pipeline.media import probe_video
+from video_pipeline.modal_execution_store import (
+    ModalExecutionBudgetExceeded,
+    ModalExecutionConflict,
+    ModalExecutionStore,
+    safe_error_message,
+)
 from video_pipeline.modal_renderer import (
     MASTER_4K_NORMALIZATION_PROFILE_ID,
+    ModalNormalizationResult,
+    ModalNormalizationSubmission,
     ModalRenderClient,
+    ModalSubmissionUnknownError,
 )
 from video_pipeline.state import (
     DuplicateProcessingError,
@@ -36,6 +48,7 @@ DEFAULT_OUTPUT = Path(
 )
 LEDGER_PATH = Path("data/modal-normalization-4k-once.sqlite3")
 HISTORY_DIR = Path("data/normalization-4k-history")
+EXECUTION_STORE_PATH = Path("data/modal-execution-supervision.sqlite3")
 
 
 class NormalizationInterrupted(BaseException):
@@ -51,7 +64,10 @@ def record_termination_signals():
     def interrupt(signum, _frame):
         raise NormalizationInterrupted(signum)
 
-    for signum in (signal.SIGINT, signal.SIGTERM):
+    signals = [signal.SIGINT, signal.SIGTERM]
+    if hasattr(signal, "SIGHUP"):
+        signals.append(signal.SIGHUP)
+    for signum in signals:
         previous_handlers[signum] = signal.getsignal(signum)
         signal.signal(signum, interrupt)
     try:
@@ -73,6 +89,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--execution-store", type=Path, default=EXECUTION_STORE_PATH)
     attempts = parser.add_mutually_exclusive_group()
     attempts.add_argument(
         "--retry-failed",
@@ -245,7 +262,7 @@ def record_terminal_outcome(
     started: float,
     exc: BaseException,
 ) -> dict[str, object]:
-    error = f"{type(exc).__name__}: {str(exc)[:1200]}"
+    error = f"{type(exc).__name__}: {safe_error_message(exc)}"
     interrupted = _is_interruption(exc)
     current = ledger.get(source_hash)
     if current.get("status") != "completed":
@@ -355,7 +372,7 @@ def main(argv: list[str] | None = None) -> int:
         except RetryNotAllowedError as exc:
             raise SystemExit(f"Bloqueado: {exc}") from None
         except BaseException as exc:
-            error = f"{type(exc).__name__}: {str(exc)[:1200]}"
+            error = f"{type(exc).__name__}: {safe_error_message(exc)}"
             event = {
                 "attempt": attempt_number,
                 "status": "recovery_check_interrupted" if _is_interruption(exc) else "recovery_check_failed",
@@ -410,6 +427,98 @@ def main(argv: list[str] | None = None) -> int:
             "Bloqueado: ya se consumieron los dos intentos. Use --recover-only para consultar la caché; "
             "no se iniciará otro trabajo."
         )
+    execution_store = ModalExecutionStore(args.execution_store)
+    existing_execution = execution_store.latest_for_source(
+        source_hash,
+        MASTER_4K_NORMALIZATION_PROFILE_ID,
+    )
+    permitted_store_retry = bool(
+        args.retry_failed
+        and existing_execution
+        and existing_execution.status in {"failed", "cancelled"}
+        and existing_execution.attempt_number + 1 == int(current.get("attempts") or 0) + 1
+    )
+    if existing_execution and not permitted_store_retry:
+        raise SystemExit(
+            "Bloqueado: ya existe un registro de supervisión para este origen/perfil. "
+            "Consúltelo con scripts/modal_normalization_supervisor.py; no se reenviará."
+        )
+
+    client = ModalRenderClient()
+    cached_result = client.recover_cached_normalization(
+        input_path=source,
+        output_path=output,
+        profile_id=MASTER_4K_NORMALIZATION_PROFILE_ID,
+    )
+    if cached_result is not None:
+        prior_attempts = int(current.get("attempts") or 0) if current else 0
+        record = existing_execution
+        if record is None:
+            record, created = execution_store.reserve(
+                execution_id=uuid.uuid4().hex,
+                source_sha256=source_hash,
+                profile_id=MASTER_4K_NORMALIZATION_PROFILE_ID,
+                job_id=uuid.uuid4().hex,
+                attempt_number=max(1, prior_attempts),
+                source_path=source,
+                output_path=output,
+                budget_estimate_usd=budget.maximum_usd,
+                budget_limit_usd=MAX_JOB_BUDGET_USD,
+            )
+            if not created:
+                raise SystemExit("Bloqueado: la caché se detectó junto a una ejecución ya registrada.")
+        recovered_payload = {
+            "cache_verified": True,
+            "source_sha256": cached_result.source_sha256,
+            "profile_id": cached_result.profile_id,
+            "output_path": str(cached_result.output_path),
+            "output_sha256": cached_result.sha256,
+            "output_size_bytes": cached_result.size_bytes,
+            "duration_seconds": cached_result.duration_seconds,
+            "profile": cached_result.profile,
+            "remote_processing_seconds": cached_result.remote_processing_seconds,
+            "cache_hit": True,
+        }
+        if record.status not in {"completed", "recovered"}:
+            execution_store.mark_recovered(
+                record.execution_id,
+                result=recovered_payload,
+                details={"worker_invoked": False, "attempts_unchanged": True},
+            )
+        if current:
+            ledger.mark_completed(source_hash, str(output))
+            append_history(
+                history_path,
+                {
+                    "attempt": prior_attempts,
+                    "status": "recovered",
+                    "source_sha256": source_hash,
+                    "profile_id": MASTER_4K_NORMALIZATION_PROFILE_ID,
+                    "execution_id": record.execution_id,
+                    "output": str(output),
+                    "output_sha256": cached_result.sha256,
+                    "worker_invoked": False,
+                    "recorded_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+        print(
+            json.dumps(
+                {
+                    "status": "recovered",
+                    "execution_id": record.execution_id,
+                    "output": str(output),
+                    "output_sha256": cached_result.sha256,
+                    "worker_invoked": False,
+                    "attempts_unchanged": True,
+                    "cost_estimate_usd": budget.maximum_usd,
+                    "billing_cap_guaranteed": False,
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+        return 0
+
     try:
         attempt = claim_normalization_attempt(
             ledger,
@@ -421,18 +530,46 @@ def main(argv: list[str] | None = None) -> int:
     except (DuplicateProcessingError, RetryNotAllowedError) as exc:
         raise SystemExit(f"Bloqueado: {exc}") from None
     job_id = uuid.uuid4().hex
+    execution_id = uuid.uuid4().hex
+    try:
+        execution_record, created = execution_store.reserve(
+            execution_id=execution_id,
+            source_sha256=source_hash,
+            profile_id=MASTER_4K_NORMALIZATION_PROFILE_ID,
+            job_id=job_id,
+            attempt_number=int(attempt["attempts"]),
+            source_path=source,
+            output_path=output,
+            budget_estimate_usd=budget.maximum_usd,
+            budget_limit_usd=MAX_JOB_BUDGET_USD,
+        )
+        if not created:
+            raise ModalExecutionConflict("La ejecución ya estaba reservada.")
+    except (ModalExecutionConflict, ModalExecutionBudgetExceeded) as exc:
+        raise SystemExit(f"Bloqueado: {exc}") from None
     started = time.monotonic()
     current_phase = "starting"
 
     def progress(phase: str) -> None:
         nonlocal current_phase
         current_phase = phase
+        execution_store.update(
+            execution_id,
+            status="submitting",
+            phase=phase,
+            details={
+                "elapsed_seconds": round(time.monotonic() - started, 3),
+                "attempt_number": int(attempt["attempts"]),
+                "budget_estimate_usd": budget.maximum_usd,
+            },
+        )
         event = {
             "attempt": int(attempt["attempts"]),
             "status": "progress",
             "phase": phase,
             "source_sha256": source_hash,
             "job_id": job_id,
+            "execution_id": execution_id,
             "elapsed_seconds": round(time.monotonic() - started, 3),
             "recorded_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -441,78 +578,120 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         with record_termination_signals():
-            client = ModalRenderClient()
+            execution_store.update(
+                execution_id,
+                status="submitting",
+                phase="reserved_for_detached_submission",
+                details={"job_id": job_id},
+            )
             progress("submitting_normalization")
-            result = client.normalize_input(
+            submission = client.submit_normalization_detached(
                 job_id=job_id,
                 input_path=source,
-                render_source_path=source,
                 output_path=output,
                 profile_id=MASTER_4K_NORMALIZATION_PROFILE_ID,
-                progress_callback=progress,
+                check_cache=False,
+                on_phase=progress,
+                on_submitted=lambda call_id: execution_store.update(
+                    execution_id,
+                    status="submitted",
+                    phase="modal_call_id_persisted",
+                    function_call_id=call_id,
+                    details={"job_id": job_id},
+                ),
             )
-            expected = {
-                "width": 2160,
-                "height": 3840,
-                "fps": 30,
-                "codec": "h264",
-                "pixel_format": "yuv420p",
-                "color_range": "tv",
-                "color_primaries": "bt709",
-                "color_transfer": "bt709",
-                "color_space": "bt709",
-            }
-            if any(result.profile.get(key) != value for key, value in expected.items()):
-                raise RuntimeError("FFprobe no confirmó el perfil 4K/30 SDR BT.709 esperado.")
-            ledger.mark_completed(source_hash, str(output))
-            append_history(
-                history_path,
-                {
-                    "attempt": int(attempt["attempts"]),
-                    "status": "completed",
-                    "source_sha256": source_hash,
-                    "profile_id": MASTER_4K_NORMALIZATION_PROFILE_ID,
-                    "job_id": job_id,
-                    "output": str(output),
-                    "output_sha256": result.sha256,
-                    "recorded_at": datetime.now(timezone.utc).isoformat(),
-                },
+        if isinstance(submission, ModalNormalizationResult):
+            raise RuntimeError(
+                "La caché apareció tras la reserva. Use --recover-only; no se inició un nuevo worker."
             )
-            try:
-                client.cleanup_staged_job(job_id)
-            except Exception as cleanup_exc:
-                append_history(
-                    history_path,
-                    {
-                        "attempt": int(attempt["attempts"]),
-                        "status": "cleanup_warning",
-                        "job_id": job_id,
-                        "error_type": type(cleanup_exc).__name__,
-                        "recorded_at": datetime.now(timezone.utc).isoformat(),
-                    },
-                )
+        if not isinstance(submission, ModalNormalizationSubmission):
+            raise RuntimeError("Modal no devolvió un identificador de ejecución supervisable.")
         print(
             json.dumps(
                 {
-                    "status": "verified",
+                    "status": "submitted",
                     "job_id": job_id,
-                    "cache_hit": result.cache_hit,
+                    "execution_id": execution_id,
+                    "function_call_id": submission.function_call_id,
                     "total_seconds": round(time.monotonic() - started, 3),
-                    "remote_processing_seconds": result.remote_processing_seconds,
                     "output": str(output),
-                    "output_size_bytes": result.size_bytes,
-                    "output_sha256": result.sha256,
-                    "profile": result.profile,
-                    "capabilities": result.capabilities,
-                    "cost_estimate_usd": budget.maximum_usd if budget else None,
+                    "cost_estimate_usd": budget.maximum_usd,
                     "billing_cap_guaranteed": False,
+                    "supervision": "independent_service_required",
                 },
                 ensure_ascii=False,
             ),
             flush=True,
         )
         return 0
+    except ModalSubmissionUnknownError as exc:
+        event = {
+            "attempt": int(attempt["attempts"]),
+            "status": "submission_unknown",
+            "source_sha256": source_hash,
+            "profile_id": MASTER_4K_NORMALIZATION_PROFILE_ID,
+            "job_id": job_id,
+            "execution_id": execution_id,
+            "function_call_id": exc.function_call_id,
+            "phase": current_phase,
+            "error_type": type(exc).__name__,
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+        }
+        try:
+            execution_store.update(
+                execution_id,
+                status="submission_unknown",
+                phase="modal_submission_reply_unknown",
+                function_call_id=exc.function_call_id,
+                error=exc,
+                details={"automatic_resubmit": False},
+            )
+        finally:
+            append_history(history_path, event)
+        print(json.dumps(event, ensure_ascii=False), flush=True)
+        return 1
     except BaseException as exc:
+        persisted_submission = execution_store.get(execution_id)
+        if persisted_submission and persisted_submission.function_call_id:
+            execution_store.update(
+                execution_id,
+                status="submitted",
+                phase="caller_interrupted_after_call_id_persisted",
+                function_call_id=persisted_submission.function_call_id,
+                details={
+                    "error_type": type(exc).__name__,
+                    "remote_call_cancelled": False,
+                    "automatic_resubmit": False,
+                },
+            )
+            event = {
+                "attempt": int(attempt["attempts"]),
+                "status": "caller_interrupted_after_submission",
+                "source_sha256": source_hash,
+                "profile_id": MASTER_4K_NORMALIZATION_PROFILE_ID,
+                "job_id": job_id,
+                "execution_id": execution_id,
+                "function_call_id": persisted_submission.function_call_id,
+                "error_type": type(exc).__name__,
+                "remote_call_cancelled": False,
+                "automatic_resubmit": False,
+                "recorded_at": datetime.now(timezone.utc).isoformat(),
+            }
+            append_history(history_path, event)
+            print(json.dumps(event, ensure_ascii=False), flush=True)
+            if isinstance(exc, NormalizationInterrupted):
+                return 128 + exc.signal_number
+            return 130 if isinstance(exc, KeyboardInterrupt) else 1
+        try:
+            execution_store.update(
+                execution_id,
+                status="cancelled" if _is_interruption(exc) else "failed",
+                phase=current_phase,
+                error=exc,
+                details={"remote_call_cancelled": False},
+            )
+        except Exception:
+            pass
         event = record_terminal_outcome(
             ledger,
             source_hash=source_hash,
@@ -523,6 +702,7 @@ def main(argv: list[str] | None = None) -> int:
             started=started,
             exc=exc,
         )
+        event["execution_id"] = execution_id
         print(
             json.dumps(event, ensure_ascii=False),
             flush=True,

@@ -93,6 +93,9 @@ class FakeSDK:
         self.result = result
         self.function_lookups = []
         self.remote_calls = []
+        self.spawn_calls = []
+        self.function_call_lookups = []
+        self.call_results = {}
         self.results_by_operation = {}
         self.volume_lookups = []
 
@@ -114,7 +117,25 @@ class FakeSDK:
             def remote(job_id, operation="render"):
                 self.owner.remote_calls.append((job_id, operation))
                 return self.owner.results_by_operation.get(operation, self.owner.result)
-            return SimpleNamespace(remote=remote)
+            def spawn(job_id, operation="render"):
+                self.owner.spawn_calls.append((job_id, operation))
+                return SimpleNamespace(object_id="fc-test-normalization")
+            return SimpleNamespace(remote=remote, spawn=spawn)
+
+    class _FunctionCallFactory:
+        def __init__(self, owner):
+            self.owner = owner
+
+        def from_id(self, call_id):
+            self.owner.function_call_lookups.append(call_id)
+            result = self.owner.call_results.get(call_id)
+            def get(timeout=None):
+                if isinstance(result, BaseException):
+                    raise result
+                if result is None:
+                    raise TimeoutError()
+                return result
+            return SimpleNamespace(get=get)
 
     @property
     def Volume(self):
@@ -123,6 +144,10 @@ class FakeSDK:
     @property
     def Function(self):
         return self._FunctionFactory(self)
+
+    @property
+    def FunctionCall(self):
+        return self._FunctionCallFactory(self)
 
 
 def _input_bundle(tmp_path: Path, output_bytes: bytes, profile=(1080, 1920, 30)):
@@ -172,6 +197,90 @@ class ModalRenderClientTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+
+    def test_detached_normalization_spawns_and_persists_call_id_without_remote_wait(self):
+        source, _effects, _plan, _transcript, job_id, output, volume, sdk = _input_bundle(
+            self.root, b"not-used"
+        )
+        source_profile = SimpleNamespace(
+            width=2160,
+            height=3840,
+            duration=59.98,
+            rotation=0,
+            color_range="tv",
+            color_primaries="bt2020",
+            color_transfer="arib-std-b67",
+            color_space="bt2020nc",
+        )
+        persisted = []
+        client = modal_renderer.ModalRenderClient(sdk)
+        with (
+            patch.object(modal_renderer, "modal_configuration_status", return_value=_modal_status()),
+            patch("video_pipeline.media.probe_video", return_value=source_profile),
+            patch("video_pipeline.cost_controls.enforce_4k_normalization_budget"),
+        ):
+            submission = client.submit_normalization_detached(
+                job_id=job_id,
+                input_path=source,
+                output_path=output,
+                on_submitted=persisted.append,
+                check_cache=False,
+            )
+
+        self.assertIsInstance(submission, modal_renderer.ModalNormalizationSubmission)
+        self.assertEqual(submission.function_call_id, "fc-test-normalization")
+        self.assertEqual(persisted, ["fc-test-normalization"])
+        self.assertEqual(sdk.spawn_calls, [(job_id, "normalize")])
+        self.assertEqual(sdk.remote_calls, [])
+        self.assertEqual(volume.uploads[f"/jobs/{job_id}/source.mov"], b"unmodified original bytes")
+        self.assertFalse(output.exists())
+
+    def test_detached_submission_uncertainty_keeps_call_id_and_never_falls_back_to_remote(self):
+        source, _effects, _plan, _transcript, job_id, output, _volume, sdk = _input_bundle(
+            self.root, b"unused"
+        )
+        source_profile = SimpleNamespace(
+            width=2160,
+            height=3840,
+            duration=59.98,
+            rotation=0,
+            color_range="tv",
+            color_primaries="bt2020",
+            color_transfer="arib-std-b67",
+            color_space="bt2020nc",
+        )
+        client = modal_renderer.ModalRenderClient(sdk)
+        with (
+            patch.object(modal_renderer, "modal_configuration_status", return_value=_modal_status()),
+            patch("video_pipeline.media.probe_video", return_value=source_profile),
+            patch("video_pipeline.cost_controls.enforce_4k_normalization_budget"),
+        ):
+            with self.assertRaises(modal_renderer.ModalSubmissionUnknownError) as raised:
+                client.submit_normalization_detached(
+                    job_id=job_id,
+                    input_path=source,
+                    output_path=output,
+                    on_submitted=lambda _call_id: (_ for _ in ()).throw(OSError("disk unavailable")),
+                    check_cache=False,
+                )
+
+        self.assertEqual(raised.exception.function_call_id, "fc-test-normalization")
+        self.assertEqual(sdk.spawn_calls, [(job_id, "normalize")])
+        self.assertEqual(sdk.remote_calls, [])
+
+    def test_function_call_from_id_polls_without_cancelling_or_resubmitting(self):
+        _source, _effects, _plan, _transcript, _job_id, _output, _volume, sdk = _input_bundle(
+            self.root, b"unused"
+        )
+        sdk.call_results["fc-pending"] = None
+        client = modal_renderer.ModalRenderClient(sdk)
+        self.assertIsNone(client.poll_normalization_call("fc-pending"))
+        expected = {"job_id": "a" * 32, "source_sha256": "a" * 64, "profile_id": "test"}
+        sdk.call_results["fc-complete"] = expected
+        self.assertEqual(client.poll_normalization_call("fc-complete"), expected)
+        self.assertEqual(sdk.function_call_lookups, ["fc-pending", "fc-complete"])
+        self.assertEqual(sdk.spawn_calls, [])
+        self.assertEqual(sdk.remote_calls, [])
 
     def test_uploads_inputs_and_returns_verified_mp4(self):
         output_bytes = b"verified-mp4-content"

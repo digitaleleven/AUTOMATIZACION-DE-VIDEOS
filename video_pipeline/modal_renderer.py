@@ -128,6 +128,14 @@ class ModalNormalizationSubmission:
     submitted_at: float
 
 
+class ModalSubmissionUnknownError(RuntimeError):
+    """The worker may have accepted a call whose ID was not durably recorded."""
+
+    def __init__(self, message: str, function_call_id: str | None = None):
+        super().__init__(message)
+        self.function_call_id = function_call_id
+
+
 class ModalRenderClient:
     """Uploads per-job inputs to a Modal Volume and downloads the result locally."""
 
@@ -428,6 +436,8 @@ class ModalRenderClient:
         output_path: str | Path,
         profile_id: str = MASTER_4K_NORMALIZATION_PROFILE_ID,
         on_submitted: Callable[[str], None],
+        on_phase: Callable[[str], None] | None = None,
+        check_cache: bool = True,
     ) -> ModalNormalizationSubmission | ModalNormalizationResult:
         """Submit normalization without waiting on the caller's SSH/session lifetime."""
         if not JOB_ID_PATTERN.fullmatch(job_id or ""):
@@ -471,13 +481,14 @@ class ModalRenderClient:
             enforce_4k_normalization_budget()
 
         source_sha256 = _safe_sha256(source)
-        cached_result = self.recover_cached_normalization(
-            input_path=source,
-            output_path=destination,
-            profile_id=profile_id,
-        )
-        if cached_result is not None:
-            return cached_result
+        if check_cache:
+            cached_result = self.recover_cached_normalization(
+                input_path=source,
+                output_path=destination,
+                profile_id=profile_id,
+            )
+            if cached_result is not None:
+                return cached_result
 
         self.ensure_worker_available()
         sdk = self._sdk()
@@ -495,20 +506,26 @@ class ModalRenderClient:
                 json.dumps(manifest, separators=(",", ":")),
                 encoding="utf-8",
             )
+            if on_phase:
+                on_phase("uploading_source_to_modal_volume")
             with volume.batch_upload() as batch:
                 batch.put_file(str(source), f"/{remote_prefix}/source{source.suffix.lower()}")
                 batch.put_file(str(manifest_path), f"/{remote_prefix}/normalization.json")
 
+        if on_phase:
+            on_phase("submitting_detached_modal_call")
+        function_call_id: str | None = None
         try:
             function_call = self._worker.spawn(job_id, "normalize")
-        except BaseException:
-            # The control plane may have accepted the call despite a lost reply.
-            # The supervisor must mark this reservation unknown and never resubmit it.
-            raise
-        function_call_id = str(function_call.object_id)
-        if not function_call_id:
-            raise RuntimeError("Modal aceptó el envío sin devolver un ID recuperable.")
-        on_submitted(function_call_id)
+            function_call_id = str(function_call.object_id)
+            if not function_call_id:
+                raise RuntimeError("Modal no devolvió un ID de ejecución.")
+            on_submitted(function_call_id)
+        except BaseException as exc:
+            raise ModalSubmissionUnknownError(
+                "El envío puede haberse aceptado, pero no se confirmó su persistencia; no se debe reenviar.",
+                function_call_id=function_call_id,
+            ) from exc
         return ModalNormalizationSubmission(
             job_id=job_id,
             function_call_id=function_call_id,
@@ -530,6 +547,26 @@ class ModalRenderClient:
         if not isinstance(result, dict):
             raise RuntimeError("Modal devolvió un resultado de normalización no reconocido.")
         return result
+
+    def read_normalization_progress(self, job_id: str) -> dict[str, Any] | None:
+        """Read the last committed worker phase without reloading or invoking the worker."""
+        if not JOB_ID_PATTERN.fullmatch(job_id or ""):
+            raise ValueError("Identificador de trabajo Modal no válido.")
+        volume = self._sdk().Volume.from_name(MODAL_VOLUME_NAME, create_if_missing=False)
+        payload = self._read_volume_small(
+            volume,
+            f"jobs/{job_id}/worker-state.json",
+            maximum_bytes=16 * 1024,
+        )
+        if payload is None:
+            return None
+        try:
+            state = json.loads(payload)
+        except json.JSONDecodeError:
+            raise RuntimeError("El estado persistente del worker está malformado.") from None
+        if not isinstance(state, dict) or state.get("job_id") != job_id:
+            raise RuntimeError("El estado remoto no corresponde al trabajo Modal solicitado.")
+        return state
 
     def recover_cached_normalization(
         self,

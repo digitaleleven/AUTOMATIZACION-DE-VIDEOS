@@ -17,7 +17,54 @@ class FakeCommittedVolume:
         self.commits += 1
 
 
+class FakeWorkerVolume:
+    def __init__(self):
+        self.reloads = 0
+        self.commits = 0
+
+    def reload(self):
+        self.reloads += 1
+
+    def commit(self):
+        self.commits += 1
+
+
 class ModalRemoteNormalizationTests(unittest.TestCase):
+    def test_worker_persists_and_reraises_modal_baseexception_cancellation(self):
+        class InputCancellation(BaseException):
+            pass
+
+        job_id = "d" * 32
+        with tempfile.TemporaryDirectory() as temp_dir:
+            volume_root = Path(temp_dir) / "volume"
+            remote_job = volume_root / "jobs" / job_id
+            remote_job.mkdir(parents=True)
+            fake_volume = FakeWorkerVolume()
+            with (
+                patch.object(modal_render_app, "VOLUME_MOUNT", volume_root),
+                patch.object(modal_render_app, "staging_volume", fake_volume),
+                patch.object(
+                    modal_render_app,
+                    "_normalize_staged_source",
+                    side_effect=InputCancellation("Modal input cancelled"),
+                ),
+            ):
+                with self.assertRaises(InputCancellation):
+                    modal_render_app.render_master.local(job_id, operation="normalize")
+
+            state = json.loads((remote_job / "worker-state.json").read_text(encoding="utf-8"))
+            events = [
+                json.loads(line)
+                for line in (remote_job / "worker-events.jsonl").read_text(encoding="utf-8").splitlines()
+            ]
+            failure = json.loads((remote_job / "failure.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(state["status"], "cancelled")
+        self.assertEqual(failure["error_type"], "InputCancellation")
+        self.assertEqual(events[-1]["status"], "cancelled")
+        self.assertGreaterEqual(fake_volume.commits, 2)
+        self.assertEqual(fake_volume.reloads, 1)
+
     def test_remote_normalizer_creates_verified_cache_then_reuses_it(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             volume_root = Path(temp_dir) / "volume"
@@ -46,7 +93,7 @@ class ModalRemoteNormalizationTests(unittest.TestCase):
             worker_volume = FakeCommittedVolume()
             subprocess_calls = []
 
-            def fake_run(args, *, timeout):
+            def fake_run(args, *, timeout, **_kwargs):
                 subprocess_calls.append((args, timeout))
                 Path(args[3]).write_bytes(b"mock proxy bytes")
                 return subprocess.CompletedProcess(args, 0, stdout="{}", stderr="")
@@ -96,7 +143,7 @@ class ModalRemoteNormalizationTests(unittest.TestCase):
             worker_volume = FakeCommittedVolume()
             subprocess_calls = []
 
-            def fake_run(args, *, timeout):
+            def fake_run(args, *, timeout, **_kwargs):
                 subprocess_calls.append((args, timeout))
                 Path(args[3]).write_bytes(b"mock 4K proxy bytes")
                 return subprocess.CompletedProcess(args, 0, stdout="{}", stderr="")
