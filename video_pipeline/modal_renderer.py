@@ -411,6 +411,115 @@ class ModalRenderClient:
             capabilities=cache_result.get("capabilities") if isinstance(cache_result.get("capabilities"), dict) else None,
         )
 
+    def recover_cached_normalization(
+        self,
+        *,
+        input_path: str | Path,
+        output_path: str | Path,
+        profile_id: str = MASTER_4K_NORMALIZATION_PROFILE_ID,
+        progress_callback: Callable[[str], None] | None = None,
+    ) -> ModalNormalizationResult | None:
+        """Read and verify an existing cached proxy without looking up or invoking a worker."""
+        source = Path(input_path).expanduser().resolve()
+        destination = Path(output_path).expanduser().resolve()
+        if not source.is_file() or source.stat().st_size <= 0:
+            raise ValueError("El vídeo fuente no existe o está vacío.")
+        if destination.exists():
+            raise FileExistsError("Se rechaza sobrescribir un proxy normalizado existente.")
+        profile_spec = NORMALIZATION_PROFILE_SPECS.get(profile_id)
+        if profile_spec is None:
+            raise ValueError("Perfil de normalización Modal no admitido.")
+
+        started = time.monotonic()
+        source_sha256 = _safe_sha256(source)
+        cache_prefix = f"normalized-cache/{source_sha256}/{profile_id}"
+        proxy_path = f"{cache_prefix}/proxy.mp4"
+        if progress_callback:
+            progress_callback("checking_modal_cache")
+        volume = self._sdk().Volume.from_name(MODAL_VOLUME_NAME, create_if_missing=False)
+        manifest_bytes = self._read_volume_small(volume, f"{cache_prefix}/manifest.json")
+        if manifest_bytes is None:
+            return None
+        try:
+            manifest = json.loads(manifest_bytes)
+        except json.JSONDecodeError:
+            raise RuntimeError("El manifiesto de recuperación de Modal está malformado.") from None
+        if (
+            manifest.get("source_sha256") != source_sha256
+            or manifest.get("profile_id") != profile_id
+            or manifest.get("proxy_path") != proxy_path
+        ):
+            raise RuntimeError("El manifiesto remoto no corresponde al vídeo y perfil solicitados.")
+        profile = self._validate_normalized_profile(manifest.get("profile"), profile_id)
+        try:
+            expected_size = int(manifest.get("proxy_size_bytes") or 0)
+        except (TypeError, ValueError):
+            expected_size = 0
+        expected_hash = manifest.get("proxy_sha256")
+        if (
+            expected_size <= 0
+            or expected_size > profile_spec["max_bytes"]
+            or not isinstance(expected_hash, str)
+            or not re.fullmatch(r"[a-f0-9]{64}", expected_hash)
+        ):
+            raise RuntimeError("El manifiesto remoto no contiene un tamaño o checksum recuperable.")
+        try:
+            duration_seconds = float(manifest.get("duration_seconds") or 0)
+        except (TypeError, ValueError):
+            duration_seconds = 0
+        if (
+            duration_seconds <= 0
+            or abs(duration_seconds - float(profile["duration_seconds"])) > 1 / profile_spec["fps"]
+        ):
+            raise RuntimeError("La duración del manifiesto no coincide con el perfil verificado.")
+
+        if progress_callback:
+            progress_callback("downloading_recovered_proxy")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        partial = destination.with_name(destination.name + ".part")
+        digest = hashlib.sha256()
+        size = 0
+        try:
+            with partial.open("xb") as output:
+                for chunk in volume.read_file(proxy_path):
+                    if not isinstance(chunk, (bytes, bytearray)):
+                        raise RuntimeError("Modal envió un bloque de proxy no binario.")
+                    size += len(chunk)
+                    if size > profile_spec["max_bytes"]:
+                        raise RuntimeError("El proxy recuperado supera el límite del perfil.")
+                    digest.update(chunk)
+                    output.write(chunk)
+                output.flush()
+                os.fsync(output.fileno())
+            if size != expected_size or digest.hexdigest() != expected_hash:
+                raise RuntimeError("El proxy recuperado no coincide con el tamaño o checksum guardado.")
+            os.replace(partial, destination)
+        except FileNotFoundError:
+            partial.unlink(missing_ok=True)
+            raise RuntimeError("El manifiesto existe, pero el proxy no está disponible en el volumen Modal.") from None
+        except Exception:
+            partial.unlink(missing_ok=True)
+            raise
+
+        return ModalNormalizationResult(
+            output_path=destination,
+            duration_seconds=duration_seconds,
+            size_bytes=size,
+            sha256=digest.hexdigest(),
+            source_sha256=source_sha256,
+            profile_id=profile_id,
+            remote_proxy_path=proxy_path,
+            cache_hit=True,
+            remote_processing_seconds=(
+                float(manifest["processing_seconds"])
+                if manifest.get("processing_seconds") is not None else None
+            ),
+            elapsed_seconds=time.monotonic() - started,
+            profile=profile,
+            capabilities=manifest.get("capabilities")
+            if isinstance(manifest.get("capabilities"), dict) else None,
+        )
+
     def render_was_submitted(self, job_id: str) -> bool:
         return job_id in self._render_started_jobs
 

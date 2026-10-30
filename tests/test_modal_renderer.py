@@ -94,6 +94,7 @@ class FakeSDK:
         self.function_lookups = []
         self.remote_calls = []
         self.results_by_operation = {}
+        self.volume_lookups = []
 
     class _VolumeFactory:
         def __init__(self, owner):
@@ -101,7 +102,7 @@ class FakeSDK:
 
         def from_name(self, name, create_if_missing=False):
             assert name == modal_renderer.MODAL_VOLUME_NAME
-            assert create_if_missing is True
+            self.owner.volume_lookups.append((name, create_if_missing))
             return self.owner.volume
 
     class _FunctionFactory:
@@ -434,6 +435,65 @@ class ModalRenderClientTests(unittest.TestCase):
                          (2160, 3840, 30))
         self.assertEqual(sdk.remote_calls, [(job_id, "normalize")])
         self.assertEqual(result.remote_processing_seconds, 42.0)
+
+    def test_recovery_reads_verified_4k_cache_without_looking_up_or_invoking_worker(self):
+        source, *_rest, volume, sdk = _input_bundle(self.root, b"unused")
+        proxy = b"recoverable-4k-proxy"
+        source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+        profile_id = modal_renderer.MASTER_4K_NORMALIZATION_PROFILE_ID
+        cache_prefix = f"normalized-cache/{source_hash}/{profile_id}"
+        profile = {
+            "width": 2160, "height": 3840, "fps": 30,
+            "codec": "h264", "pixel_format": "yuv420p", "color_range": "tv",
+            "color_primaries": "bt709", "color_transfer": "bt709",
+            "color_space": "bt709", "audio_codec": "aac",
+            "audio_sample_rate": 48000, "audio_channels": 2,
+            "duration_seconds": 59.98,
+        }
+        manifest = {
+            "source_sha256": source_hash,
+            "profile_id": profile_id,
+            "proxy_path": f"{cache_prefix}/proxy.mp4",
+            "proxy_sha256": hashlib.sha256(proxy).hexdigest(),
+            "proxy_size_bytes": len(proxy),
+            "duration_seconds": 59.98,
+            "profile": profile,
+            "capabilities": {"ffmpeg_version": "test"},
+            "processing_seconds": 41.5,
+        }
+        volume.files[f"{cache_prefix}/manifest.json"] = json.dumps(manifest).encode()
+        volume.files[f"{cache_prefix}/proxy.mp4"] = proxy
+        progress = []
+
+        result = modal_renderer.ModalRenderClient(sdk).recover_cached_normalization(
+            input_path=source,
+            output_path=self.root / "recovered-4k.mp4",
+            profile_id=profile_id,
+            progress_callback=progress.append,
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.output_path.read_bytes(), proxy)
+        self.assertEqual(result.profile["width"], 2160)
+        self.assertEqual(result.profile["height"], 3840)
+        self.assertEqual(result.remote_processing_seconds, 41.5)
+        self.assertEqual(progress, ["checking_modal_cache", "downloading_recovered_proxy"])
+        self.assertEqual(sdk.volume_lookups, [(modal_renderer.MODAL_VOLUME_NAME, False)])
+        self.assertEqual(sdk.function_lookups, [])
+        self.assertEqual(sdk.remote_calls, [])
+
+    def test_recovery_without_manifest_returns_none_and_never_calls_worker(self):
+        source, *_rest, _volume, sdk = _input_bundle(self.root, b"unused")
+        result = modal_renderer.ModalRenderClient(sdk).recover_cached_normalization(
+            input_path=source,
+            output_path=self.root / "missing-recovery.mp4",
+            profile_id=modal_renderer.MASTER_4K_NORMALIZATION_PROFILE_ID,
+        )
+        self.assertIsNone(result)
+        self.assertFalse((self.root / "missing-recovery.mp4").exists())
+        self.assertEqual(sdk.volume_lookups, [(modal_renderer.MODAL_VOLUME_NAME, False)])
+        self.assertEqual(sdk.function_lookups, [])
+        self.assertEqual(sdk.remote_calls, [])
 
     def test_4k_normalization_budget_block_happens_before_modal_access(self):
         source, _effects, _plan, _transcript, job_id, _output, volume, sdk = _input_bundle(
