@@ -171,7 +171,7 @@ def process_local_video_modal(
     config: PipelineConfig | None = None,
     progress_callback: Any = None,
 ) -> dict[str, Any]:
-    """Render through Modal without invoking Shotstack or changing the local source."""
+    """Render through the Modal worker without changing the local source."""
     if not paid_api_authorized:
         raise PermissionError("El render en Modal requiere autorización humana explícita.")
     if not re.fullmatch(r"[0-9a-f]{32}", job_id or ""):
@@ -433,7 +433,6 @@ def process_local_video_modal(
         ),
         "paid_operations": {
             "openai_transcription": subtitle_mode == "dynamic" and subtitle_words is None,
-            "shotstack_render": False,
             "modal_render": True,
             "google_drive_upload": bool(upload_to_drive),
         },

@@ -1,7 +1,7 @@
 # MATRIX MOTION — prueba local aislada de Remotion
 
 Este directorio contiene el motor de composición. No se importa desde la
-aplicación Python ni usa Shotstack. El navegador de render se ejecuta con
+aplicación Python. El navegador de render se ejecuta con
 resolución de hosts externos bloqueada. El render no recibe clave de licencia
 ni llama al servicio de seguimiento de Remotion.
 
@@ -100,7 +100,7 @@ inventan tiempos. Un plan puede fijar `start_seconds` explícitamente. Los PIP y
 tarjetas tienen entrada scale/fade, esquinas de 16 px y sombra; sus inicios
 disparan un pop y un reencuadre suave limitado al 106%. `showSubtitles=false`
 desactiva los subtítulos y sus SFX asociados, pero no los overlays explícitos.
-No se ha conectado esta ruta experimental al procesamiento Python/Shotstack;
+No se ha conectado esta ruta experimental al procesamiento Python del panel;
 el briefing de esa ruta no se envía por sí solo al máster local.
 
 ### Archivos grandes y pruebas locales

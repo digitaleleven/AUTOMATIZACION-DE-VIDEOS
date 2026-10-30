@@ -1,7 +1,7 @@
 - [Permisos y costes](drive-and-paid-apis.md) — No ampliar permisos de Drive ni activar llamadas de pago o renders reales sin autorización explícita.
 - [Carpetas compartidas de Drive](shared-drive-folder-parents.md) — En la cuenta secundaria, `parents` puede faltar para una carpeta compartida; usa el ID verificado y limita la consulta a sus archivos.
 - [Origen de Preview interno](replit-preview-origin.md) — Valida el editor de Replit solo junto a un `X-Forwarded-Host` exacto del proyecto y protocolo HTTPS.
-- [Envíos inciertos a Shotstack](shotstack-ambiguous-submissions.md) — Una respuesta sin ID puede haber encolado el render; no reintentar hasta reconciliar el estado remoto.
+- [Envíos de render inciertos](shotstack-ambiguous-submissions.md) — Conserva el historial legado y bloquea reintentos remotos sin estado confirmado.
 - [Workspace pnpm anidado](nested-pnpm-workspace.md) — En un workspace aislado bajo la raíz Python, el filtro puede no seleccionar su único paquete; instala desde su propia raíz.
 - [Diagnóstico del proxy Remotion](remotion-proxy-cancellation.md) — En Remotion 4, los recortes son fotogramas; un MP4 puede decodificar bien y mostrar negro, así que inspecciona imagen y proxy.
 - [Audio de overlays parciales](remotion-partial-overlay-audio.md) — Un rango de render sin efectos de sonido puede producir una capa ProRes sin audio; conserva por separado el audio fuente.

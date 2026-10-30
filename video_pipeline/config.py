@@ -22,31 +22,18 @@ class PipelineConfig:
     local_input_dir: str = "data/incoming"
     output_dir: str = "outputs"
     openai_model: str = "whisper-1"
-    shotstack_environment: str = "stage"
-    shotstack_poll_seconds: float = 5.0
-    shotstack_timeout_seconds: float = 900.0
 
     @classmethod
     def from_environment(cls) -> "PipelineConfig":
-        environment = os.getenv("SHOTSTACK_ENVIRONMENT", "stage").strip().lower()
-        if environment != "stage":
-            raise ValueError("This project is locked to Shotstack Stage; production is disabled.")
         return cls(
             input_folder_id=INPUT_FOLDER_ID,
             processed_folder_id=PROCESSED_FOLDER_ID,
             logos_folder_id=LOGOS_FOLDER_ID,
-            shotstack_environment=environment,
-            shotstack_poll_seconds=float(os.getenv("SHOTSTACK_POLL_SECONDS", "5")),
-            shotstack_timeout_seconds=float(os.getenv("SHOTSTACK_TIMEOUT_SECONDS", "900")),
         )
 
     @property
     def openai_api_key_present(self) -> bool:
         return bool(os.getenv("OPENAI_API_KEY"))
-
-    @property
-    def shotstack_api_key_present(self) -> bool:
-        return bool(os.getenv("SHOTSTACK_API_KEY"))
 
     @property
     def google_oauth_token_present(self) -> bool:

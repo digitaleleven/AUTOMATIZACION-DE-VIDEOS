@@ -357,7 +357,8 @@ class VideoPanelApiTests(unittest.TestCase):
         health = json.loads(body.decode("utf-8"))
         self.assertEqual(status, 200)
         self.assertIsInstance(health["openai_key_configured"], bool)
-        self.assertIsInstance(health["shotstack_key_configured"], bool)
+        self.assertIn("modal", health)
+        self.assertNotIn("shotstack_key_configured", health)
         self.assertFalse(health["drive_connected"])
         self.assertNotIn("api_key", health)
 
@@ -1156,7 +1157,6 @@ class VideoPanelApiTests(unittest.TestCase):
         }
         with (
             patch.object(self.panel.executor, "submit") as submit,
-            patch("video_pipeline.webapp.ShotstackClient", side_effect=AssertionError("no provider calls")),
         ):
             with self.assertRaises(PanelError) as blocked:
                 self.panel.retry_job(job_id, payload)
@@ -1546,8 +1546,8 @@ class VideoPanelApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         proposal = json.loads(body.decode("utf-8"))
         self.assertEqual(proposal["api_plan"]["renderer_backend"], "modal")
-        self.assertFalse(proposal["api_plan"]["shotstack_key_configured"])
-        self.assertEqual(proposal["api_plan"]["shotstack_render_jobs"], 0)
+        self.assertFalse(any(key.startswith("shotstack") for key in proposal["api_plan"]))
+        self.assertFalse(any(key.startswith("shotstack") for key in proposal["costs"]))
         self.assertIsNone(proposal["costs"]["modal_compute_usd"])
         self.assertIsNone(proposal["costs"]["total_estimate_usd"])
         self.assertIn("tarifa cotizada", proposal["costs"]["estimate_note"])
@@ -2095,7 +2095,7 @@ class VideoPanelApiTests(unittest.TestCase):
             patch("video_pipeline.webapp.probe_video", return_value=SimpleNamespace(width=1080, height=1920)),
             patch.object(self.panel.store.ledger, "get", return_value={"output_path": str(output_path)}),
             patch.object(self.panel.store.ledger, "mark_completed") as mark_completed,
-            patch("video_pipeline.webapp.process_local_video") as process_local_video,
+            patch("video_pipeline.modal_pipeline.process_local_video_modal") as process_modal,
             patch(
                 "video_pipeline.webapp.PipelineConfig.from_environment",
                 return_value=SimpleNamespace(
@@ -2119,7 +2119,7 @@ class VideoPanelApiTests(unittest.TestCase):
         self.assertEqual(len(fake_drive.calls), 1)
         self.assertEqual(source_path.read_bytes(), b"untouched-original")
         mark_completed.assert_called_once()
-        process_local_video.assert_not_called()
+        process_modal.assert_not_called()
         self.assertEqual(
             self.panel.drive_store.get_import(drive_file_id)["status"], "uploaded"
         )

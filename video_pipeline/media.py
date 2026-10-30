@@ -383,11 +383,11 @@ def validate_rendered_output(
     return result
 
 
-def prepare_video_for_shotstack(
+def prepare_video_for_editing(
     video: VideoInfo,
     work_dir: str | Path,
 ) -> tuple[VideoInfo, dict[str, str | bool]]:
-    """Normalize only HEVC or incompatible audio/rotation for broad H.264 editing support."""
+    """Normalize HEVC or incompatible audio/rotation for H.264 editing support."""
     source_path = Path(video.path)
     if video.dolby_vision_profile is not None:
         raise MediaError(

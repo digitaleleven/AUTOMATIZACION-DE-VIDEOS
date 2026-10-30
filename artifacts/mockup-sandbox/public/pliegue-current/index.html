@@ -44,7 +44,7 @@
 
         <div class="notice-band" role="note">
           <span class="notice-icon">i</span>
-          <p><strong>Sin envíos automáticos.</strong> El archivo original no se modifica. OpenAI y Shotstack solo se usan al iniciar un procesamiento con tu autorización explícita.</p>
+          <p><strong>Sin envíos automáticos.</strong> El archivo original no se modifica. Los servicios externos solo se usan al iniciar un procesamiento con tu autorización explícita.</p>
           <button id="refresh-button" class="quiet-button" type="button">Actualizar datos <span>↻</span></button>
         </div>
 
@@ -95,11 +95,11 @@
             </div>
             <div class="health-list">
               <div><span>OpenAI</span><b id="health-openai" class="health-unknown">Sin consultar</b></div>
-              <div><span>Shotstack</span><b id="health-shotstack" class="health-unknown">Sin consultar</b></div>
+              <div><span>Motor MATRIX</span><b id="health-modal" class="health-unknown">Sin consultar</b></div>
               <div><span>Entorno</span><b id="health-environment" class="health-unknown">Desconocido</b></div>
               <div><span>Google Drive</span><b id="health-drive" class="health-unknown">Sin consultar</b></div>
             </div>
-            <label class="consent-check"><input id="paid-consent" type="checkbox"><span>Autorizo el envío de este vídeo a servicios externos de pago (OpenAI y Shotstack Stage).</span></label>
+            <label class="consent-check"><input id="paid-consent" type="checkbox"><span>Autorizo el procesamiento externo de este vídeo cuando pulse iniciar.</span></label>
             <label class="consent-check unknown-check" id="unknown-cost-wrap" hidden><input id="unknown-cost-consent" type="checkbox"><span>Entiendo que el coste es desconocido y podría haber cargos.</span></label>
             <button class="primary-button" id="process-button" type="button" disabled><span>Iniciar procesamiento</span><b>→</b></button>
             <p class="button-hint" id="process-hint">Selecciona una fuente y revisa las autorizaciones.</p>
@@ -148,7 +148,6 @@
                   <label>Duración máxima (segundos)<input name="max_video_duration_seconds" type="number" min="1" step="1"></label>
                   <label>Máximo de bloques de transcripción<input name="max_transcription_chunks" type="number" min="1" step="1"></label>
                   <label>OpenAI · USD por minuto de audio<input name="openai_price_per_audio_minute_usd" type="number" min="0" step="0.0001" placeholder="Desconocido"></label>
-                  <label>Shotstack · USD por minuto de render<input name="shotstack_price_per_render_minute_usd" type="number" min="0" step="0.0001" placeholder="Desconocido"></label>
                   <label>Límite estimado total (USD)<input name="max_estimated_cost_usd" type="number" min="0" step="0.01" placeholder="Sin límite configurado"></label>
                 </div>
               </div>

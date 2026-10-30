@@ -1,3 +1,4 @@
+
 """Run the local web panel for the video processing pipeline."""
 
 import os

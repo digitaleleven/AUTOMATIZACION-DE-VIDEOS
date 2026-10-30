@@ -14,8 +14,7 @@ from .style import load_video_style
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Transcribe and render a local MP4/MOV; optionally save a new Drive file. "
-            "Live paid APIs require explicit opt-in."
+            "Inspect local MP4/MOV files. Rendering is available through the authenticated web panel."
         )
     )
     mode = parser.add_mutually_exclusive_group(required=True)
@@ -27,7 +26,7 @@ def _parser() -> argparse.ArgumentParser:
     mode.add_argument(
         "--process",
         metavar="VIDEO",
-        help="Transcribe and render one local MP4 or MOV using OpenAI and Shotstack.",
+        help="Retired: local CLI rendering is disabled; use the authenticated panel and Modal worker.",
     )
     parser.add_argument(
         "--input-dir",
@@ -58,8 +57,7 @@ def _parser() -> argparse.ArgumentParser:
         "--authorize-paid-apis",
         action="store_true",
         help=(
-            "Explicitly authorize sending this video to OpenAI and Shotstack, "
-            "using their paid APIs; Drive upload is enabled unless --local-only is set."
+            "Compatibility flag retained for old scripts; it does not enable CLI rendering."
         ),
     )
     parser.add_argument(
@@ -102,11 +100,9 @@ def main() -> int:
             return 2
 
     if not args.authorize_paid_apis:
-        drive_effect = "" if args.local_only else " y crear un archivo nuevo en Drive"
         parser.error(
-            "El procesamiento real puede generar cargos, enviar el vídeo a Shotstack"
-            f"{drive_effect}. "
-            "Add --authorize-paid-apis only after explicitly approving those actions."
+            "El procesamiento por CLI está retirado. Para editar, usa el panel autenticado "
+            "con el worker Modal; no se ha enviado el vídeo a ningún servicio."
         )
 
     try:

@@ -1,6 +1,6 @@
 # MATRIX MOTION — VIDEO AUTOMATION STUDIO
 
-«De vídeo original a contenido listo para publicar». El proyecto acepta vídeos locales `.MP4` y `.MOV` y prepara una edición 9:16 con OpenAI y Shotstack. La interfaz web guarda el resultado únicamente en `outputs/`; el comando CLI conserva, por defecto, la opción de crear una copia nueva en Procesados de Google Drive. Ningún flujo modifica el original ni amplía permisos OAuth.
+«De vídeo original a contenido listo para publicar». El proyecto acepta vídeos locales `.MP4` y `.MOV`, prepara una edición vertical y ejecuta los renders desde el panel autenticado mediante el worker Modal/Remotion. FFmpeg normaliza los medios cuando hace falta. Ningún flujo modifica el original ni amplía permisos OAuth.
 
 ## Implementado
 
@@ -11,26 +11,25 @@
 - Extracción temporal de audio con FFmpeg en bloques de hasta 15 minutos; cada bloque se codifica como MP3 mono a 16 kHz y 64 kb/s, con desplazamiento temporal aplicado a las palabras para mantener los subtítulos sincronizados.
 - Transcripción `whisper-1` en `verbose_json`, solicitando timestamps por palabra y segmento. La salida se normaliza; si faltan tiempos por palabra, se estiman dentro del segmento.
 - Captions SRT de 2–4 palabras sincronizados con el audio.
-- Edición Shotstack con `rich-caption`, animación/highlight por palabra, trazo legible y subtítulos en zona inferior segura.
+- Render mediante el worker Modal/Remotion, con subtítulos dinámicos y validación FFprobe del resultado.
 - Estilo configurable en `video_style.json`: fuente, colores, animación, posición, emojis asociados manualmente y logo local opcional.
 - Perfiles verticales MP4 de 720 × 1280, 1080 × 1920 y 2160 × 3840. El perfil 4K se habilita solo para una fuente maestra de al menos 2160 × 3840; se admiten 25, 30, 50 o 60 FPS. La validación 4K está preparada en el código, pero aún no se ha comprobado con un render remoto.
-- Ingest de MP4, SRT y, opcionalmente, logo a Shotstack. Resultado descargado como archivo nuevo; el original no se modifica ni sobrescribe.
+- El resultado validado se guarda como archivo nuevo; el original no se modifica ni sobrescribe.
 - Carga del render validado a Drive en fragmentos de 8 MB como archivo nuevo, con consulta del avance y reanudación tras cortes. El estado local de la sesión se conserva con permisos restrictivos y no incluye el token OAuth.
-- SQLite local (`data/processing.sqlite3`) para detectar vídeos ya completados, reanudar un render existente y permitir como máximo un reintento manual. Cada ejecución conserva una clave estable que combina el hash del original y la configuración exacta.
-- Antes de solicitar un render, el estado persistente pasa a “envío incierto”; si el proceso se interrumpe antes de guardar el ID remoto, el sistema bloquea el reenvío ciego. Los reintentos consultan el ID guardado, y reutilizan el MP4 local ya validado si existe.
+- SQLite local conserva el historial de trabajos y evita procesamientos duplicados. Los reintentos de render están bloqueados; para volver a procesar se requiere una propuesta nueva y autorización humana.
 - Las salidas de Drive llevan una clave privada de ejecución en `appProperties`; antes de crear otro archivo, se busca el resultado anterior en `02_PROCESADOS`. Las cargas interrumpidas conservan su sesión reanudable y los originales no se modifican.
 - Límites por defecto: un vídeo por ejecución, sin límite fijo de tamaño de archivo, 30 minutos de vídeo, dos bloques de transcripción y un nuevo render por intento. La duración y el máximo de llamadas se pueden ajustar en `video_style.json`.
 - `requirements.txt` fija las versiones usadas. El panel y su API usan la biblioteca estándar de Python y no añaden dependencias web.
 
 La animación activa destaca la palabra que se está pronunciando; el proyecto no realiza análisis semántico para decidir qué palabras son “importantes”. Los emojis son opcionales y solo se añaden si se configuran en `emoji_by_keyword`.
 
-## Shotstack: Stage exclusivamente
+## Motor de render vigente
 
-La configuración y el cliente rechazan cualquier entorno que no sea `stage`; no hay una ruta de producción habilitada. Replit Secrets informa que existen `OPENAI_API_KEY` y `SHOTSTACK_API_KEY`, pero no se han leído ni mostrado sus valores. Tampoco se ha comprobado mediante una llamada que la clave de Shotstack corresponda a Stage, porque no se han realizado solicitudes externas.
+El panel usa el worker de Modal con Remotion. La ruta antigua de render por CLI se ha retirado y responde con un error explícito; el CLI solo mantiene la inspección en modo `--dry-run`. No se ha desplegado ni invocado el worker durante esta retirada.
 
-La transcripción y el render de Shotstack siguen detrás de una autorización explícita. El panel solo sube a Drive resultados de vídeos importados desde Drive, después de validar el render y con una autorización OAuth guardada; los vídeos locales se mantienen locales. El CLI conserva su ruta anterior, que requiere `GOOGLE_OAUTH_TOKEN` y no se ejecuta desde el panel. Los reintentos automáticos del SDK de OpenAI están desactivados.
+Las llamadas de análisis, transcripción y cómputo requieren autorización humana y configuración disponible. Los resultados de importaciones de Drive pueden subirse como archivos nuevos después de validar el render; el original no se sobrescribe. Los reintentos de render están desactivados.
 
-Antes de procesar, la aplicación comprueba la presencia de las claves de OpenAI y Shotstack y bloquea Shotstack a Stage. Para una entrada de Drive necesita además una autorización Drive válida. Si Drive rechaza el destino, el render local se conserva y puede reintentarse solo la subida, sin volver a renderizar.
+Antes de procesar, la aplicación valida las configuraciones necesarias para el flujo Modal/R2 y, si el origen procede de Drive, exige una sesión Drive válida. Si falla la subida a Drive, se puede reintentar únicamente esa subida sin repetir el render.
 
 ## Google Drive: selección explícita, scope sin ampliar
 
@@ -48,7 +47,7 @@ La sincronización descarga los MP4 seleccionados a `data/incoming/` y los logos
 
 - Probado localmente con respuestas HTTP simuladas: OAuth state/PKCE, verificación de cuenta, cifrado y renovación de tokens, selección de carpetas/archivos, descargas sin sobrescritura, importación idempotente y creación simulada de archivos nuevos.
 - No probado con una cuenta Google real: OAuth, permisos efectivos, descarga real ni creación real en Procesados.
-- No se han realizado llamadas reales a Google, OpenAI o Shotstack ni se han cambiado permisos.
+- En esta retirada no se han realizado llamadas externas, renders ni cambios de permisos.
 
 `video_pipeline/drive.py` sube archivos nuevos en fragmentos acotados y recupera el punto confirmado por Drive tras un corte. El estado de sesión guardado permite que un reintento posterior retome la transferencia sin leer el render completo en memoria. El CLI puede seguir usando `GOOGLE_OAUTH_TOKEN` en su ruta anterior.
 
@@ -62,7 +61,7 @@ python -m video_pipeline --dry-run
 bash scripts/post-merge.sh
 ```
 
-Las pruebas usan MP4/MOV sintéticos, incluido un H.265 generado localmente, mocks de las APIs y payloads construidos sin enviarlos. También prueban la API local del panel, la validación y la reproducción por rangos. **No son prueba de una transcripción ni un render real de Shotstack o Drive.**
+Las pruebas usan MP4/MOV sintéticos, incluido un H.265 generado localmente, mocks de las APIs y la API local del panel. También prueban la validación y la reproducción por rangos. **No verifican un render remoto real ni el acceso real a Drive.**
 
 ## Abrir el panel y cargar un vídeo local
 
@@ -74,7 +73,7 @@ Las pruebas usan MP4/MOV sintéticos, incluido un H.265 generado localmente, moc
 
 Para ejecutar el panel manualmente: `python main.py`. La biblioteca local se guarda en `data/incoming/`; los archivos originales subidos no se sobrescriben. El porcentaje de trabajo no se inventa: el panel muestra fases reales mientras el motor no disponga de una medición porcentual.
 
-## Primer render real (todavía no autorizado)
+## Primer render desde el panel
 
 1. Coloca el MP4 o MOV local de prueba en `data/incoming/`.
 2. Comprueba su preflight sin llamadas remotas:
@@ -83,30 +82,21 @@ Para ejecutar el panel manualmente: `python main.py`. La biblioteca local se gua
    python -m video_pipeline --dry-run --input-dir data/incoming
    ```
 
-3. Completa las tarifas vigentes de tu cuenta en `video_style.json` si quieres que el preflight calcule un importe USD. Sin esas tarifas informa que el importe es desconocido; no inventa precios.
-4. Solo cuando autorices el coste y el envío del archivo, ejecuta una sola vez:
-
-   ```bash
-   python -m video_pipeline --process data/incoming/prueba.mp4 --authorize-paid-apis --local-only
-   ```
-
-El render validado se guarda en `outputs/`. Con `--local-only` no se intenta subirlo a Drive. Sin esa opción, el CLI crea un archivo nuevo en Procesados y necesita un token autorizado previamente. Si el vídeo ya está marcado como completado, el hash impide procesarlo de nuevo.
+3. Si el coste sigue apareciendo como desconocido, no inicies el procesamiento hasta revisar las tarifas de Modal y R2 fuera de la aplicación.
+4. Para renderizar, vuelve al panel autenticado, revisa la propuesta y autoriza cada operación desde la interfaz. El comando CLI de render está retirado; `--dry-run` solo inspecciona archivos y nunca inicia trabajos.
 
 ## Pendiente y limitaciones
 
-- No hay vídeo real de usuario procesado y no se ha hecho ninguna llamada real a OpenAI o Shotstack. El secreto de Shotstack existe, pero no se ha verificado su correspondencia con Stage mediante API.
+- La retirada de Shotstack se ha verificado localmente; el funcionamiento remoto de Modal/R2 no se ha verificado en esta tarea.
 - Se validó localmente un segmento de 1 s de una captura real de iPhone 17 Pro: HEVC Main 10, HLG BT.2020 limitado, Dolby Vision 8.4 (RPU presente), 2160×3840 vertical y rotación 0. La copia temporal se convirtió a H.264 SDR BT.709, 1080×1920 y 30 FPS; los metadatos de color de salida se verificaron y el archivo de origen no se modificó. No se llamó a OpenAI, Shotstack, Drive ni Modal.
 - Compatibilidad de color/orientación: el flujo local de Modal acepta SDR BT.709 y HLG BT.2020 limitado. HLG se convierte a SDR BT.709; no conserva el HDR. Dolby Vision 8.4 compatible con HLG se procesa usando su capa base HLG: el RPU dinámico no se conserva y el resultado no es un máster Dolby Vision. Otros perfiles Dolby Vision se rechazan con un error claro. La conversión H.264 de compatibilidad antigua también rechaza Dolby Vision para no descartar silenciosamente sus metadatos dinámicos. Perfiles de color desconocidos o HLG de rango completo no se convierten; requieren una ruta de color explícita.
 - FFmpeg aplica la orientación de presentación al recodificar en el flujo de Modal; la prueba automatizada comprueba que la salida sigue vertical y BT.709 y que el hash del original no cambia. El clip real validado ya era vertical con rotación 0; las rotaciones 90°/270° se detectan en metadatos y se reflejan en las dimensiones mostradas. El resultado HLG→SDR todavía requiere revisión visual humana de color antes de aprobarlo como acabado final.
-- Falta revisión visual y auditiva del primer resultado real; también hace falta comprobar la respuesta real de Shotstack y sus defaults de códec/fps. Los renders remotos no se simulan como verificados.
+- Falta una revisión visual y auditiva de un resultado real del flujo Modal.
 - La composición centra y conserva fuentes no 9:16 con letterboxing; no hace seguimiento facial ni reencuadre semántico.
 - El logo se incorpora si se especifica un archivo local en `video_style.json`. El acceso al logo de Drive no está implementado.
-- El importe USD es desconocido hasta que se configuren precios actuales por minuto para ambas APIs en `video_style.json`; revisa también si tu plan cobra conceptos adicionales de almacenamiento, transferencia o impuestos.
+- El coste final de Modal y R2 no se estima en este proyecto; revisa las tarifas configuradas en esas cuentas antes de autorizar un render.
 - Google Drive no lista ni descarga entradas y no amplía OAuth. Se necesita un token OAuth vigente con acceso de creación en Procesados; la autorización/selección de carpetas y archivos de entrada sigue pendiente por separado.
 
 ## Referencias consultadas
 
 - OpenAI Transcriptions: https://platform.openai.com/docs/api-reference/audio/createTranscription
-- Shotstack Rich Captions: https://shotstack.io/docs/guide/architecting-an-application/rich-captions/
-- Shotstack Positioning: https://shotstack.io/docs/guide/architecting-an-application/positioning/
-- Shotstack Ingest: https://shotstack.io/docs/guide/ingesting-footage/sources.md

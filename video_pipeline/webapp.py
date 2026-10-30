@@ -62,10 +62,8 @@ from .drive import (
     save_folder_selection,
 )
 from .pipeline import (
-    RENDER001_THIRD_RETRY_SOURCE_SHA256,
     _cost_estimate_note,
     _estimate_cost,
-    process_local_video,
     sync_drive_media,
 )
 from .modal_pipeline import process_local_video_modal
@@ -74,7 +72,6 @@ from .gemini_video import analyze_video
 from .transcription import transcribe_video
 from .r2_storage import configuration_status as r2_configuration_status, upload_mp4 as upload_mp4_to_r2
 from .state import ProcessingLedger
-from .shotstack import ShotstackClient, ShotstackError
 from .state import ProcessingLedger
 from .style import (
     OUTPUT_PROFILES,
@@ -219,43 +216,6 @@ def _validate_panel_customization(raw: Any) -> tuple[dict[str, Any], dict[str, A
     }
     return style_overrides, render_settings, notes.strip()
 GOOGLE_OAUTH_STATE_COOKIE = "matrix_motion_google_oauth_state"
-RENDER001_THIRD_RETRY_TARGET = {
-    "job_id": "8ec0c6cb1ff84b6f94d8dd0c64a56747",
-    "previous_job_id": "621e5ca005984410bd922aea07144588",
-    "source_id": "608c74727e18449da2899f75d426f8c9",
-    "source_sha256": RENDER001_THIRD_RETRY_SOURCE_SHA256,
-    "filename": "0415.mov",
-}
-RENDER001_THIRD_RETRY_PLAN = {
-    "cuts": [],
-    "zooms": [{"start_seconds": 10.0, "end_seconds": 13.0, "effect": "zoomIn"}],
-    "stickers": [{
-        "sticker": "sparkle",
-        "start_seconds": 4.0,
-        "duration_seconds": 1.5,
-        "position": "topRight",
-        "effect": "zoomIn",
-        "color": "#FFD84D",
-    }],
-}
-
-
-def _matches_render001_third_retry_configuration(
-    style: VideoStyle,
-    subtitle_mode: str,
-    creative_plan: dict[str, Any],
-) -> bool:
-    return (
-        subtitle_mode == "none"
-        and style.output_width == 1080
-        and style.output_height == 1920
-        and style.output_fps == 50
-        and style.output_quality == "high"
-        and not style.logo_path
-        and creative_plan == RENDER001_THIRD_RETRY_PLAN
-    )
-
-
 class PanelError(RuntimeError):
     def __init__(self, message: str, status_code: int = 400):
         super().__init__(message)
@@ -664,18 +624,10 @@ class VideoPanel:
 
     def health(self) -> dict[str, Any]:
         drive_status = self.drive_status()
-        modal_status = modal_configuration_status()
-        try:
-            config = PipelineConfig.from_environment()
-            environment = config.shotstack_environment
-        except ValueError:
-            environment = "configuración inválida"
         return {
             "openai_key_configured": bool(os.getenv("OPENAI_API_KEY")),
             "gemini_key_configured": bool(os.getenv("GEMINI_API_KEY")),
-            "shotstack_key_configured": bool(os.getenv("SHOTSTACK_API_KEY")),
-            "shotstack_environment": environment,
-            "modal": modal_status,
+            "modal": modal_configuration_status(),
             "r2_storage": r2_configuration_status(),
             "drive_connected": bool(drive_status.get("ready") and drive_status.get("verified")),
             "drive_oauth_ready": bool(drive_status.get("ready")),
@@ -704,9 +656,9 @@ class VideoPanel:
             saved_mode = options.get("render_mode", "full")
             if saved_mode != render_mode:
                 continue
-            backend = options.get("renderer_backend", "shotstack_stage")
-            if backend not in {"shotstack_stage", "modal"}:
-                backend = "shotstack_stage"
+            backend = options.get("renderer_backend")
+            if backend != "modal":
+                backend = "retired_legacy"
             return str(job.get("status") or "ready"), backend
 
         ledger_key = hashlib.sha256(
@@ -721,11 +673,11 @@ class VideoPanel:
                 options = json.loads(processing.get("edit_options_json") or "{}")
             except (TypeError, json.JSONDecodeError):
                 options = {}
-            backend = options.get("renderer_backend", "shotstack_stage")
-            if backend not in {"shotstack_stage", "modal"}:
-                backend = "shotstack_stage"
+            backend = options.get("renderer_backend")
+            if backend != "modal":
+                backend = "retired_legacy"
             return str(processing.get("status") or "ready"), backend
-        return "ready", "shotstack_stage"
+        return "ready", "modal"
 
     def drive_config(self) -> dict[str, Any]:
         return {
@@ -1519,7 +1471,11 @@ class VideoPanel:
             ),
             "caption_style_overrides": metadata.get("caption_style_overrides", {}),
             "status": status,
-            "latest_job_backend": latest_options.get("renderer_backend", "shotstack_stage"),
+            "latest_job_backend": (
+                "modal"
+                if latest_options.get("renderer_backend") == "modal"
+                else ("retired_legacy" if latest_options else "modal")
+            ),
             "output_id": output_id,
             "error": error,
             "cost_estimate_usd": estimate,
@@ -1538,80 +1494,16 @@ class VideoPanel:
             and drive_import.get("status") == "upload_failed"
             and self.store.latest_job_for_source(upload["id"])
         )
-        attempts_used = int(processing.get("attempts") or 0)
-        has_retry = any(int(attempt.get("attempt_number") or 1) > 1 for attempt in attempt_history)
-        prior_error = f"{job.get('error') or ''} {processing.get('error') or ''}" if job else ""
-        remote_status_check_available = bool(processing.get("render_id"))
-        try:
-            saved_processing_options = json.loads(processing.get("edit_options_json") or "{}")
-            if not isinstance(saved_processing_options, dict):
-                saved_processing_options = {}
-            saved_style_data = saved_processing_options.get("style") or {}
-            saved_style = VideoStyle(**saved_style_data)
-        except (TypeError, ValueError, json.JSONDecodeError):
-            saved_processing_options = {}
-            saved_style = None
-        target = RENDER001_THIRD_RETRY_TARGET
-        exact_target = (
-            upload["id"] == target["source_id"]
-            and upload["source_sha256"] == target["source_sha256"]
-            and upload["original_filename"] == target["filename"]
-            and job is not None
-            and job.get("id") == target["job_id"]
-            and job.get("retry_of_job_id") == target["previous_job_id"]
-        )
-        failed_history = (
-            len(attempt_history) == 2
-            and [int(attempt.get("attempt_number") or 1) for attempt in attempt_history] == [1, 2]
-            and attempt_history[0].get("id") == target["previous_job_id"]
-            and attempt_history[1].get("id") == target["job_id"]
-            and all("HTTP 400" in str(attempt.get("error") or "") for attempt in attempt_history)
-        )
-        active_job = self.store.get_job(self.active_job_id) if self.active_job_id else None
-        no_active_job = not active_job or active_job.get("status") in TERMINAL_STATUSES
-        saved_plan = saved_processing_options.get("creative_plan")
-        saved_mode = saved_processing_options.get("subtitle_mode")
-        third_retry_options_match = bool(
-            saved_style
-            and _matches_render001_third_retry_configuration(
-                saved_style,
-                saved_mode,
-                saved_plan if isinstance(saved_plan, dict) else {},
-            )
-            and latest_options.get("subtitle_mode") == "none"
-            and latest_options.get("output_profile") == "1080p"
-            and latest_options.get("output_quality") == "high"
-            and latest_options.get("output_fps") == 50
-            and latest_options.get("creative_plan") == RENDER001_THIRD_RETRY_PLAN
-        )
         result.update({
             "attempt_history": attempt_history,
             "latest_job_id": job.get("id") if job else None,
             "latest_attempt_number": int(job.get("attempt_number") or 1) if job else None,
             "retry_settings": latest_options if isinstance(latest_options, dict) else {},
             "retry_estimated_cost_usd": job.get("estimated_cost_usd") if job else None,
-            "retry_remote_status_check_available": remote_status_check_available,
+            "retry_remote_status_check_available": False,
             "retry_will_upload_to_drive": bool(drive_import),
-            "can_retry_render": bool(
-                job
-                and job.get("status") == "failed"
-                and int(job.get("attempt_number") or 1) == 1
-                and processing.get("status") == "failed"
-                and attempts_used == 1
-                and not has_retry
-                and (remote_status_check_available or "HTTP 400" in prior_error)
-            ),
-            "can_run_controlled_third_render": bool(
-                exact_target
-                and failed_history
-                and job.get("status") == "failed"
-                and processing.get("status") == "failed"
-                and attempts_used == 2
-                and not remote_status_check_available
-                and "HTTP 400" in prior_error
-                and third_retry_options_match
-                and no_active_job
-            ),
+            "can_retry_render": False,
+            "can_run_controlled_third_render": False,
         })
         return result
 
@@ -1651,7 +1543,7 @@ class VideoPanel:
             raise PanelError("Elige subtítulos dinámicos, sencillos o sin subtítulos.")
         render_backend = str(payload.get("render_backend") or "modal")
         if render_backend != "modal":
-            raise PanelError("Shotstack está deshabilitado. La aplicación solo permite propuestas para Modal.", 409)
+            raise PanelError("El panel solo admite el motor de render Modal.", 409)
         if subtitle_mode == "simple":
             raise PanelError(
                 "El motor Remotion de Modal admite subtítulos dinámicos o ninguno; "
@@ -1773,7 +1665,6 @@ class VideoPanel:
             )
         )
         gemini_cost = None
-        shotstack_cost = None
         modal_status = modal_configuration_status()
         drive_import = (
             self.drive_store.get_import_for_local_upload(source_id)
@@ -1883,12 +1774,8 @@ class VideoPanel:
                 "gemini_model": "gemini-3.8-flash",
                 "gemini_key_configured": bool(os.getenv("GEMINI_API_KEY")),
                 "renderer_backend": render_backend,
-                "shotstack_environment": None,
-                "shotstack_render_jobs": 0,
-                "shotstack_ingested_assets": 0,
                 "max_renders_per_attempt": 1,
                 "openai_key_configured": bool(os.getenv("OPENAI_API_KEY")),
-                "shotstack_key_configured": False,
                 "modal_sdk_installed": modal_status["sdk_installed"],
                 "modal_credentials_configured": modal_status["credentials_configured"],
                 "modal_deployment_status": modal_status["deployment_status"],
@@ -1897,7 +1784,6 @@ class VideoPanel:
             "costs": {
                 "openai_usd": openai_cost,
                 "gemini_usd": gemini_cost,
-                "shotstack_usd": shotstack_cost,
                 "modal_compute_usd": None,
                 "r2_storage_usd": None,
                 "total_estimate_usd": estimate,
@@ -1983,7 +1869,7 @@ class VideoPanel:
         edit_options = dict(proposal["options"])
         render_backend = edit_options.get("renderer_backend", "modal")
         if render_backend != "modal":
-            raise PanelError("Shotstack está deshabilitado. No se enviará ningún render por ese motor.", 409)
+            raise PanelError("El panel solo admite el motor de render Modal.", 409)
         render_mode = str(proposal["options"].get("render_mode") or "full")
         existing_status, existing_backend = self._source_render_state_for_mode(upload, render_mode)
         if existing_status in {"processing", "queued"}:
@@ -2067,7 +1953,7 @@ class VideoPanel:
         *,
         controlled_third_attempt: bool = False,
     ) -> dict[str, Any]:
-        """Reserve an owner-authorized retry; the one-off third attempt is target-locked."""
+        """Render retries are disabled; preserve prior records without resubmitting."""
         if not isinstance(payload, dict):
             raise PanelError("La solicitud de reintento debe ser un objeto JSON.")
         raise PanelError(
@@ -2225,17 +2111,10 @@ class VideoPanel:
             if source_hash != upload["source_sha256"]:
                 raise PanelError("El original cambió desde el primer intento; no se reintentará.", 409)
 
-            try:
-                config = PipelineConfig.from_environment()
-            except ValueError as exc:
-                raise PanelError("La configuración de Shotstack no está lista para Stage.", 409) from exc
-            if config.shotstack_environment != "stage":
-                raise PanelError("Los reintentos están bloqueados fuera de Shotstack Stage.", 409)
-            health = self.health()
-            if not health["shotstack_key_configured"]:
-                raise PanelError("Falta la configuración de Shotstack; no se inició ningún trabajo.", 409)
-            if subtitle_mode != "none" and not health["openai_key_configured"]:
-                raise PanelError("Falta la configuración de OpenAI requerida por esta edición.", 409)
+            raise PanelError(
+                "Los reintentos están deshabilitados; prepara una propuesta nueva antes de otro render.",
+                409,
+            )
 
             estimate = previous.get("estimated_cost_usd")
             if estimate is None and payload.get("unknown_cost_acknowledged") is not True:
@@ -2246,33 +2125,6 @@ class VideoPanel:
 
             render_id = processing.get("render_id")
             resume_existing_render = False
-            if render_id:
-                try:
-                    remote_status, _ = ShotstackClient(environment="stage").render_status(render_id)
-                except ShotstackError as exc:
-                    raise PanelError(
-                        f"No se pudo verificar el estado remoto; no se envió un reintento: {exc}",
-                        502,
-                    ) from None
-                if remote_status == "done":
-                    resume_existing_render = True
-                elif remote_status not in {"failed", "cancelled"}:
-                    raise PanelError(
-                        "Shotstack informa un render activo o un estado no concluyente; no se duplicará.",
-                        409,
-                    )
-            else:
-                previous_error = f"{previous.get('error') or ''} {processing.get('error') or ''}"
-                if "HTTP 400" not in previous_error:
-                    raise PanelError(
-                        "No hay ID remoto ni rechazo HTTP 400 verificable; no es seguro reenviar.",
-                        409,
-                    )
-                if payload.get("confirm_no_render_id") is not True:
-                    raise PanelError(
-                        "No existe ID de render para consultar a Shotstack. Confirma que aceptas esta limitación.",
-                        403,
-                    )
 
             retry_options = {
                 "subtitle_mode": subtitle_mode,
@@ -2361,7 +2213,7 @@ class VideoPanel:
                 else None
             )
             if edit_options.get("renderer_backend", "modal") != "modal":
-                raise PanelError("Shotstack está deshabilitado; no se envió ningún trabajo.")
+                raise PanelError("El panel solo admite el motor de render Modal.")
             if retry_failed or allow_third_attempt:
                 raise PanelError("Los reintentos de Modal están bloqueados para evitar renders duplicados.", 409)
             original_video = probe_video(source_path)

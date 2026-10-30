@@ -60,7 +60,7 @@ class DriveScopeTests(unittest.TestCase):
         self.assertFalse(pipeline_config.google_picker_configured)
 
     def test_pipeline_uses_only_the_three_fixed_folders_without_picker(self):
-        with patch.dict(os.environ, {"SHOTSTACK_ENVIRONMENT": "stage"}, clear=True):
+        with patch.dict(os.environ, {}, clear=True):
             config = PipelineConfig.from_environment()
         self.assertEqual(config.input_folder_id, INPUT_FOLDER_ID)
         self.assertEqual(config.processed_folder_id, PROCESSED_FOLDER_ID)

@@ -124,8 +124,8 @@ class ProcessingLedger:
                 )
             if job["status"] == "submission_unknown":
                 raise RetryNotAllowedError(
-                    "Shotstack may have accepted the previous render request. "
-                    "Reconcile its remote status before any retry."
+                        "A remote render may have accepted the previous request. "
+                        "Reconcile its status before any retry."
                 )
             if allow_third_attempt and job["status"] != "failed":
                 raise RetryNotAllowedError("The controlled third attempt requires a failed prior attempt.")
@@ -188,9 +188,11 @@ class ProcessingLedger:
             return dict(row) if row else {}
 
     def update(self, source_sha256: str, **fields: Any) -> None:
+        # Legacy database columns remain intact for historical rows, but new code
+        # no longer writes provider-specific fields.
         allowed = {
-            "output_path", "captions_json", "shotstack_source_url", "subtitle_url",
-            "logo_url", "render_id", "execution_key", "error", "status"
+            "output_path", "captions_json", "subtitle_url", "logo_url",
+            "render_id", "execution_key", "error", "status"
         }
         if not fields or set(fields) - allowed:
             raise ValueError("Unsupported or empty processing-ledger update.")

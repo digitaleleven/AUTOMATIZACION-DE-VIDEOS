@@ -19,7 +19,6 @@
   "max_video_duration_seconds": 1800,
   "max_transcription_chunks": 2,
   "openai_price_per_audio_minute_usd": null,
-  "shotstack_price_per_render_minute_usd": null,
   "max_estimated_cost_usd": null,
   "output_width": 1080,
   "output_height": 1920

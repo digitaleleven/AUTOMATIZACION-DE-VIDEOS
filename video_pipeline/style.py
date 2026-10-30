@@ -73,7 +73,6 @@ class VideoStyle:
     max_video_duration_seconds: int = 1800
     max_transcription_chunks: int = 2
     openai_price_per_audio_minute_usd: float | None = None
-    shotstack_price_per_render_minute_usd: float | None = None
     max_estimated_cost_usd: float | None = None
 
 
@@ -123,7 +122,7 @@ def load_video_style(path: str | Path = "video_style.json") -> VideoStyle:
         "top", "topRight", "right", "bottomRight", "bottom",
         "bottomLeft", "left", "topLeft", "center",
     }:
-        raise StyleConfigError("logo_position must be one of Shotstack's nine clip positions.")
+        raise StyleConfigError("logo_position must be one of the supported nine positions.")
     if not 0.02 <= float(values["logo_scale"]) <= 0.4:
         raise StyleConfigError("logo_scale must be between 0.02 and 0.4.")
     if any(not -1 <= float(values[key]) <= 1 for key in ("logo_offset_x", "logo_offset_y")):
@@ -145,7 +144,6 @@ def load_video_style(path: str | Path = "video_style.json") -> VideoStyle:
         raise StyleConfigError("max_transcription_chunks must be positive.")
     for key in (
         "openai_price_per_audio_minute_usd",
-        "shotstack_price_per_render_minute_usd",
         "max_estimated_cost_usd",
     ):
         rate = values[key]
@@ -167,8 +165,7 @@ def load_video_style(path: str | Path = "video_style.json") -> VideoStyle:
         values[key] = int(values[key])
     for key in (
         "caption_offset_y", "logo_scale", "logo_offset_x", "logo_offset_y",
-        "openai_price_per_audio_minute_usd", "shotstack_price_per_render_minute_usd",
-        "max_estimated_cost_usd",
+        "openai_price_per_audio_minute_usd", "max_estimated_cost_usd",
     ):
         if values[key] is None:
             continue

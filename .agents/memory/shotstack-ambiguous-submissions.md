@@ -1,16 +1,12 @@
 ---
-name: Envíos inciertos a Shotstack
-description: Respuestas de envío de render sin un identificador remoto recuperable.
+name: Envíos de render inciertos
+description: Tratamiento seguro de registros históricos y futuros envíos remotos sin estado confirmado.
 ---
 
-La API oficial de Shotstack devuelve el identificador de envío bajo `response.id`; la consulta de estado requiere ese ID y la guía de inicio indica que no hay una lista de IDs de render recuperable por API. Si el POST devuelve JSON sin un ID reconocido, el resultado remoto es incierto: guardar el estado como `submission_unknown` y bloquear reintentos hasta reconciliarlo manualmente en Stage.
+La integración de Shotstack está retirada; no hay actualmente una ruta de render activa con ese proveedor. Se conservan los campos y estados históricos de la base de datos para no alterar el historial de trabajos existentes. No se debe interpretar un `render_id` o `source_url` legado como prueba de una integración activa.
 
-**Why:** Shotstack puede haber encolado un render aunque el cliente no reconozca o no guarde el ID. Reenviar a ciegas puede duplicar un render y su coste.
+Para cualquier futuro render remoto, un POST cuyo resultado no incluya un identificador recuperable deja el estado remoto incierto. Mantener `submission_unknown` y bloquear reintentos hasta reconciliarlo con el proveedor.
 
-**How to apply:** aceptar el formato oficial `response.id` y los formatos legados necesarios; si falta el ID, conservar solo el código HTTP y rutas de campos saneadas, nunca el cuerpo completo, y no reintentar ni afirmar que el render fracasó hasta verificarlo.
+**Why:** el proveedor puede haber encolado un render aunque el cliente no haya guardado el ID; un reenvío a ciegas puede duplicar trabajo y coste.
 
-Persistir el estado conservador de envío antes de iniciar el POST a Shotstack, no solo después de recibir una respuesta sin ID. Una caída o timeout durante el envío puede dejar un trabajo encolado aunque el cliente no haya recibido su identificador.
-
-**Why:** un corte después de que el proveedor reciba la petición pero antes de que el cliente registre el ID crea la misma incertidumbre que una respuesta malformada; marcar el trabajo como un fallo ordinario habilitaría un cobro duplicado.
-
-**How to apply:** hacer durable el estado incierto antes de la llamada remota y cambiarlo a estado reanudable solo al persistir un ID válido. Con ID, consultar el estado remoto; sin ID, bloquear reintentos ciegos.
+**How to apply:** persistir el estado incierto antes de la llamada remota y cambiarlo solo al guardar un ID válido. Sin un ID verificable, bloquear reintentos ciegos y no afirmar que el render falló hasta reconciliarlo.

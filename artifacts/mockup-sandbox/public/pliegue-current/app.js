@@ -141,8 +141,8 @@ function statusLabel(status) {
     downloading: "Descargando", completed: "Completado", complete: "Completado",
     failed: "Error", error: "Error", rejected: "Rechazado",
     normalizing: "Preparando compatibilidad", preparing_captions: "Preparando subtítulos",
-    uploading: "Subiendo fuente a Shotstack Stage",
-    uploading_captions: "Subiendo subtítulos a Shotstack Stage",
+    uploading: "Preparando fuente para el motor de render",
+    uploading_captions: "Preparando subtítulos",
     validating_output: "Validando resultado", interrupted: "Interrumpido",
   };
   return labels[String(status || "").toLowerCase()] || (status ? String(status) : "No disponible");
@@ -220,8 +220,8 @@ function renderHealth(health) {
     el.className = configured === true ? "health-ok" : configured === false ? "health-no" : "health-unknown";
   };
   set("health-openai", health?.openai_key_configured);
-  set("health-shotstack", health?.shotstack_key_configured);
-  const env = health?.shotstack_environment;
+  set("health-modal", health?.modal?.credentials_configured);
+  const env = health?.modal?.deployment_status;
   byId("health-environment").textContent = env == null || env === "" ? "Desconocido" : String(env);
   const drive = health?.drive_connected;
   byId("health-drive").textContent = drive === true ? "Conectado" : drive === false ? "No conectado" : "Desconocido";
@@ -298,7 +298,7 @@ function updateProcessButton() {
   const itemStatus = String(item?.status || "").toLowerCase();
   const alreadyProcessed = ["completed", "processing", "queued"].includes(itemStatus);
   byId("process-button").disabled = !item || !consentOk || Boolean(busy) || alreadyProcessed;
-  byId("process-hint").textContent = !item ? "Selecciona una fuente antes de continuar." : alreadyProcessed ? (itemStatus === "completed" ? "Este archivo ya tiene un resultado registrado." : "Este archivo ya está en procesamiento.") : !byId("paid-consent").checked ? "Marca la autorización explícita para continuar." : costUnknown && !byId("unknown-cost-consent").checked ? "Confirma también que aceptas el coste desconocido." : busy ? "Hay un trabajo en curso." : "Se enviará el vídeo a OpenAI y Shotstack Stage.";
+  byId("process-hint").textContent = !item ? "Selecciona una fuente antes de continuar." : alreadyProcessed ? (itemStatus === "completed" ? "Este archivo ya tiene un resultado registrado." : "Este archivo ya está en procesamiento.") : !byId("paid-consent").checked ? "Marca la autorización explícita para continuar." : costUnknown && !byId("unknown-cost-consent").checked ? "Confirma también que aceptas el coste desconocido." : busy ? "Hay un trabajo en curso." : "El procesamiento se ejecutará con el worker de render configurado.";
 }
 
 function renderStyle(style) {
@@ -319,7 +319,7 @@ function renderStyle(style) {
 function collectStyle() {
   const data = {};
   const fields = byId("style-form").elements;
-  for (const key of ["font_family", "font_size", "font_color", "highlight_color", "stroke_color", "stroke_width", "animation_style", "caption_position", "caption_offset_y", "logo_path", "output_fps", "max_input_size_mb", "max_video_duration_seconds", "max_transcription_chunks", "openai_price_per_audio_minute_usd", "shotstack_price_per_render_minute_usd", "max_estimated_cost_usd"]) {
+  for (const key of ["font_family", "font_size", "font_color", "highlight_color", "stroke_color", "stroke_width", "animation_style", "caption_position", "caption_offset_y", "logo_path", "output_fps", "max_input_size_mb", "max_video_duration_seconds", "max_transcription_chunks", "openai_price_per_audio_minute_usd", "max_estimated_cost_usd"]) {
     const field = fields.namedItem(key);
     if (!field) continue;
     if (field.type === "number") data[key] = field.value === "" ? null : Number(field.value);

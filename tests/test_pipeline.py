@@ -14,7 +14,7 @@ from video_pipeline.media import (
     MediaError,
     extract_audio_chunks,
     prepare_video_for_modal,
-    prepare_video_for_shotstack,
+    prepare_video_for_editing,
     probe_video,
     validate_rendered_output,
 )
@@ -24,13 +24,6 @@ from video_pipeline.pipeline import (
     build_dry_run_plan,
     find_local_mp4s,
     process_local_video,
-)
-from video_pipeline.shotstack import (
-    ShotstackClient,
-    ShotstackError,
-    ShotstackSubmissionUnknownError,
-    build_edit_payload,
-    validate_shotstack_payload,
 )
 from video_pipeline.state import (
     DuplicateProcessingError,
@@ -156,6 +149,7 @@ class TranscriptionAndSubtitleTests(unittest.TestCase):
         self.assertIn("viaje muy bonito ✈️", srt)
 
 
+@unittest.skip("El cliente y el formato de edición de Shotstack se han retirado.")
 class ShotstackPayloadTests(unittest.TestCase):
     def test_builds_vertical_video_with_visible_timed_subtitles(self):
         captions = [
@@ -550,6 +544,7 @@ class ProviderAdapterTests(unittest.TestCase):
         self.assertEqual([word.text for word in words], ["primero", "segundo"])
         self.assertEqual([word.start for word in words], [1.0, 902.0])
 
+    @unittest.skip("El adaptador de Shotstack se ha retirado.")
     def test_shotstack_upload_flow_uses_signed_url_without_forwarding_api_key(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             source = Path(temp_dir) / "clip.mp4"
@@ -584,10 +579,12 @@ class ProviderAdapterTests(unittest.TestCase):
         self.assertIn("/ingest/stage/sources/", session.get.call_args.args[0])
         self.assertNotIn("x-api-key", session.put.call_args.kwargs["headers"])
 
+    @unittest.skip("El adaptador de Shotstack se ha retirado.")
     def test_shotstack_client_rejects_production_environment(self):
         with self.assertRaises(ValueError):
             ShotstackClient(api_key="test-only-not-a-real-key", environment="v1", session=Mock())
 
+    @unittest.skip("El descargador de Shotstack se ha retirado.")
     def test_render_download_refuses_to_delete_or_overwrite_existing_file(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             destination = Path(temp_dir) / "output.mp4"
@@ -659,7 +656,7 @@ class LocalMediaTests(unittest.TestCase):
                 dolby_vision_profile=8, dolby_vision_compatibility_id=1,
             )
             with self.assertRaisesRegex(MediaError, "metadatos dinámicos"):
-                prepare_video_for_shotstack(video, Path(temp_dir) / "work")
+                prepare_video_for_editing(video, Path(temp_dir) / "work")
             with self.assertRaisesRegex(MediaError, "Solo se admite Dolby Vision 8.4"):
                 prepare_video_for_modal(video, Path(temp_dir) / "modal-work")
             self.assertEqual(source.read_bytes(), b"original")
@@ -779,7 +776,7 @@ class LocalMediaTests(unittest.TestCase):
             original_bytes = source.read_bytes()
 
             source_info = probe_video(source)
-            compatible, conversion = prepare_video_for_shotstack(source_info, work)
+            compatible, conversion = prepare_video_for_editing(source_info, work)
 
             self.assertEqual(source_info.video_codec, "h264")
             self.assertTrue(source_info.has_audio)
@@ -810,7 +807,7 @@ class LocalMediaTests(unittest.TestCase):
             original_bytes = source.read_bytes()
 
             source_info = probe_video(source)
-            compatible, conversion = prepare_video_for_shotstack(source_info, work)
+            compatible, conversion = prepare_video_for_editing(source_info, work)
 
             self.assertEqual(source_info.video_codec, "hevc")
             self.assertEqual(probe_video(compatible.path).video_codec, "h264")
@@ -857,6 +854,7 @@ class LocalMediaTests(unittest.TestCase):
             self.assertEqual(output_info.audio_codec, "aac")
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg tools are required")
+    @unittest.skip("El render CLI se ha retirado; la ruta vigente es el panel con Modal.")
     def test_offline_pipeline_orchestration_preserves_original_and_rejects_duplicate(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -993,6 +991,7 @@ class LocalMediaTests(unittest.TestCase):
                 )
             self.assertEqual(source_path.read_bytes(), original_bytes)
 
+    @unittest.skip("El render CLI se ha retirado; la ruta vigente es el panel con Modal.")
     def test_no_subtitles_skips_openai_and_subtitle_ingest(self):
         from types import SimpleNamespace
 
@@ -1091,6 +1090,7 @@ class PipelineSubmissionStateTests(unittest.TestCase):
         )
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg tools are required")
+    @unittest.skip("La ruta antigua de render/reintento de proveedor se ha retirado.")
     def test_retry_reuses_validated_local_output_and_does_not_submit_or_download_again(self):
         from types import SimpleNamespace
 
@@ -1169,6 +1169,7 @@ class PipelineSubmissionStateTests(unittest.TestCase):
             self.assertEqual(source.read_bytes(), b"source media")
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg tools are required")
+    @unittest.skip("La ruta de envío Shotstack se ha retirado; solo se conserva la semántica histórica del ledger.")
     def test_ambiguous_shotstack_submission_is_persisted_and_not_retried(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -1218,11 +1219,12 @@ class PipelineSubmissionStateTests(unittest.TestCase):
             self.assertEqual(state["status"], "submission_unknown")
             self.assertEqual(state["attempts"], 1)
 
-            with self.assertRaisesRegex(RetryNotAllowedError, "Reconcile its remote status"):
+            with self.assertRaisesRegex(RetryNotAllowedError, "Reconcile its status"):
                 process_local_video(source, root / "outputs", retry_failed=True, **kwargs)
             self.assertEqual(renderer.submit_calls, 1)
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg tools are required")
+    @unittest.skip("La ruta antigua de envío/reintento de proveedor se ha retirado.")
     def test_transport_interruption_during_render_post_fails_closed_on_retry(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -1269,7 +1271,7 @@ class PipelineSubmissionStateTests(unittest.TestCase):
             state = ProcessingLedger(state_path).get(source_hash)
             self.assertEqual(state["status"], "submission_unknown")
             self.assertIsNone(state["render_id"])
-            with self.assertRaisesRegex(RetryNotAllowedError, "Reconcile its remote status"):
+            with self.assertRaisesRegex(RetryNotAllowedError, "Reconcile its status"):
                 process_local_video(
                     source,
                     root / "outputs",
@@ -1374,7 +1376,7 @@ class StateAndStyleTests(unittest.TestCase):
                 error="HTTP 201 response did not include an ID",
             )
 
-            with self.assertRaisesRegex(RetryNotAllowedError, "Reconcile its remote status"):
+            with self.assertRaisesRegex(RetryNotAllowedError, "Reconcile its status"):
                 ledger.claim(
                     "unknown-submit",
                     "input.mp4",
@@ -1431,16 +1433,20 @@ class StateAndStyleTests(unittest.TestCase):
 class SafetyTests(unittest.TestCase):
     def test_live_processing_requires_explicit_paid_api_authorization(self):
         openai_client = Mock()
-        shotstack_client = Mock()
         with self.assertRaises(PermissionError):
             process_local_video(
                 "does-not-exist.mp4",
                 paid_api_authorized=False,
                 openai_client=openai_client,
-                shotstack_client=shotstack_client,
+                config=PipelineConfig(),
             )
         openai_client.audio.transcriptions.create.assert_not_called()
-        shotstack_client.upload_local_video.assert_not_called()
+        with self.assertRaisesRegex(RuntimeError, "CLI.*deshabilitado"):
+            process_local_video(
+                "does-not-exist.mp4",
+                paid_api_authorized=True,
+                config=PipelineConfig(),
+            )
 
     def test_new_output_name_does_not_overwrite_existing_files(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1644,6 +1650,7 @@ class DriveUploadTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
+@unittest.skip("El procesamiento CLI heredado se ha retirado; las pruebas del panel cubren el flujo Modal.")
 class ExplicitLivePipelineTests(unittest.TestCase):
     def test_paid_processing_is_blocked_before_probe_without_explicit_authorization(self):
         with patch("video_pipeline.pipeline.probe_video") as probe:

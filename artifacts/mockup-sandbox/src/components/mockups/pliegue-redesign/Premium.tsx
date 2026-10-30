@@ -49,7 +49,6 @@ const styleFields = [
   { label: 'Duración máxima (segundos)', name: 'max_video_duration_seconds', type: 'number', placeholder: '—' },
   { label: 'Máximo de bloques de transcripción', name: 'max_transcription_chunks', type: 'number', placeholder: '—' },
   { label: 'OpenAI · USD / minuto de audio', name: 'openai_price_per_audio_minute_usd', type: 'number', placeholder: 'Desconocido' },
-  { label: 'Shotstack · USD / minuto de render', name: 'shotstack_price_per_render_minute_usd', type: 'number', placeholder: 'Desconocido' },
   { label: 'Límite estimado total (USD)', name: 'max_estimated_cost_usd', type: 'number', placeholder: 'Sin límite consultado' },
 ] as const;
 
@@ -182,7 +181,7 @@ export function Premium() {
               </div>
               <div className="mt-8 flex flex-col gap-3 rounded-[14px] border border-[#dce3d8] bg-[#e9eee6] px-4 py-3.5 sm:flex-row sm:items-center sm:px-5">
                 <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#f5f7f1] text-[#58705d]"><ShieldCheck size={15} /></span>
-                <p className="mb-0 flex-1 text-[11px] leading-[1.65] text-[#5c6d60]"><strong className="font-semibold text-[#34483a]">El original no se modifica.</strong> OpenAI y Shotstack solo se usarían tras una autorización explícita. Esta maqueta no se conecta a servicios ni envía medios.</p>
+                <p className="mb-0 flex-1 text-[11px] leading-[1.65] text-[#5c6d60]"><strong className="font-semibold text-[#34483a]">El original no se modifica.</strong> Los servicios externos solo se usarían tras una autorización explícita. Esta maqueta no se conecta a servicios ni envía medios.</p>
                 <span className="shrink-0 rounded-md border border-[#d3ddd0] bg-[#f4f6f1] px-2.5 py-1.5 font-mono text-[8px] tracking-[.1em] text-[#708072]">SOLO LOCAL</span>
               </div>
             </section>
@@ -278,7 +277,7 @@ export function Premium() {
                   <div className="space-y-2.5">
                     {[
                       ['OpenAI', <AudioLines size={13} key="openai" />],
-                      ['Shotstack', <Clapperboard size={13} key="shotstack" />],
+                      ['Motor MATRIX', <Clapperboard size={13} key="matrix-engine" />],
                       ['Entorno', <HardDrive size={13} key="env" />],
                       ['Google Drive', <FolderOpen size={13} key="drive" />],
                     ].map(([name, icon]) => (
