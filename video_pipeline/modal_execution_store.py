@@ -390,6 +390,84 @@ class ModalExecutionStore:
             assert record is not None
             return record, True
 
+    def record_manual_modal_cancellation_evidence(
+        self,
+        execution_id: str,
+        *,
+        function_call_id: str,
+        evidence_file_name: str,
+        evidence_sha256: str,
+    ) -> tuple[ModalExecution, bool]:
+        """Append reviewed provider evidence without rewriting the AuthError state."""
+        if (
+            not function_call_id.startswith("fc-")
+            or len(function_call_id) > 128
+            or not evidence_file_name
+            or len(evidence_file_name) > 255
+            or Path(evidence_file_name).name != evidence_file_name
+            or not re.fullmatch(r"[a-f0-9]{64}", evidence_sha256)
+        ):
+            raise ValueError("La evidencia de cancelación Modal no tiene un formato válido.")
+        now = _utc_now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM modal_executions WHERE execution_id = ?",
+                (execution_id,),
+            ).fetchone()
+            record = self._row(row)
+            if record is None:
+                raise KeyError("No existe la ejecución Modal que se quiere conciliar.")
+            if (
+                record.attempt_number != 2
+                or record.status != "failed"
+                or record.error_type != "AuthError"
+                or record.function_call_id != function_call_id
+            ):
+                raise ModalExecutionConflict(
+                    "La evidencia solo puede conciliar el intento 2 con AuthError y el mismo ID."
+                )
+            prior_events = connection.execute(
+                """
+                SELECT details_json FROM modal_execution_events
+                WHERE execution_id = ? AND phase = 'manual_modal_cancellation_evidence'
+                ORDER BY event_id
+                """,
+                (execution_id,),
+            ).fetchall()
+            for event in prior_events:
+                details = json.loads(event["details_json"])
+                if (
+                    details.get("function_call_id") == function_call_id
+                    and details.get("evidence_sha256") == evidence_sha256
+                ):
+                    return record, False
+                raise ModalExecutionConflict(
+                    "Ya existe evidencia de cancelación manual distinta para esta ejecución."
+                )
+            self._append_event(
+                connection,
+                execution_id,
+                record.status,
+                "manual_modal_cancellation_evidence",
+                {
+                    "provider": "modal",
+                    "provider_status": "cancelled",
+                    "function_call_id": function_call_id,
+                    "evidence_file_name": evidence_file_name,
+                    "evidence_sha256": evidence_sha256,
+                    "operator_confirmed": True,
+                },
+                now,
+            )
+            updated = connection.execute(
+                "SELECT * FROM modal_executions WHERE execution_id = ?",
+                (execution_id,),
+            ).fetchone()
+            confirmed = self._row(updated)
+            assert confirmed is not None
+            return confirmed, True
+
     def update(
         self,
         execution_id: str,

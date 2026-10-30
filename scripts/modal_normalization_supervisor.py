@@ -33,6 +33,8 @@ STORE_PATH = Path("data/modal-execution-supervision.sqlite3")
 LEGACY_LEDGER_PATH = Path("data/modal-normalization-4k-once.sqlite3")
 POLL_INTERVAL_SECONDS = 20
 HISTORY_DIR = Path("data/normalization-4k-history")
+MAX_MODAL_EVIDENCE_BYTES = 10 * 1024 * 1024
+MODAL_EVIDENCE_SUFFIXES = {".jpg", ".jpeg", ".json", ".log", ".png", ".txt", ".webp"}
 
 
 def _source_sha256(path: Path) -> str:
@@ -177,8 +179,47 @@ def attach_existing_call(
 
 
 def _is_cancelled(exc: BaseException) -> bool:
-    name = type(exc).__name__.lower()
-    return "cancel" in name or "cancel" in str(exc).lower()
+    # Fail closed: AuthError and message text can contain "cancel" without
+    # proving that the provider call itself reached a cancelled terminal state.
+    return type(exc).__name__.lower() in {
+        "inputcancellation",
+        "cancelederror",
+        "cancellederror",
+        "generatorexit",
+    }
+
+
+def record_manual_modal_cancellation_evidence(
+    store: ModalExecutionStore,
+    *,
+    call_id: str,
+    evidence_file: Path,
+    confirmed_status: str,
+) -> tuple[ModalExecution, str, bool]:
+    """Append a hashed, operator-reviewed dashboard artifact; never rewrites AuthError."""
+    if confirmed_status != "Cancelled":
+        raise ValueError("Confirme explícitamente el estado Cancelled mostrado por Modal.")
+    if not call_id.startswith("fc-") or len(call_id) > 128:
+        raise ValueError("ID de llamada Modal no válido.")
+    path = evidence_file.expanduser().resolve()
+    if (
+        path.suffix.lower() not in MODAL_EVIDENCE_SUFFIXES
+        or not path.is_file()
+        or path.stat().st_size <= 0
+        or path.stat().st_size > MAX_MODAL_EVIDENCE_BYTES
+    ):
+        raise ValueError("Adjunte una captura o registro de Modal válido (máximo 10 MiB).")
+    record = store.get_by_call_id(call_id)
+    if record is None:
+        raise KeyError("No hay una ejecución persistida con ese ID de Modal.")
+    evidence_sha256 = _source_sha256(path)
+    reconciled, created = store.record_manual_modal_cancellation_evidence(
+        record.execution_id,
+        function_call_id=call_id,
+        evidence_file_name=path.name,
+        evidence_sha256=evidence_sha256,
+    )
+    return reconciled, evidence_sha256, created
 
 
 def _is_transient_poll_error(exc: BaseException) -> bool:
@@ -427,18 +468,49 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group(required=True)
     modes.add_argument("--attach-call-id", help="Registra un ID existente; no envía procesamiento.")
+    modes.add_argument(
+        "--record-modal-cancellation",
+        metavar="FC_ID",
+        help="Registra evidencia revisada del estado Cancelled; no consulta ni invoca Modal.",
+    )
     modes.add_argument("--once", action="store_true", help="Consulta llamadas persistidas una vez.")
     modes.add_argument("--watch", action="store_true", help="Supervisa llamadas desde un servicio persistente.")
     parser.add_argument("--source", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--attempt-number", type=int)
+    parser.add_argument("--evidence-file", type=Path)
+    parser.add_argument("--confirm-modal-status", choices=["Cancelled"])
     parser.add_argument("--store", type=Path, default=STORE_PATH)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.record_modal_cancellation and not args.store.is_file():
+        raise SystemExit(
+            "No existe el almacén de supervisión indicado; se rechaza crear uno nuevo."
+        )
     store = ModalExecutionStore(args.store)
+    if args.record_modal_cancellation:
+        if not args.evidence_file or args.confirm_modal_status != "Cancelled":
+            raise SystemExit(
+                "--record-modal-cancellation requiere --evidence-file y "
+                "--confirm-modal-status Cancelled."
+            )
+        record, evidence_sha256, created = record_manual_modal_cancellation_evidence(
+            store,
+            call_id=args.record_modal_cancellation,
+            evidence_file=args.evidence_file,
+            confirmed_status=args.confirm_modal_status,
+        )
+        print(json.dumps({
+            "recorded": created,
+            "status_unchanged": record.status,
+            "error_type_unchanged": record.error_type,
+            "function_call_id": record.function_call_id,
+            "evidence_sha256": evidence_sha256,
+        }, ensure_ascii=False))
+        return 0
     if args.attach_call_id:
         if not args.source or not args.output or args.attempt_number is None:
             raise SystemExit("--attach-call-id requiere --source, --output y --attempt-number.")

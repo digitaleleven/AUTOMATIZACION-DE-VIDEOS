@@ -4,19 +4,27 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from scripts.modal_normalization_supervisor import (
     attach_existing_call,
+    main as supervisor_main,
     poll_execution,
     poll_once,
+    record_manual_modal_cancellation_evidence,
     reconcile_legacy_terminal_records,
 )
+from scripts.normalize_modal_4k_once import verify_third_attempt_authorization
 from video_pipeline.modal_execution_store import ModalExecutionStore
 from video_pipeline.modal_renderer import MASTER_4K_NORMALIZATION_PROFILE_ID
 from video_pipeline.state import ProcessingLedger
 
 
 class InputCancellation(BaseException):
+    pass
+
+
+class AuthError(RuntimeError):
     pass
 
 
@@ -172,6 +180,108 @@ class ModalNormalizationSupervisorTests(unittest.TestCase):
         history = [json.loads(line) for line in self.prior_history.read_text().splitlines()]
         self.assertEqual(history[0]["error"], "first attempt failed")
         self.assertEqual(history[-1]["status"], "interrupted")
+
+    def test_auth_error_is_not_inferred_as_cancellation_from_message_text(self):
+        record = self.attach()
+        client = FakeClient(poll_error=AuthError("auth failed while reading cancelled call"))
+        failed = poll_execution(self.store, client, record.execution_id)
+        self.assertEqual(failed.status, "failed")
+        self.assertEqual(failed.error_type, "AuthError")
+        self.assertEqual(client.cache_reads, [])
+        self.assertEqual(self.legacy.get(self.source_hash)["attempts"], 2)
+
+    def test_manual_dashboard_evidence_is_hashed_and_keeps_auth_error_record(self):
+        record = self.attach()
+        self.store.update(
+            record.execution_id,
+            status="failed",
+            phase="modal_call_failed",
+            error=AuthError("Modal authorization failed"),
+        )
+        evidence = self.root / "modal-cancelled.png"
+        evidence.write_bytes(b"operator-reviewed dashboard evidence")
+        history_before = self.prior_history.read_bytes()
+        failed, evidence_sha256, created = record_manual_modal_cancellation_evidence(
+            self.store,
+            call_id="fc-existing-123",
+            evidence_file=evidence,
+            confirmed_status="Cancelled",
+        )
+        self.assertTrue(created)
+        self.assertEqual(failed.status, "failed")
+        self.assertEqual(failed.error_type, "AuthError")
+        self.assertEqual(self.legacy.get(self.source_hash)["attempts"], 2)
+        self.assertEqual(self.prior_history.read_bytes(), history_before)
+        event = self.store.events(record.execution_id)[-1]
+        self.assertEqual(event["details"]["provider_status"], "cancelled")
+        self.assertEqual(event["details"]["evidence_sha256"], evidence_sha256)
+
+        repeated, repeated_hash, created_again = record_manual_modal_cancellation_evidence(
+            self.store,
+            call_id="fc-existing-123",
+            evidence_file=evidence,
+            confirmed_status="Cancelled",
+        )
+        self.assertFalse(created_again)
+        self.assertEqual(repeated.status, "failed")
+        self.assertEqual(repeated_hash, evidence_sha256)
+        verified = verify_third_attempt_authorization(
+            self.legacy,
+            self.store,
+            source_hash=self.source_hash,
+            confirmed_source_hash=self.source_hash,
+            confirmed_cancelled_call_id="fc-existing-123",
+            history_path=self.prior_history,
+        )
+        self.assertEqual(verified.status, "failed")
+
+    def test_manual_reconciliation_cli_does_not_construct_modal_client(self):
+        record = self.attach()
+        self.store.update(
+            record.execution_id,
+            status="failed",
+            phase="modal_call_failed",
+            error=AuthError("authorization unavailable"),
+        )
+        evidence = self.root / "modal-status.txt"
+        evidence.write_text(
+            "Modal dashboard: fc-existing-123 — status Cancelled",
+            encoding="utf-8",
+        )
+        with patch(
+            "scripts.modal_normalization_supervisor.ModalRenderClient",
+            side_effect=AssertionError("CLI must not call Modal"),
+        ):
+            result = supervisor_main([
+                "--record-modal-cancellation",
+                "fc-existing-123",
+                "--evidence-file",
+                str(evidence),
+                "--confirm-modal-status",
+                "Cancelled",
+                "--store",
+                str(self.root / "supervisor.sqlite3"),
+            ])
+        self.assertEqual(result, 0)
+        self.assertEqual(self.store.get(record.execution_id).status, "failed")
+        self.assertEqual(self.store.get(record.execution_id).error_type, "AuthError")
+
+    def test_manual_reconciliation_refuses_to_create_a_missing_store(self):
+        missing_store = self.root / "must-not-create.sqlite3"
+        evidence = self.root / "modal-status.txt"
+        evidence.write_text("Modal dashboard status Cancelled", encoding="utf-8")
+        with self.assertRaises(SystemExit):
+            supervisor_main([
+                "--record-modal-cancellation",
+                "fc-unknown-call",
+                "--evidence-file",
+                str(evidence),
+                "--confirm-modal-status",
+                "Cancelled",
+                "--store",
+                str(missing_store),
+            ])
+        self.assertFalse(missing_store.exists())
 
     def test_supervisor_persists_worker_code_version_from_remote_progress(self):
         record, _ = self.store.reserve(

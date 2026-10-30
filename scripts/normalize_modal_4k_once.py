@@ -186,7 +186,7 @@ def verify_third_attempt_authorization(
     confirmed_cancelled_call_id: str | None,
     history_path: Path,
 ) -> Any:
-    """Require exact source identity, two preserved attempts, and a terminally cancelled call."""
+    """Require preserved attempts and either a polled cancellation or explicit evidence."""
     if confirmed_source_hash != source_hash:
         raise RetryNotAllowedError(
             "--allow-third-attempt requiere confirmar el SHA-256 exacto del original."
@@ -214,14 +214,44 @@ def verify_third_attempt_authorization(
         source_hash,
         MASTER_4K_NORMALIZATION_PROFILE_ID,
     )
+    call_matches = record is not None and record.function_call_id == confirmed_cancelled_call_id
+    modal_cancellation_was_polled = (
+        record is not None
+        and record.attempt_number == 2
+        and record.status == "cancelled"
+        and call_matches
+    )
+    manual_evidence = False
+    if (
+        record is not None
+        and record.attempt_number == 2
+        and record.status == "failed"
+        and record.error_type == "AuthError"
+        and call_matches
+    ):
+        for event in execution_store.events(record.execution_id):
+            details = event.get("details") or {}
+            if (
+                event.get("status") == "failed"
+                and event.get("phase") == "manual_modal_cancellation_evidence"
+                and details.get("provider") == "modal"
+                and details.get("provider_status") == "cancelled"
+                and details.get("function_call_id") == confirmed_cancelled_call_id
+                and details.get("operator_confirmed") is True
+                and isinstance(details.get("evidence_file_name"), str)
+                and isinstance(details.get("evidence_sha256"), str)
+                and re.fullmatch(r"[a-f0-9]{64}", details["evidence_sha256"])
+            ):
+                manual_evidence = True
+                break
     if (
         record is None
         or record.attempt_number != 2
-        or record.status != "cancelled"
-        or record.function_call_id != confirmed_cancelled_call_id
+        or not (modal_cancellation_was_polled or manual_evidence)
     ):
         raise RetryNotAllowedError(
-            "El intento 2 debe estar conciliado como cancelado con el mismo ID en el almacén Modal."
+            "El intento 2 debe tener estado cancelado consultado a Modal o evidencia manual "
+            "verificada para el mismo ID; AuthError por sí solo no basta."
         )
     return record
 

@@ -122,9 +122,24 @@ MATRIX_MODAL_CODE_VERSION="$DEPLOYED_VERSION" \
 ```
 
 Antes de solicitar la única conversión, el intento 2 debe estar adjuntado al
-ID histórico exacto, consultado por el supervisor y conciliado como
-`cancelled`; la caché debe haberse comprobado sin resultado reutilizable. El
-tercer envío solo acepta el SHA-256 que imprima el preflight y ese ID:
+ID histórico exacto y la caché debe haberse comprobado sin resultado
+reutilizable. Si `FunctionCall.from_id()` falla con `AuthError`, no se infiere
+cancelación: el estado continúa `failed`. Solo la propietaria, tras revisar una
+captura o registro guardado de Modal que muestre ese ID como `Cancelled`, puede
+registrar su SHA-256 como evidencia:
+
+```sh
+PYTHONPATH="$PWD" /usr/bin/python3 scripts/modal_normalization_supervisor.py \
+  --record-modal-cancellation fc-ID-DEL-INTENTO-2 \
+  --evidence-file /ruta/a/evidencia-modal.png \
+  --confirm-modal-status Cancelled
+```
+
+El evento de evidencia es append-only: conserva el error `AuthError`, el estado
+`failed`, el ledger y el JSONL previos. El programa calcula el hash del archivo,
+pero no puede validar semánticamente una captura; su contenido debe ser
+revisado por la propietaria y conservarse para auditoría. El tercer envío solo
+acepta el SHA-256 que imprima el preflight y ese ID:
 
 ```sh
 cd /var/www/matrix-motion
@@ -137,10 +152,11 @@ PYTHONPATH="$PWD" /usr/bin/python3 scripts/normalize_modal_4k_once.py \
   --confirm-worker-code-version "$DEPLOYED_VERSION"
 ```
 
-Ese gate exige dos intentos en el ledger, el JSONL previo, estado `cancelled`
-del mismo ID en el almacén de supervisión, ausencia de caché reutilizable y
-presupuesto bajo el límite interno. Reserva de forma atómica el intento 3; no
-hay reintentos automáticos y cualquier intento posterior queda bloqueado.
+Ese gate exige dos intentos en el ledger, el JSONL previo, estado Modal
+`cancelled` consultado directamente o evidencia manual asociada al mismo ID,
+ausencia de caché reutilizable y presupuesto bajo el límite interno. Reserva de
+forma atómica el intento 3; no hay reintentos automáticos y cualquier intento
+posterior queda bloqueado.
 El preflight local no puede inspeccionar los archivos de DigitalOcean ni la
 versión actualmente desplegada de Modal; el manifiesto impide procesar con una
 versión Modal distinta de `--confirm-worker-code-version`. Confirme el valor de
