@@ -89,3 +89,60 @@ añadiendo eventos, sin borrar los intentos previos ni incrementar su contador.
 El límite de presupuesto es una barrera interna basada en una estimación; no es
 un límite de facturación garantizado por Modal. No se realizaron llamadas ni
 conversiones al preparar este procedimiento.
+
+## Preflight y tercer intento excepcional
+
+La imagen de Modal comprueba durante la compilación la presencia de FFmpeg,
+HEVC, `zscale`, `tonemap` y `libx264`. Cada estado, manifiesto y diagnóstico del
+worker registra `worker_code_version` para identificar la revisión que ejecutó
+el trabajo. El manifiesto `normalization-v2.json` y su versión esperada hacen
+que un worker antiguo falle antes de FFmpeg; no se usa el manifiesto heredado.
+El hash local no demuestra por sí solo qué revisión está desplegada, por lo que
+el ID de release debe venir del despliegue aprobado.
+
+Primero, en DigitalOcean, el preflight solo consulta el original, FFprobe,
+espacio y estimación estática. No crea ledgers ni llama a Modal:
+
+```sh
+cd /var/www/matrix-motion
+PYTHONPATH="$PWD" /usr/bin/python3 scripts/normalize_modal_4k_once.py \
+  --source data/incoming/44e426722ccc4f01aaaf8662298b638f.mov \
+  --output generated-artifacts/normalization-4k/IMG_1254-2160x3840-30.mp4 \
+  --preflight-only
+```
+
+Después de publicar la revisión aprobada y solo con autorización de despliegue,
+identificarla en Modal y actualizar el worker:
+
+```sh
+cd /var/www/matrix-motion
+DEPLOYED_VERSION="$(git rev-parse HEAD)"
+MATRIX_MODAL_CODE_VERSION="$DEPLOYED_VERSION" \
+  modal deploy video_pipeline/modal_render_app.py
+```
+
+Antes de solicitar la única conversión, el intento 2 debe estar adjuntado al
+ID histórico exacto, consultado por el supervisor y conciliado como
+`cancelled`; la caché debe haberse comprobado sin resultado reutilizable. El
+tercer envío solo acepta el SHA-256 que imprima el preflight y ese ID:
+
+```sh
+cd /var/www/matrix-motion
+PYTHONPATH="$PWD" /usr/bin/python3 scripts/normalize_modal_4k_once.py \
+  --source data/incoming/44e426722ccc4f01aaaf8662298b638f.mov \
+  --output generated-artifacts/normalization-4k/IMG_1254-2160x3840-30.mp4 \
+  --allow-third-attempt \
+  --confirm-source-sha256 SHA256_DEL_PREFLIGHT \
+  --confirm-cancelled-call-id fc-ID-DEL-INTENTO-2 \
+  --confirm-worker-code-version "$DEPLOYED_VERSION"
+```
+
+Ese gate exige dos intentos en el ledger, el JSONL previo, estado `cancelled`
+del mismo ID en el almacén de supervisión, ausencia de caché reutilizable y
+presupuesto bajo el límite interno. Reserva de forma atómica el intento 3; no
+hay reintentos automáticos y cualquier intento posterior queda bloqueado.
+El preflight local no puede inspeccionar los archivos de DigitalOcean ni la
+versión actualmente desplegada de Modal; el manifiesto impide procesar con una
+versión Modal distinta de `--confirm-worker-code-version`. Confirme el valor de
+`DEPLOYED_VERSION` del despliegue y los datos del host allí antes de autorizar
+el envío.

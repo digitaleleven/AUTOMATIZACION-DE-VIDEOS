@@ -127,8 +127,10 @@ class ProcessingLedger:
                         "A remote render may have accepted the previous request. "
                         "Reconcile its status before any retry."
                 )
-            if allow_third_attempt and job["status"] != "failed":
-                raise RetryNotAllowedError("The controlled third attempt requires a failed prior attempt.")
+            if allow_third_attempt and job["status"] not in {"failed", "interrupted"}:
+                raise RetryNotAllowedError(
+                    "The controlled third attempt requires a failed or reconciled interrupted prior attempt."
+                )
             try:
                 previous_options = json.loads(job.get("edit_options_json") or "{}")
             except (TypeError, json.JSONDecodeError):

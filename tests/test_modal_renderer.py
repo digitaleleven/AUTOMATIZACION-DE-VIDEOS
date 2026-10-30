@@ -233,6 +233,11 @@ class ModalRenderClientTests(unittest.TestCase):
         self.assertEqual(sdk.spawn_calls, [(job_id, "normalize")])
         self.assertEqual(sdk.remote_calls, [])
         self.assertEqual(volume.uploads[f"/jobs/{job_id}/source.mov"], b"unmodified original bytes")
+        normalization_request = json.loads(
+            volume.uploads[f"/jobs/{job_id}/normalization-v2.json"]
+        )
+        self.assertEqual(normalization_request["manifest_version"], 2)
+        self.assertNotIn("normalization.json", volume.uploads)
         self.assertFalse(output.exists())
 
     def test_detached_submission_uncertainty_keeps_call_id_and_never_falls_back_to_remote(self):

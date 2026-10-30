@@ -21,10 +21,17 @@ class InputCancellation(BaseException):
 
 
 class FakeClient:
-    def __init__(self, poll_result=None, poll_error=None, cached_result=None):
+    def __init__(
+        self,
+        poll_result=None,
+        poll_error=None,
+        cached_result=None,
+        progress_result=None,
+    ):
         self.poll_result = poll_result
         self.poll_error = poll_error
         self.cached_result = cached_result
+        self.progress_result = progress_result
         self.call_ids = []
         self.cache_reads = []
         self.progress_reads = []
@@ -38,7 +45,7 @@ class FakeClient:
 
     def read_normalization_progress(self, job_id):
         self.progress_reads.append(job_id)
-        return None
+        return self.progress_result
 
     def recover_cached_normalization(self, **kwargs):
         self.cache_reads.append(kwargs)
@@ -165,6 +172,38 @@ class ModalNormalizationSupervisorTests(unittest.TestCase):
         history = [json.loads(line) for line in self.prior_history.read_text().splitlines()]
         self.assertEqual(history[0]["error"], "first attempt failed")
         self.assertEqual(history[-1]["status"], "interrupted")
+
+    def test_supervisor_persists_worker_code_version_from_remote_progress(self):
+        record, _ = self.store.reserve(
+            execution_id="versioned-execution",
+            source_sha256=self.source_hash,
+            profile_id=MASTER_4K_NORMALIZATION_PROFILE_ID,
+            job_id="a" * 32,
+            attempt_number=2,
+            source_path=self.source,
+            output_path=self.output,
+            budget_estimate_usd=1.3,
+            budget_limit_usd=1.5,
+        )
+        self.store.update(
+            record.execution_id,
+            status="submitted",
+            phase="call_id_persisted",
+            function_call_id="fc-versioned-call",
+        )
+        client = FakeClient(
+            poll_error=InputCancellation("cancelled"),
+            progress_result={
+                "phase": "normalizing",
+                "worker_code_version": "sha256:" + "c" * 64,
+            },
+        )
+        result = poll_execution(self.store, client, record.execution_id)
+        self.assertEqual(result.status, "cancelled")
+        self.assertEqual(
+            self.store.events(record.execution_id)[-1]["details"]["remote_worker_code_version"],
+            "sha256:" + "c" * 64,
+        )
 
     def test_cached_output_after_cancellation_is_recovered_without_new_call(self):
         record = self.attach()

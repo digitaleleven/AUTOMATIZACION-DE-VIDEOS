@@ -30,6 +30,27 @@ class FakeWorkerVolume:
 
 
 class ModalRemoteNormalizationTests(unittest.TestCase):
+    def test_stale_worker_version_fails_before_ffmpeg(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            volume_root = Path(temp_dir) / "volume"
+            job = volume_root / "jobs" / ("d" * 32)
+            job.mkdir(parents=True)
+            (job / "normalization-v2.json").write_text(json.dumps({
+                "job_id": job.name,
+                "source_name": "source.mov",
+                "source_sha256": "a" * 64,
+                "profile_id": modal_render_app.MASTER_4K_NORMALIZATION_PROFILE_ID,
+                "manifest_version": 2,
+                "expected_worker_code_version": "stale-deployment",
+            }))
+            with (
+                patch.object(modal_render_app, "VOLUME_MOUNT", volume_root),
+                patch.object(modal_render_app, "_run_checked") as run_checked,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "no coincide"):
+                    modal_render_app._normalize_staged_source(job, job.name)
+            run_checked.assert_not_called()
+
     def test_worker_persists_and_reraises_modal_baseexception_cancellation(self):
         class InputCancellation(BaseException):
             pass
@@ -76,11 +97,13 @@ class ModalRemoteNormalizationTests(unittest.TestCase):
             source_hash = hashlib.sha256(source_bytes).hexdigest()
             for job in (job_one, job_two):
                 (job / "source.mov").write_bytes(source_bytes)
-                (job / "normalization.json").write_text(json.dumps({
+                (job / "normalization-v2.json").write_text(json.dumps({
                     "job_id": job.name,
                     "source_name": "source.mov",
                     "source_sha256": source_hash,
                     "profile_id": modal_render_app.NORMALIZATION_PROFILE_ID,
+                    "manifest_version": 2,
+                    "expected_worker_code_version": modal_render_app.WORKER_CODE_VERSION,
                 }))
             profile = {
                 "width": 1080, "height": 1920, "fps": 30.0,
@@ -126,11 +149,13 @@ class ModalRemoteNormalizationTests(unittest.TestCase):
             source_bytes = b"mock 4K HEVC source; not a real conversion"
             source_hash = hashlib.sha256(source_bytes).hexdigest()
             (job / "source.mov").write_bytes(source_bytes)
-            (job / "normalization.json").write_text(json.dumps({
+            (job / "normalization-v2.json").write_text(json.dumps({
                 "job_id": job.name,
                 "source_name": "source.mov",
                 "source_sha256": source_hash,
                 "profile_id": modal_render_app.MASTER_4K_NORMALIZATION_PROFILE_ID,
+                "manifest_version": 2,
+                "expected_worker_code_version": modal_render_app.WORKER_CODE_VERSION,
             }))
             profile = {
                 "width": 2160, "height": 3840, "fps": 30.0,

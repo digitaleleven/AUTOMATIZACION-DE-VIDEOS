@@ -9,13 +9,16 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import signal
+import shutil
 import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable
 
 from video_pipeline.cost_controls import (
+    MAX_4K_NORMALIZED_PROXY_GIB,
     MAX_JOB_BUDGET_USD,
     enforce_4k_normalization_budget,
 )
@@ -49,6 +52,7 @@ DEFAULT_OUTPUT = Path(
 LEDGER_PATH = Path("data/modal-normalization-4k-once.sqlite3")
 HISTORY_DIR = Path("data/normalization-4k-history")
 EXECUTION_STORE_PATH = Path("data/modal-execution-supervision.sqlite3")
+THIRD_ATTEMPT_EXTRA_FREE_GIB = 1
 
 
 class NormalizationInterrupted(BaseException):
@@ -101,6 +105,19 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="consulta y recupera solo la caché existente de Modal; nunca llama al worker.",
     )
+    attempts.add_argument(
+        "--allow-third-attempt",
+        action="store_true",
+        help="puerta manual de una sola vez: exige hash confirmado e ID del intento 2 cancelado.",
+    )
+    attempts.add_argument(
+        "--preflight-only",
+        action="store_true",
+        help="valida localmente archivo, perfil, espacio y coste; no conecta con Modal ni cambia estado.",
+    )
+    parser.add_argument("--confirm-source-sha256")
+    parser.add_argument("--confirm-cancelled-call-id")
+    parser.add_argument("--confirm-worker-code-version")
     return parser
 
 
@@ -125,6 +142,90 @@ def history_has_event(history_path: Path, *, attempt: int, status: str) -> bool:
     return False
 
 
+def output_capacity_preflight(output_path: Path) -> dict[str, int | str]:
+    """Check output location and conservative free-space reserve without creating files."""
+    directory = output_path.parent
+    while not directory.exists() and directory != directory.parent:
+        directory = directory.parent
+    if not directory.is_dir() or not os.access(directory, os.W_OK | os.X_OK):
+        raise RuntimeError(f"El directorio de salida no es accesible para escritura: {directory}")
+    available = shutil.disk_usage(directory).free
+    required = (MAX_4K_NORMALIZED_PROXY_GIB + THIRD_ATTEMPT_EXTRA_FREE_GIB) * 1024**3
+    if available < required:
+        raise RuntimeError(
+            f"Espacio insuficiente en {directory}: disponibles {available} bytes; "
+            f"se requieren al menos {required} bytes para salida y margen."
+        )
+    return {
+        "checked_directory": str(directory),
+        "available_bytes": available,
+        "required_bytes": required,
+    }
+
+
+def _history_attempt_statuses(history_path: Path, attempt: int) -> set[str]:
+    statuses: set[str] = set()
+    if not history_path.is_file():
+        return statuses
+    for line in history_path.read_text(encoding="utf-8").splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("attempt") == attempt and isinstance(event.get("status"), str):
+            statuses.add(event["status"])
+    return statuses
+
+
+def verify_third_attempt_authorization(
+    ledger: ProcessingLedger,
+    execution_store: ModalExecutionStore,
+    *,
+    source_hash: str,
+    confirmed_source_hash: str | None,
+    confirmed_cancelled_call_id: str | None,
+    history_path: Path,
+) -> Any:
+    """Require exact source identity, two preserved attempts, and a terminally cancelled call."""
+    if confirmed_source_hash != source_hash:
+        raise RetryNotAllowedError(
+            "--allow-third-attempt requiere confirmar el SHA-256 exacto del original."
+        )
+    if not confirmed_cancelled_call_id or not confirmed_cancelled_call_id.startswith("fc-"):
+        raise RetryNotAllowedError(
+            "--allow-third-attempt requiere el ID fc- exacto del intento 2 cancelado."
+        )
+    previous = ledger.get(source_hash)
+    if (
+        int(previous.get("attempts") or 0) != 2
+        or previous.get("status") not in {"failed", "interrupted"}
+    ):
+        raise RetryNotAllowedError(
+            "El ledger debe confirmar dos intentos y estado failed/interrupted ya reconciliado."
+        )
+    if "failed" not in _history_attempt_statuses(history_path, 1):
+        raise RetryNotAllowedError("El historial debe conservar el fallo registrado del intento 1.")
+    attempt_two_statuses = _history_attempt_statuses(history_path, 2)
+    if not attempt_two_statuses.intersection(
+        {"started", "interrupted", "cancelled", "failed", "recovery_not_found"}
+    ):
+        raise RetryNotAllowedError("No se encontró el intento 2 en el historial JSONL.")
+    record = execution_store.latest_for_source(
+        source_hash,
+        MASTER_4K_NORMALIZATION_PROFILE_ID,
+    )
+    if (
+        record is None
+        or record.attempt_number != 2
+        or record.status != "cancelled"
+        or record.function_call_id != confirmed_cancelled_call_id
+    ):
+        raise RetryNotAllowedError(
+            "El intento 2 debe estar conciliado como cancelado con el mismo ID en el almacén Modal."
+        )
+    return record
+
+
 def claim_normalization_attempt(
     ledger: ProcessingLedger,
     *,
@@ -132,8 +233,42 @@ def claim_normalization_attempt(
     source_path: Path,
     retry_failed: bool,
     history_path: Path,
+    allow_third_attempt: bool = False,
 ) -> dict[str, object]:
     previous = ledger.get(source_hash)
+    if allow_third_attempt:
+        if (
+            not previous
+            or int(previous.get("attempts") or 0) != 2
+            or previous.get("status") not in {"failed", "interrupted"}
+        ):
+            raise RetryNotAllowedError(
+                "El tercer intento controlado exige dos intentos previos y estado terminal reconciliado."
+            )
+        attempt = ledger.claim(
+            source_hash,
+            str(source_path),
+            retry_failed=True,
+            max_attempts=3,
+            allow_third_attempt=True,
+            edit_options={
+                "mode": "normalize_only",
+                "profile_id": MASTER_4K_NORMALIZATION_PROFILE_ID,
+            },
+        )
+        append_history(
+            history_path,
+            {
+                "attempt": 3,
+                "status": "started",
+                "source_sha256": source_hash,
+                "profile_id": MASTER_4K_NORMALIZATION_PROFILE_ID,
+                "manually_authorized": True,
+                "recorded_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        return attempt
+
     if retry_failed:
         if (
             not previous
@@ -298,6 +433,11 @@ def main(argv: list[str] | None = None) -> int:
     if output.exists():
         raise SystemExit(f"Bloqueado: la salida ya existe y no se sobrescribirá: {output}")
 
+    try:
+        output_capacity = output_capacity_preflight(output)
+    except RuntimeError as exc:
+        raise SystemExit(f"Bloqueado: {exc}") from None
+
     video = probe_video(source)
     display_width, display_height = video.width, video.height
     if abs(int(round(video.rotation or 0))) % 180 == 90:
@@ -306,21 +446,53 @@ def main(argv: list[str] | None = None) -> int:
         display_width < 2160
         or display_height < 3840
         or abs(video.duration - 59.98) > 0.5
+        or video.video_codec.lower() not in {"hevc", "h265"}
     ):
         raise SystemExit(
-            "Bloqueado: la fuente debe ser el original vertical 2160×3840 de 59,98 s."
+            "Bloqueado: la fuente debe ser el original HEVC vertical 2160×3840 de 59,98 s."
         )
+    is_hlg = (
+        video.color_range == "tv"
+        and video.color_primaries == "bt2020"
+        and video.color_transfer == "arib-std-b67"
+        and video.color_space == "bt2020nc"
+    )
+    is_sdr_bt709 = (
+        video.color_range in {"tv", "pc"}
+        and video.color_primaries == "bt709"
+        and video.color_transfer == "bt709"
+        and video.color_space == "bt709"
+    )
+    if not (is_hlg or is_sdr_bt709):
+        raise SystemExit("Bloqueado: color de origen no reconocido como HLG BT.2020 o SDR BT.709.")
 
     budget = None if args.recover_only else enforce_4k_normalization_budget()
     source_hash = sha256_file(source)
+    if args.allow_third_attempt and (
+        args.confirm_source_sha256 != source_hash
+        or not args.confirm_cancelled_call_id
+        or not args.confirm_cancelled_call_id.startswith("fc-")
+        or not args.confirm_worker_code_version
+        or not re.fullmatch(r"[A-Za-z0-9._-]{1,80}", args.confirm_worker_code_version)
+    ):
+        raise SystemExit(
+            "Bloqueado: el tercer intento requiere SHA-256, ID fc- cancelado y versión Modal confirmados."
+        )
     print(
         json.dumps(
             {
                 "preflight": "pass",
-                "operation": "recover_only" if args.recover_only else "normalize",
+                "operation": (
+                    "preflight_only"
+                    if args.preflight_only
+                    else "recover_only"
+                    if args.recover_only
+                    else "normalize"
+                ),
                 "static_maximum_usd": budget.maximum_usd if budget else None,
                 "billing_cap_guaranteed": False,
                 "source_sha256": source_hash,
+                "source_video_codec": video.video_codec,
                 "source_duration_seconds": video.duration,
                 "source_dimensions": [video.width, video.height],
                 "source_display_dimensions": [display_width, display_height],
@@ -331,12 +503,21 @@ def main(argv: list[str] | None = None) -> int:
                     "matrix": video.color_space,
                 },
                 "normalization_profile": MASTER_4K_NORMALIZATION_PROFILE_ID,
+                "output_capacity": output_capacity,
             },
             ensure_ascii=False,
         ),
         flush=True,
     )
+    if args.preflight_only:
+        return 0
 
+    if args.allow_third_attempt and (
+        not LEDGER_PATH.is_file() or not args.execution_store.is_file()
+    ):
+        raise SystemExit(
+            "Bloqueado: para autorizar el tercer intento deben existir ambos registros persistentes previos."
+        )
     ledger = ProcessingLedger(LEDGER_PATH)
     history_path = HISTORY_DIR / f"{source_hash}.jsonl"
     started = time.monotonic()
@@ -422,7 +603,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     current = ledger.get(source_hash)
-    if current and int(current.get("attempts") or 0) >= 2 and current.get("status") != "completed":
+    if (
+        current
+        and int(current.get("attempts") or 0) >= 2
+        and current.get("status") != "completed"
+        and not args.allow_third_attempt
+    ):
         raise SystemExit(
             "Bloqueado: ya se consumieron los dos intentos. Use --recover-only para consultar la caché; "
             "no se iniciará otro trabajo."
@@ -433,10 +619,11 @@ def main(argv: list[str] | None = None) -> int:
         MASTER_4K_NORMALIZATION_PROFILE_ID,
     )
     permitted_store_retry = bool(
-        args.retry_failed
+        (args.retry_failed or args.allow_third_attempt)
         and existing_execution
         and existing_execution.status in {"failed", "cancelled"}
-        and existing_execution.attempt_number + 1 == int(current.get("attempts") or 0) + 1
+        and existing_execution.attempt_number + 1
+        == int((current or {}).get("attempts") or 0) + 1
     )
     if existing_execution and not permitted_store_retry:
         raise SystemExit(
@@ -519,34 +706,89 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
-    try:
-        attempt = claim_normalization_attempt(
-            ledger,
-            source_hash=source_hash,
-            source_path=source,
-            retry_failed=args.retry_failed,
-            history_path=history_path,
-        )
-    except (DuplicateProcessingError, RetryNotAllowedError) as exc:
-        raise SystemExit(f"Bloqueado: {exc}") from None
+    if args.allow_third_attempt:
+        if args.retry_failed or args.recover_only or args.preflight_only:
+            raise SystemExit("Bloqueado: el gate del tercer intento no se combina con otros modos.")
+        try:
+            verify_third_attempt_authorization(
+                ledger,
+                execution_store,
+                source_hash=source_hash,
+                confirmed_source_hash=args.confirm_source_sha256,
+                confirmed_cancelled_call_id=args.confirm_cancelled_call_id,
+                history_path=history_path,
+            )
+        except RetryNotAllowedError as exc:
+            raise SystemExit(f"Bloqueado: {exc}") from None
+
     job_id = uuid.uuid4().hex
     execution_id = uuid.uuid4().hex
-    try:
-        execution_record, created = execution_store.reserve(
-            execution_id=execution_id,
-            source_sha256=source_hash,
-            profile_id=MASTER_4K_NORMALIZATION_PROFILE_ID,
-            job_id=job_id,
-            attempt_number=int(attempt["attempts"]),
-            source_path=source,
-            output_path=output,
-            budget_estimate_usd=budget.maximum_usd,
-            budget_limit_usd=MAX_JOB_BUDGET_USD,
-        )
-        if not created:
-            raise ModalExecutionConflict("La ejecución ya estaba reservada.")
-    except (ModalExecutionConflict, ModalExecutionBudgetExceeded) as exc:
-        raise SystemExit(f"Bloqueado: {exc}") from None
+    if args.allow_third_attempt:
+        try:
+            execution_record, created = execution_store.reserve(
+                execution_id=execution_id,
+                source_sha256=source_hash,
+                profile_id=MASTER_4K_NORMALIZATION_PROFILE_ID,
+                job_id=job_id,
+                attempt_number=3,
+                source_path=source,
+                output_path=output,
+                budget_estimate_usd=budget.maximum_usd,
+                budget_limit_usd=MAX_JOB_BUDGET_USD,
+                allow_manual_retry=True,
+            )
+            if not created:
+                raise ModalExecutionConflict("El intento 3 ya estaba reservado; no se reenviará.")
+        except (ModalExecutionConflict, ModalExecutionBudgetExceeded) as exc:
+            raise SystemExit(f"Bloqueado: {exc}") from None
+        try:
+            attempt = claim_normalization_attempt(
+                ledger,
+                source_hash=source_hash,
+                source_path=source,
+                retry_failed=True,
+                history_path=history_path,
+                allow_third_attempt=True,
+            )
+        except (DuplicateProcessingError, RetryNotAllowedError) as exc:
+            execution_store.update(
+                execution_id,
+                status="failed",
+                phase="attempt_claim_rejected",
+                error=exc,
+                details={"worker_invoked": False, "automatic_retry": False},
+            )
+            raise SystemExit(f"Bloqueado: {exc}") from None
+    else:
+        try:
+            attempt = claim_normalization_attempt(
+                ledger,
+                source_hash=source_hash,
+                source_path=source,
+                retry_failed=args.retry_failed,
+                history_path=history_path,
+            )
+        except (DuplicateProcessingError, RetryNotAllowedError) as exc:
+            raise SystemExit(f"Bloqueado: {exc}") from None
+        execution_id = uuid.uuid4().hex
+        job_id = uuid.uuid4().hex
+        try:
+            execution_record, created = execution_store.reserve(
+                execution_id=execution_id,
+                source_sha256=source_hash,
+                profile_id=MASTER_4K_NORMALIZATION_PROFILE_ID,
+                job_id=job_id,
+                attempt_number=int(attempt["attempts"]),
+                source_path=source,
+                output_path=output,
+                budget_estimate_usd=budget.maximum_usd,
+                budget_limit_usd=MAX_JOB_BUDGET_USD,
+            )
+            if not created:
+                raise ModalExecutionConflict("La ejecución ya estaba reservada.")
+        except (ModalExecutionConflict, ModalExecutionBudgetExceeded) as exc:
+            raise SystemExit(f"Bloqueado: {exc}") from None
+
     started = time.monotonic()
     current_phase = "starting"
 
@@ -591,6 +833,7 @@ def main(argv: list[str] | None = None) -> int:
                 output_path=output,
                 profile_id=MASTER_4K_NORMALIZATION_PROFILE_ID,
                 check_cache=False,
+                expected_worker_code_version=args.confirm_worker_code_version,
                 on_phase=progress,
                 on_submitted=lambda call_id: execution_store.update(
                     execution_id,

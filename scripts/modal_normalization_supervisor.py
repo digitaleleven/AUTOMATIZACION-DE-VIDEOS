@@ -281,11 +281,15 @@ def poll_execution(
 
     now = datetime.now(timezone.utc).isoformat()
     remote_phase: str | None = None
+    remote_worker_code_version: str | None = None
     if record.job_id:
         try:
             progress = client.read_normalization_progress(record.job_id)
             if progress:
                 remote_phase = str(progress.get("phase") or "")[:100] or None
+                candidate_version = progress.get("worker_code_version")
+                if isinstance(candidate_version, str) and len(candidate_version) <= 80:
+                    remote_worker_code_version = candidate_version
         except Exception as exc:
             # A missing progress snapshot must not be treated as a failed conversion.
             store.update(
@@ -316,6 +320,7 @@ def poll_execution(
                     details={
                         "error_type": type(exc).__name__,
                         "cache_check_error_type": type(cache_error).__name__,
+                        "remote_worker_code_version": remote_worker_code_version,
                         "automatic_resubmit": False,
                     },
                 )
@@ -324,7 +329,10 @@ def poll_execution(
                 status="cancelled",
                 phase="modal_call_cancelled",
                 error=exc,
-                details={"automatic_resubmit": False},
+                details={
+                    "automatic_resubmit": False,
+                    "remote_worker_code_version": remote_worker_code_version,
+                },
             )
         if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit)):
             store.update(
@@ -371,6 +379,15 @@ def poll_execution(
             error=RuntimeError("El resultado Modal no coincide con la ejecución persistida."),
         )
 
+    candidate_version = remote_result.get("worker_code_version")
+    if isinstance(candidate_version, str) and len(candidate_version) <= 80:
+        remote_worker_code_version = candidate_version
+    store.update(
+        execution_id,
+        status="running",
+        phase="remote_result_received",
+        details={"remote_worker_code_version": remote_worker_code_version},
+    )
     try:
         recovered = _recover_verified_cache(
             store,

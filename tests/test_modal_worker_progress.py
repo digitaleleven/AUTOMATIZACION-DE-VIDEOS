@@ -1,4 +1,8 @@
 import subprocess
+import json
+from pathlib import Path
+import re
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -29,6 +33,33 @@ class FakeProcess:
 
 
 class ModalWorkerProgressTests(unittest.TestCase):
+    def test_worker_code_version_is_recordable_and_nonempty(self):
+        version = modal_render_app.WORKER_CODE_VERSION
+        self.assertTrue(version)
+        self.assertLessEqual(len(version), 80)
+        self.assertRegex(version, r"^(?:sha256:[0-9a-f]{64}|[A-Za-z0-9._-]{1,80})$")
+
+    def test_persisted_worker_events_include_code_version(self):
+        class FakeVolume:
+            def commit(self):
+                pass
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "jobs" / ("a" * 32)).mkdir(parents=True)
+            with (
+                patch.object(modal_render_app, "VOLUME_MOUNT", root),
+                patch.object(modal_render_app, "staging_volume", FakeVolume()),
+            ):
+                event = modal_render_app._persist_worker_state(
+                    "a" * 32,
+                    status="running",
+                    phase="preflight",
+                )
+            self.assertEqual(event["worker_code_version"], modal_render_app.WORKER_CODE_VERSION)
+            saved = json.loads((root / "jobs" / ("a" * 32) / "worker-state.json").read_text())
+            self.assertEqual(saved["worker_code_version"], modal_render_app.WORKER_CODE_VERSION)
+
     def test_long_subprocess_emits_heartbeat_and_returns_captured_output(self):
         process = FakeProcess(subprocess.TimeoutExpired(["fake"], 0.01))
         progress = []

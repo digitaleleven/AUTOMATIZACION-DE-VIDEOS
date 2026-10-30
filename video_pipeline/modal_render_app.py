@@ -68,6 +68,20 @@ NORMALIZATION_PROFILE_SPECS = {
 NORMALIZATION_TIMEOUT_SECONDS = 20 * 60
 MAX_NORMALIZED_PROXY_BYTES = 8 * 1024**3
 
+
+def _worker_code_version() -> str:
+    configured = os.getenv("MATRIX_MODAL_CODE_VERSION", "").strip()
+    if configured and re.fullmatch(r"[A-Za-z0-9._-]{1,80}", configured):
+        return configured
+    try:
+        digest = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    except OSError:
+        return "source-unavailable"
+    return f"sha256:{digest}"
+
+
+WORKER_CODE_VERSION = _worker_code_version()
+
 app = modal.App(name=APP_NAME)
 staging_volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 
@@ -107,6 +121,7 @@ renderer_image = (
         {
             "MATRIX_MOTION_CHROMIUM_BIN": "/usr/bin/chromium",
             "NODE_ENV": "production",
+            "MATRIX_MODAL_CODE_VERSION": WORKER_CODE_VERSION,
         }
     )
 )
@@ -198,6 +213,7 @@ def _worker_failure_diagnostic(job_id: str, exc: BaseException) -> dict[str, Any
     is_process = isinstance(exc, (subprocess.CalledProcessError, subprocess.TimeoutExpired))
     return {
         "job_id": job_id,
+        "worker_code_version": WORKER_CODE_VERSION,
         "error_type": type(exc).__name__,
         "returncode": getattr(exc, "returncode", None),
         "timeout_seconds": getattr(exc, "timeout", None),
@@ -231,6 +247,7 @@ def _persist_worker_state(
     timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     event = {
         "job_id": job_id,
+        "worker_code_version": WORKER_CODE_VERSION,
         "status": status,
         "phase": phase,
         "details": details or {},
@@ -424,8 +441,18 @@ def _normalize_staged_source(
     progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
 ) -> dict[str, Any]:
     started = time.monotonic()
-    request_path = remote_job / "normalization.json"
+    request_path = remote_job / "normalization-v2.json"
     request = json.loads(request_path.read_text(encoding="utf-8"))
+    if request.get("manifest_version") != 2:
+        raise ValueError("El manifiesto de normalización no coincide con la versión vigente.")
+    expected_worker_code_version = request.get("expected_worker_code_version")
+    if (
+        expected_worker_code_version is not None
+        and expected_worker_code_version != WORKER_CODE_VERSION
+    ):
+        raise RuntimeError(
+            "La versión de código desplegada en Modal no coincide con la versión confirmada."
+        )
     profile_id = str(request.get("profile_id") or "")
     spec = NORMALIZATION_PROFILE_SPECS.get(profile_id)
     if request.get("job_id") != job_id or spec is None:
@@ -495,6 +522,8 @@ def _normalize_staged_source(
         cache_manifest = {
             "source_sha256": source_sha256,
             "profile_id": profile_id,
+            "manifest_version": 2,
+            "worker_code_version": WORKER_CODE_VERSION,
             "proxy_path": proxy_path.relative_to(VOLUME_MOUNT).as_posix(),
             "proxy_sha256": _file_sha256(local_proxy),
             "proxy_size_bytes": local_proxy.stat().st_size,
@@ -708,6 +737,7 @@ def render_master(job_id: str, operation: str = "render") -> dict[str, Any]:
                 status="completed",
                 phase="result_committed",
                 details={
+                    "worker_code_version": WORKER_CODE_VERSION,
                     "source_sha256": manifest["source_sha256"],
                     "profile_id": manifest["profile_id"],
                     "proxy_sha256": manifest["proxy_sha256"],
@@ -717,6 +747,7 @@ def render_master(job_id: str, operation: str = "render") -> dict[str, Any]:
             )
             return {
                 "job_id": job_id,
+                "worker_code_version": WORKER_CODE_VERSION,
                 "normalized_proxy_path": manifest["proxy_path"],
                 "source_sha256": manifest["source_sha256"],
                 "profile_id": manifest["profile_id"],

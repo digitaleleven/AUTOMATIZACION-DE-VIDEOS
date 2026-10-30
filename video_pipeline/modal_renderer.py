@@ -43,6 +43,16 @@ NORMALIZATION_PROFILE_SPECS = {
 }
 MAX_NORMALIZED_PROXY_BYTES = 8 * 1024**3
 JOB_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+WORKER_CODE_VERSION_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
+
+
+def _normalization_worker_version(value: str | None = None) -> str | None:
+    expected = value if value is not None else os.getenv("MATRIX_MODAL_CODE_VERSION")
+    if expected is None or expected == "":
+        return None
+    if not isinstance(expected, str) or not WORKER_CODE_VERSION_PATTERN.fullmatch(expected):
+        raise ValueError("La versión esperada del worker Modal no tiene un formato válido.")
+    return expected
 
 
 def modal_configuration_status() -> dict[str, Any]:
@@ -340,9 +350,11 @@ class ModalRenderClient:
                 "source_name": remote_source_name,
                 "source_sha256": source_sha256,
                 "profile_id": profile_id,
+                "manifest_version": 2,
+                "expected_worker_code_version": _normalization_worker_version(),
             }
             with tempfile.TemporaryDirectory(prefix="matrix-motion-normalize-stage-") as staging:
-                manifest_path = Path(staging) / "normalization.json"
+                manifest_path = Path(staging) / "normalization-v2.json"
                 manifest_path.write_text(
                     json.dumps(manifest, separators=(",", ":")),
                     encoding="utf-8",
@@ -351,7 +363,7 @@ class ModalRenderClient:
                     progress_callback("uploading_normalization_source")
                 with volume.batch_upload() as batch:
                     batch.put_file(str(source), f"/{remote_prefix}/{remote_source_name}")
-                    batch.put_file(str(manifest_path), f"/{remote_prefix}/normalization.json")
+                    batch.put_file(str(manifest_path), f"/{remote_prefix}/normalization-v2.json")
                 self._staged_jobs.add(job_id)
             if progress_callback:
                 progress_callback("normalizing_on_modal")
@@ -438,6 +450,7 @@ class ModalRenderClient:
         on_submitted: Callable[[str], None],
         on_phase: Callable[[str], None] | None = None,
         check_cache: bool = True,
+        expected_worker_code_version: str | None = None,
     ) -> ModalNormalizationSubmission | ModalNormalizationResult:
         """Submit normalization without waiting on the caller's SSH/session lifetime."""
         if not JOB_ID_PATTERN.fullmatch(job_id or ""):
@@ -453,6 +466,7 @@ class ModalRenderClient:
         profile_spec = NORMALIZATION_PROFILE_SPECS.get(profile_id)
         if profile_spec is None:
             raise ValueError("Perfil de normalización Modal no admitido.")
+        worker_code_version = _normalization_worker_version(expected_worker_code_version)
 
         if profile_id == MASTER_4K_NORMALIZATION_PROFILE_ID:
             from .media import probe_video
@@ -499,9 +513,11 @@ class ModalRenderClient:
             "source_name": f"source{source.suffix.lower()}",
             "source_sha256": source_sha256,
             "profile_id": profile_id,
+            "manifest_version": 2,
+            "expected_worker_code_version": worker_code_version,
         }
         with tempfile.TemporaryDirectory(prefix="matrix-motion-normalize-submit-") as staging:
-            manifest_path = Path(staging) / "normalization.json"
+            manifest_path = Path(staging) / "normalization-v2.json"
             manifest_path.write_text(
                 json.dumps(manifest, separators=(",", ":")),
                 encoding="utf-8",
@@ -510,7 +526,7 @@ class ModalRenderClient:
                 on_phase("uploading_source_to_modal_volume")
             with volume.batch_upload() as batch:
                 batch.put_file(str(source), f"/{remote_prefix}/source{source.suffix.lower()}")
-                batch.put_file(str(manifest_path), f"/{remote_prefix}/normalization.json")
+                batch.put_file(str(manifest_path), f"/{remote_prefix}/normalization-v2.json")
 
         if on_phase:
             on_phase("submitting_detached_modal_call")
