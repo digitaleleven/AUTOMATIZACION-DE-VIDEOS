@@ -1,6 +1,28 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+
+# Local credentials and provider tokens
+.env
+.env.*
+!.env.example
+credentials*.json
+client_secret*.json
+token.json
+
+# Local databases and media files
+*.sqlite
+*.sqlite3
+*.db
+*.mp4
+*.mov
+*.m4v
+*.mkv
+*.webm
+*.wav
+*.mp3
+*.aac
+
 /outputs/
 /data/
 /generated-artifacts/
