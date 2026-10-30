@@ -42,7 +42,7 @@ from video_pipeline.modal_renderer import (
 )
 from video_pipeline.r2_storage import configuration_status as r2_configuration_status
 from video_pipeline.r2_storage import upload_mp4 as upload_mp4_to_r2
-from video_pipeline.state import ProcessingLedger
+from video_pipeline.state import DuplicateProcessingError, ProcessingLedger
 from video_pipeline.style import VideoStyle, load_video_style, validate_output_profile
 from video_pipeline.subtitles import build_subtitle_segments
 from video_pipeline.transcription import transcribe_video
@@ -296,8 +296,16 @@ def _prior_attempt_blockers(
     for attempt in panel_attempts:
         status = attempt["status"]
         phase = attempt["phase"]
-        if status == "failed" and "unknown" not in phase:
+        uncertain_phases = {
+            "interrupted",
+            "submission_unknown",
+            "cancelled",
+            "cancelled_unknown",
+        }
+        if status == "failed" and phase not in uncertain_phases and "unknown" not in phase:
             failed_panel_attempts += 1
+        elif status == "failed":
+            blockers.append("panel_job_failed_unreconciled")
         else:
             blockers.append(f"panel_job_{status or 'unknown'}")
 
@@ -383,6 +391,10 @@ def run_normalized_render_once(
         preflight_callback(report)
     if not execute:
         return report
+    if "normalized_source_already_claimed" in duplicate_blockers:
+        raise DuplicateProcessingError(
+            "El máster normalizado ya tuvo su única ejecución; no se reenviará automáticamente."
+        )
     if blockers:
         raise RuntimeError("Preflight bloqueado: " + "; ".join(blockers))
 

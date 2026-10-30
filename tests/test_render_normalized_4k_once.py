@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import io
+import os
 from pathlib import Path
 import sqlite3
 from types import SimpleNamespace
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
 
 from scripts import render_normalized_4k_once as runner
@@ -14,6 +17,29 @@ from video_pipeline.state import DuplicateProcessingError, ProcessingLedger
 
 
 class NormalizedRenderPreflightTests(unittest.TestCase):
+    def test_dotenv_loads_silently_and_does_not_override_service_environment(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            dotenv = Path(temporary) / ".env"
+            dotenv.write_text(
+                "MATRIX_TEST_DOTENV_VALUE=loaded-from-file\n"
+                "MATRIX_TEST_DOTENV_PRECEDENCE=file-value\n",
+                encoding="utf-8",
+            )
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with patch.dict(
+                os.environ,
+                {"MATRIX_TEST_DOTENV_PRECEDENCE": "service-value"},
+                clear=False,
+            ), redirect_stdout(stdout), redirect_stderr(stderr):
+                loaded = runner.load_project_environment(dotenv)
+                self.assertTrue(loaded)
+                self.assertEqual(os.environ["MATRIX_TEST_DOTENV_VALUE"], "loaded-from-file")
+                self.assertEqual(
+                    os.environ["MATRIX_TEST_DOTENV_PRECEDENCE"],
+                    "service-value",
+                )
+            self.assertNotIn("loaded-from-file", stdout.getvalue() + stderr.getvalue())
+
     def test_panel_attempt_lookup_is_read_only_and_blocks_existing_history(self):
         with tempfile.TemporaryDirectory() as temporary:
             database = Path(temporary) / "panel.sqlite3"
@@ -21,13 +47,14 @@ class NormalizedRenderPreflightTests(unittest.TestCase):
                 connection.executescript(
                     """
                     CREATE TABLE dashboard_uploads (
-                        id TEXT PRIMARY KEY, original_filename TEXT NOT NULL
+                        id TEXT PRIMARY KEY, original_filename TEXT NOT NULL,
+                        source_sha256 TEXT NOT NULL
                     );
                     CREATE TABLE dashboard_jobs (
                         id TEXT PRIMARY KEY, source_id TEXT NOT NULL,
                         status TEXT NOT NULL, phase TEXT NOT NULL, created_at REAL NOT NULL
                     );
-                    INSERT INTO dashboard_uploads VALUES ('source-1', 'IMG_1254.MOV');
+                    INSERT INTO dashboard_uploads VALUES ('source-1', 'IMG_1254.MOV', 'a');
                     INSERT INTO dashboard_jobs VALUES ('job-1', 'source-1', 'failed', 'render', 1.0);
                     """
                 )
@@ -35,7 +62,12 @@ class NormalizedRenderPreflightTests(unittest.TestCase):
             attempts = runner._existing_panel_attempts(database)
             self.assertEqual(
                 attempts,
-                [{"job_id": "job-1", "status": "failed", "phase": "render"}],
+                [{
+                    "job_id": "job-1",
+                    "status": "failed",
+                    "phase": "render",
+                    "source_sha256": "a",
+                }],
             )
             with sqlite3.connect(database) as connection:
                 self.assertEqual(
@@ -44,6 +76,32 @@ class NormalizedRenderPreflightTests(unittest.TestCase):
                     ).fetchone()[0],
                     "failed",
                 )
+
+    def test_active_or_uncertain_history_blocks_a_new_attempt(self):
+        normalized_key = "new-normalized-key"
+        panel = [
+            {
+                "job_id": "active-job",
+                "status": "processing",
+                "phase": "rendering",
+                "source_sha256": "a" * 64,
+            }
+        ]
+        blockers, failed = runner._prior_attempt_blockers(
+            panel,
+            [],
+            normalized_source_key=normalized_key,
+        )
+        self.assertIn("panel_job_processing", blockers)
+        self.assertEqual(failed, 0)
+
+        blockers, failed = runner._prior_attempt_blockers(
+            [],
+            [{"source_sha256": "old-key", "status": "submission_unknown", "attempts": 1}],
+            normalized_source_key=normalized_key,
+        )
+        self.assertIn("prior_modal_ledger_submission_unknown", blockers)
+        self.assertEqual(failed, 0)
 
     def test_preflight_checks_exact_hash_and_verified_4k_sdr_profile(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -218,15 +276,22 @@ class NormalizedRenderExecutionTests(unittest.TestCase):
             connection.executescript(
                 """
                 CREATE TABLE dashboard_uploads (
-                    id TEXT PRIMARY KEY, original_filename TEXT NOT NULL
+                        id TEXT PRIMARY KEY, original_filename TEXT NOT NULL,
+                        source_sha256 TEXT NOT NULL
                 );
                 CREATE TABLE dashboard_jobs (
                     id TEXT PRIMARY KEY, source_id TEXT NOT NULL,
                     status TEXT NOT NULL, phase TEXT NOT NULL, created_at REAL NOT NULL
                 );
-                INSERT INTO dashboard_uploads VALUES ('source-1', 'IMG_1254.MOV');
-                INSERT INTO dashboard_jobs VALUES ('job-1', 'source-1', 'failed', 'render', 1.0);
                 """
+            )
+            connection.execute(
+                "INSERT INTO dashboard_uploads VALUES (?, ?, ?)",
+                ("source-1", "IMG_1254.MOV", "a" * 64),
+            )
+            connection.execute(
+                "INSERT INTO dashboard_jobs VALUES (?, ?, ?, ?, ?)",
+                ("job-1", "source-1", "failed", "render", 1.0),
             )
         patches = self._patch_preflight()
         with (
@@ -242,14 +307,80 @@ class NormalizedRenderExecutionTests(unittest.TestCase):
                 ledger_path=self.ledger,
                 panel_database_path=panel_database,
             )
-        self.assertEqual(result["status"], "preflight_blocked")
+        self.assertEqual(result["status"], "preflight_ready")
         self.assertEqual(result["existing_panel_attempts"], 1)
+        self.assertEqual(result["previous_failed_attempts"], 1)
         self.assertFalse(self.ledger.exists())
         with sqlite3.connect(panel_database) as connection:
             status = connection.execute(
                 "SELECT status FROM dashboard_jobs WHERE id = 'job-1'"
             ).fetchone()[0]
         self.assertEqual(status, "failed")
+
+    def test_three_failed_history_rows_allow_one_new_preflight_attempt(self):
+        panel_database = self.root / "panel.sqlite3"
+        ledger_database = self.root / "modal_processing.sqlite3"
+        source_hashes = ["a" * 64, "b" * 64, "c" * 64]
+        with sqlite3.connect(panel_database) as connection:
+            connection.executescript(
+                """
+                CREATE TABLE dashboard_uploads (
+                    id TEXT PRIMARY KEY, original_filename TEXT NOT NULL,
+                    source_sha256 TEXT NOT NULL
+                );
+                CREATE TABLE dashboard_jobs (
+                    id TEXT PRIMARY KEY, source_id TEXT NOT NULL,
+                    status TEXT NOT NULL, phase TEXT NOT NULL, created_at REAL NOT NULL
+                );
+                """
+            )
+            for index, source_hash in enumerate(source_hashes):
+                connection.execute(
+                    "INSERT INTO dashboard_uploads VALUES (?, ?, ?)",
+                    (f"source-{index}", "IMG_1254.MOV", source_hash),
+                )
+                connection.execute(
+                    "INSERT INTO dashboard_jobs VALUES (?, ?, 'failed', 'failed', ?)",
+                    (f"job-{index}", f"source-{index}", float(index)),
+                )
+        with sqlite3.connect(ledger_database) as connection:
+            connection.execute(
+                """CREATE TABLE processing_jobs (
+                    source_sha256 TEXT PRIMARY KEY, status TEXT NOT NULL,
+                    attempts INTEGER NOT NULL
+                )"""
+            )
+            for source_hash in source_hashes:
+                ledger_key = hashlib.sha256(f"{source_hash}:full".encode()).hexdigest()
+                connection.execute(
+                    "INSERT INTO processing_jobs VALUES (?, 'failed', 1)",
+                    (ledger_key,),
+                )
+
+        patches = self._patch_preflight()
+        with (
+            patches[0],
+            patches[1],
+            patches[2],
+            patches[3],
+            patch.dict("os.environ", {"OPENAI_API_KEY": "test", "GEMINI_API_KEY": "test"}),
+        ):
+            result = runner.run_normalized_render_once(
+                source_path=self.source,
+                expected_sha256=self.digest,
+                ledger_path=ledger_database,
+                panel_database_path=panel_database,
+            )
+        self.assertEqual(result["status"], "preflight_ready")
+        self.assertEqual(result["previous_failed_attempts"], 3)
+        self.assertEqual(result["preflight_blockers"], [])
+        with sqlite3.connect(panel_database) as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM dashboard_jobs WHERE status='failed'"
+                ).fetchone()[0],
+                3,
+            )
 
     def test_authorized_execution_reuses_source_and_claims_one_attempt(self):
         output = self.output_dir / "IMG_1254-MATRIX-MOTION-test.mp4"
@@ -264,6 +395,25 @@ class NormalizedRenderExecutionTests(unittest.TestCase):
         }
         words = [WordTiming("Hola", 0.0, 0.5), WordTiming("mundo", 0.5, 0.9)]
         plan = {"cuts": [], "zooms": [], "stickers": []}
+        old_source_hashes = ["a" * 64, "b" * 64, "c" * 64]
+        old_panel_attempts = [
+            {
+                "job_id": f"old-job-{index}",
+                "status": "failed",
+                "phase": "failed",
+                "source_sha256": source_hash,
+            }
+            for index, source_hash in enumerate(old_source_hashes)
+        ]
+        old_ledger_attempts = [
+            {
+                "source_sha256": hashlib.sha256(f"{source_hash}:full".encode()).hexdigest(),
+                "status": "failed",
+                "attempts": 1,
+            }
+            for source_hash in old_source_hashes
+        ]
+        preflight_reports = []
 
         def fake_process(input_path, output_dir, **kwargs):
             self.assertEqual(Path(input_path), self.source.resolve())
@@ -297,6 +447,16 @@ class NormalizedRenderExecutionTests(unittest.TestCase):
                 "upload_mp4_to_r2",
                 return_value={"object_key": "renders/test/video.mp4", "verified": True},
             ),
+            patch.object(
+                runner,
+                "_existing_panel_attempts",
+                return_value=old_panel_attempts,
+            ),
+            patch.object(
+                runner,
+                "_existing_modal_ledger_attempts",
+                return_value=old_ledger_attempts,
+            ),
         ):
             result = runner.run_normalized_render_once(
                 execute=True,
@@ -307,9 +467,12 @@ class NormalizedRenderExecutionTests(unittest.TestCase):
                 output_dir=self.output_dir,
                 work_root=self.work_root,
                 authorizations=self.authorizations,
+                preflight_callback=preflight_reports.append,
             )
             self.assertEqual(result["status"], "completed")
             self.assertEqual(result["result"]["r2_storage"]["verified"], True)
+            self.assertEqual(preflight_reports[0]["previous_failed_attempts"], 3)
+            self.assertEqual(preflight_reports[0]["status"], "preflight_ready")
             transcribe.assert_called_once()
             render.assert_called_once()
             ledger_key = hashlib.sha256(f"{self.digest}:full".encode()).hexdigest()
@@ -362,15 +525,22 @@ class NormalizedRenderExecutionTests(unittest.TestCase):
             connection.executescript(
                 """
                 CREATE TABLE dashboard_uploads (
-                    id TEXT PRIMARY KEY, original_filename TEXT NOT NULL
+                    id TEXT PRIMARY KEY, original_filename TEXT NOT NULL,
+                    source_sha256 TEXT NOT NULL
                 );
                 CREATE TABLE dashboard_jobs (
                     id TEXT PRIMARY KEY, source_id TEXT NOT NULL,
                     status TEXT NOT NULL, phase TEXT NOT NULL, created_at REAL NOT NULL
                 );
-                INSERT INTO dashboard_uploads VALUES ('source-1', 'IMG_1254.MOV');
-                INSERT INTO dashboard_jobs VALUES ('job-1', 'source-1', 'failed', 'render', 1.0);
                 """
+            )
+            connection.execute(
+                "INSERT INTO dashboard_uploads VALUES (?, ?, ?)",
+                ("source-1", "IMG_1254.MOV", "a" * 64),
+            )
+            connection.execute(
+                "INSERT INTO dashboard_jobs VALUES (?, ?, ?, ?, ?)",
+                ("job-1", "source-1", "completed", "completed", 1.0),
             )
         patches = self._patch_preflight()
         with (
@@ -388,7 +558,7 @@ class NormalizedRenderExecutionTests(unittest.TestCase):
             )
         self.assertEqual(result["status"], "preflight_blocked")
         self.assertEqual(result["existing_panel_attempts"], 1)
-        self.assertTrue(any("historial previo" in item for item in result["preflight_blockers"]))
+        self.assertTrue(any("panel_job_completed" in item for item in result["preflight_blockers"]))
         self.assertFalse(self.ledger.exists())
 
     def test_budget_over_limit_blocks_before_any_service(self):

@@ -4,18 +4,14 @@ El ejecutor está fijado al archivo `generated-artifacts/normalization-4k/IMG_12
 
 La entrada normalizada se entrega directamente a Whisper, Gemini y al render Modal. No se llama a `normalize_input()` ni se vuelve a convertir HDR. El plan aplica subtítulos dinámicos rosa pastel; los cortes sugeridos por Gemini solo se incorporan cuando coinciden con silencios locales protegidos por las palabras transcritas, y los zooms suaves se pasan al compositor existente.
 
-## Único procedimiento en DigitalOcean
+El ejecutor carga `/var/www/matrix-motion/.env` antes de importar los clientes de proveedores. Nunca imprime valores y prioriza las variables ya definidas por el servicio. `python-dotenv==1.2.4` está fijado en `requirements.txt`; instala las dependencias como parte de la actualización normal del código. Mantén `.env` fuera de Git.
 
-Desde la raíz `/var/www/matrix-motion`, ejecutar primero el preflight sin llamadas a proveedores:
+## Único comando autorizado de ejecución en DigitalOcean
 
-```bash
-cd /var/www/matrix-motion
-/usr/bin/python3 -m scripts.render_normalized_4k_once
-```
-
-Continuar solo si termina con `status: preflight_ready`, hash coincidente, perfil 2160×3840/30, decodificación completa y estimación bajo el límite interno. Para autorizar la única ejecución completa, ejecutar:
+Desde la raíz `/var/www/matrix-motion`, ejecutar una sola vez este comando después de actualizar el código y sus dependencias:
 
 ```bash
+cd /var/www/matrix-motion &&
 /usr/bin/python3 -m scripts.render_normalized_4k_once \
   --execute \
   --authorize-openai \
@@ -25,6 +21,8 @@ Continuar solo si termina con `status: preflight_ready`, hash coincidente, perfi
   --acknowledge-estimated-cost
 ```
 
-El proceso usa el ledger compartido `data/modal_processing.sqlite3`, consulta en modo solo lectura el historial `data/processing.sqlite3` para `IMG_1254.MOV`, reclama una sola tentativa y no tiene reintentos automáticos. Un trabajo previo en el panel bloquea la ejecución hasta conciliarlo. El MP4 queda en `outputs/`; los eventos, transcripción, análisis y plan se guardan bajo `data/normalized-render-once/<job_id>/`. R2 conserva el MP4 privado.
+En esa misma invocación, el ejecutor realiza el preflight completo antes de llamar a los proveedores y se detiene si cualquier control falla. Los fallos anteriores reconciliados se conservan y no bloquean por sí solos; una fila completada, activa, incierta, o cualquier intento ya registrado para el hash del máster normalizado bloquea el envío. El historial se consulta en solo lectura. El ledger de Modal reclama como máximo una tentativa para ese hash, por lo que dos invocaciones concurrentes no pueden enviar el mismo trabajo; no hay reintentos automáticos. No iniciar otro trabajo de MATRIX para `IMG_1254.MOV` mientras corre esta ejecución.
+
+La operación reutiliza el MP4 SDR normalizado y no vuelve a convertir HDR. El MP4 queda en `outputs/`; los eventos, transcripción, análisis y plan se guardan bajo `data/normalized-render-once/<job_id>/`. R2 conserva el MP4 privado.
 
 La estimación existente para 59,98 s es aproximadamente **USD 1,2359**, bajo el límite interno de **USD 1,50**. Es una estimación de tarifas configuradas, no un tope de facturación garantizado; el coste real de Modal, Gemini, Whisper y almacenamiento/egress de R2 puede diferir. El comando de ejecución requiere aceptar explícitamente ese riesgo y no se ejecuta por instalar ni arrancar la aplicación.
