@@ -77,6 +77,67 @@ class FakeGeminiSession:
 
 
 class GeminiVideoTests(unittest.TestCase):
+    def test_http_rejection_exposes_safe_phase_status_and_category_only(self):
+        class RejectedSession:
+            def post(self, url, **kwargs):
+                return FakeResponse(
+                    {
+                        "error": {
+                            "status": "UNAUTHENTICATED",
+                            "message": "sensitive body content should not escape",
+                        }
+                    },
+                    status=401,
+                )
+
+            def delete(self, *args, **kwargs):
+                raise AssertionError("No remote file exists after upload-init rejection.")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "analysis.mp4"
+            path.write_bytes(b"small test video")
+            with patch.dict("os.environ", {"GEMINI_API_KEY": "test-key-never-logged"}):
+                with self.assertRaises(GeminiAnalysisError) as caught:
+                    analyze_video(
+                        path,
+                        duration_seconds=5.0,
+                        session=RejectedSession(),
+                    )
+        error = caught.exception
+        self.assertEqual(
+            error.diagnostic,
+            {
+                "provider": "gemini",
+                "category": "authentication",
+                "phase": "upload_start",
+                "http_status": 401,
+                "provider_status": "UNAUTHENTICATED",
+            },
+        )
+        self.assertNotIn("sensitive body content", str(error))
+        self.assertNotIn("test-key-never-logged", str(error))
+
+    def test_quota_http_error_is_categorized_without_provider_body(self):
+        class QuotaSession:
+            def post(self, url, **kwargs):
+                return FakeResponse(
+                    {"error": {"status": "RESOURCE_EXHAUSTED", "message": "private"}},
+                    status=429,
+                )
+
+            def delete(self, *args, **kwargs):
+                return FakeResponse({})
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "analysis.mp4"
+            path.write_bytes(b"small test video")
+            with patch.dict("os.environ", {"GEMINI_API_KEY": "test"}):
+                with self.assertRaises(GeminiAnalysisError) as caught:
+                    analyze_video(path, duration_seconds=5.0, session=QuotaSession())
+        self.assertEqual(caught.exception.diagnostic["category"], "quota_or_rate_limit")
+        self.assertEqual(caught.exception.diagnostic["http_status"], 429)
+        self.assertNotIn("private", str(caught.exception))
+
     def test_analysis_validates_visual_ranges_zoom_and_seo_copy(self):
         result = validate_gemini_analysis({
             "summary": "Resumen.",

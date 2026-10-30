@@ -7,8 +7,10 @@ from video_pipeline.cost_controls import (
     estimate_gemini_cost_usd,
     estimate_4k_normalization_budget,
     estimate_job_budget,
+    estimate_recovery_budget,
     enforce_4k_normalization_budget,
     enforce_job_budget,
+    enforce_recovery_budget,
 )
 
 
@@ -34,4 +36,11 @@ class CostControlTests(unittest.TestCase):
         estimate = enforce_4k_normalization_budget()
         self.assertEqual(estimate, estimate_4k_normalization_budget())
         self.assertLessEqual(estimate.maximum_usd, MAX_JOB_BUDGET_USD)
+
+    def test_recovery_estimate_excludes_whisper_and_normalization(self):
+        estimate = enforce_recovery_budget()
+        self.assertLessEqual(estimate.maximum_usd, MAX_JOB_BUDGET_USD)
+        self.assertEqual(estimate, estimate_recovery_budget())
+        self.assertGreater(estimate.modal_render_usd, 0)
+        self.assertGreater(estimate.gemini_usd, 0)
 

@@ -89,6 +89,24 @@ _ANALYSIS_SCHEMA = {
 class GeminiAnalysisError(RuntimeError):
     """Raised for missing Gemini configuration or invalid provider output."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        category: str = "validation",
+        phase: str = "request_validation",
+        http_status: int | None = None,
+        provider_status: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.diagnostic = {
+            "provider": "gemini",
+            "category": category,
+            "phase": phase,
+            "http_status": http_status,
+            "provider_status": provider_status,
+        }
+
 
 def validate_gemini_analysis(raw: Any, duration_seconds: float) -> dict[str, Any]:
     """Validate visual moments, zoom windows, human-reviewed cuts and social copy."""
@@ -201,9 +219,49 @@ def validate_gemini_analysis(raw: Any, duration_seconds: float) -> dict[str, Any
 
 
 def _provider_error(response: requests.Response, stage: str) -> GeminiAnalysisError:
-    logger.warning("gemini_request_rejected stage=%s status=%s", stage, response.status_code)
+    provider_status = None
+    try:
+        payload = response.json()
+        error = payload.get("error", {}) if isinstance(payload, dict) else {}
+        candidate = error.get("status") if isinstance(error, dict) else None
+        if isinstance(candidate, str) and re.fullmatch(r"[A-Z0-9_]{1,64}", candidate):
+            provider_status = candidate
+    except (ValueError, TypeError, AttributeError):
+        pass
+    category = {
+        "UNAUTHENTICATED": "authentication",
+        "PERMISSION_DENIED": "permission",
+        "INVALID_ARGUMENT": "invalid_request",
+        "NOT_FOUND": "not_found",
+        "RESOURCE_EXHAUSTED": "quota_or_rate_limit",
+        "DEADLINE_EXCEEDED": "timeout",
+        "UNAVAILABLE": "provider_unavailable",
+        "INTERNAL": "provider_error",
+    }.get(provider_status)
+    if category is None:
+        status_code = int(response.status_code)
+        category = {
+            400: "invalid_request",
+            401: "authentication",
+            403: "permission",
+            404: "not_found",
+            408: "timeout",
+            429: "quota_or_rate_limit",
+        }.get(status_code, "provider_error" if status_code >= 500 else "provider_rejected")
+    logger.warning(
+        "gemini_request_rejected phase=%s http_status=%s category=%s provider_status=%s",
+        stage,
+        response.status_code,
+        category,
+        provider_status or "unavailable",
+    )
     return GeminiAnalysisError(
-        f"Gemini rechazó la solicitud durante {stage} (HTTP {response.status_code}); no se registró el cuerpo de respuesta."
+        f"Gemini rechazó la solicitud durante {stage} "
+        f"(HTTP {response.status_code}, categoría {category}); no se registró el cuerpo de respuesta.",
+        category=category,
+        phase=stage,
+        http_status=int(response.status_code),
+        provider_status=provider_status,
     )
 
 
@@ -238,7 +296,9 @@ def analyze_video(
     remote_name: str | None = None
     started = time.monotonic()
     result: dict[str, Any] | None = None
+    current_stage = "upload_start"
     try:
+        current_stage = "upload_start"
         upload_start = http.post(
             FILES_UPLOAD_URL,
             headers={
@@ -253,11 +313,16 @@ def analyze_video(
             timeout=(15, 45),
         )
         if not upload_start.ok:
-            raise _provider_error(upload_start, "la carga del vídeo")
+            raise _provider_error(upload_start, "upload_start")
         upload_url = upload_start.headers.get("X-Goog-Upload-URL")
         if not upload_url:
-            raise GeminiAnalysisError("Google no devolvió una URL de carga temporal.")
+            raise GeminiAnalysisError(
+                "Google no devolvió una URL de carga temporal.",
+                category="invalid_provider_response",
+                phase=current_stage,
+            )
 
+        current_stage = "video_upload"
         with video.open("rb") as source:
             uploaded = http.post(
                 upload_url,
@@ -271,23 +336,32 @@ def analyze_video(
                 timeout=(30, max(timeout_seconds, 300)),
             )
         if not uploaded.ok:
-            raise _provider_error(uploaded, "la finalización de la carga")
+            raise _provider_error(uploaded, "video_upload")
         file_record = uploaded.json()
         file_info = file_record.get("file", file_record) if isinstance(file_record, dict) else {}
         remote_name = file_info.get("name")
         file_uri = file_info.get("uri")
         mime_type = file_info.get("mimeType", "video/mp4")
         if not isinstance(remote_name, str) or not re.fullmatch(r"files/[A-Za-z0-9_-]+", remote_name):
-            raise GeminiAnalysisError("Google no devolvió un identificador de archivo válido.")
+            raise GeminiAnalysisError(
+                "Google no devolvió un identificador de archivo válido.",
+                category="invalid_provider_response",
+                phase=current_stage,
+            )
         if not isinstance(file_uri, str) or not file_uri.startswith("https://"):
-            raise GeminiAnalysisError("Google no devolvió un URI de archivo válido.")
+            raise GeminiAnalysisError(
+                "Google no devolvió un URI de archivo válido.",
+                category="invalid_provider_response",
+                phase=current_stage,
+            )
 
         deadline = time.monotonic() + min(max(timeout_seconds, 30), 300)
+        current_stage = "file_processing"
         while file_info.get("state") == "PROCESSING" and time.monotonic() < deadline:
             time.sleep(2)
             metadata = http.get(f"{API_BASE_URL}/{remote_name}", headers=headers, timeout=(10, 20))
             if not metadata.ok:
-                raise _provider_error(metadata, "la comprobación del archivo")
+                raise _provider_error(metadata, "file_processing")
             file_info = metadata.json()
         if file_info.get("state") == "FAILED":
             raise GeminiAnalysisError("Google no pudo procesar el proxy de vídeo.")
@@ -314,6 +388,7 @@ def analyze_video(
                 {"file_data": {"mime_type": mime_type, "file_uri": file_uri}},
             ],
         }]
+        current_stage = "count_tokens"
         token_response = http.post(
             f"{API_BASE_URL}/models/{GEMINI_MODEL}:countTokens",
             headers={**headers, "Content-Type": "application/json"},
@@ -321,7 +396,7 @@ def analyze_video(
             timeout=(20, 60),
         )
         if not token_response.ok:
-            raise _provider_error(token_response, "la comprobación del presupuesto de tokens")
+            raise _provider_error(token_response, "count_tokens")
         token_body = token_response.json()
         try:
             input_tokens = int(token_body.get("totalTokens"))
@@ -341,6 +416,7 @@ def analyze_video(
             "responseMimeType": "application/json",
             "responseSchema": _ANALYSIS_SCHEMA,
         }
+        current_stage = "generate_content"
         response = http.post(
             f"{API_BASE_URL}/models/{GEMINI_MODEL}:generateContent",
             headers={**headers, "Content-Type": "application/json"},
@@ -351,7 +427,7 @@ def analyze_video(
             timeout=(20, max(timeout_seconds, 180)),
         )
         if not response.ok:
-            raise _provider_error(response, "el análisis multimodal")
+            raise _provider_error(response, "generate_content")
         body = response.json()
         candidates = body.get("candidates", [])
         parts = (
@@ -408,14 +484,40 @@ def analyze_video(
             len(analysis["suggested_cuts"]),
             elapsed,
         )
+    except GeminiAnalysisError as exc:
+        if exc.diagnostic.get("phase") == "request_validation":
+            exc.diagnostic["phase"] = current_stage
+            if current_stage == "generate_content":
+                exc.diagnostic["category"] = "response_validation"
+            elif current_stage == "count_tokens":
+                exc.diagnostic["category"] = "token_preflight"
+            elif current_stage == "file_processing":
+                exc.diagnostic["category"] = "file_processing"
+        raise
     except requests.RequestException as exc:
-        logger.warning("gemini_video_analysis_network_error type=%s", type(exc).__name__)
-        raise GeminiAnalysisError("No se pudo contactar con Gemini; no se registraron credenciales ni contenido.") from None
+        logger.warning(
+            "gemini_video_analysis_network_error phase=%s type=%s",
+            current_stage,
+            type(exc).__name__,
+        )
+        raise GeminiAnalysisError(
+            "No se pudo contactar con Gemini; no se registraron credenciales ni contenido.",
+            category="network_error",
+            phase=current_stage,
+        ) from None
     except (KeyError, TypeError, ValueError) as exc:
         if isinstance(exc, GeminiAnalysisError):
             raise
-        logger.warning("gemini_video_analysis_response_invalid type=%s", type(exc).__name__)
-        raise GeminiAnalysisError("La respuesta de Gemini no tuvo la estructura esperada.") from None
+        logger.warning(
+            "gemini_video_analysis_response_invalid phase=%s type=%s",
+            current_stage,
+            type(exc).__name__,
+        )
+        raise GeminiAnalysisError(
+            "La respuesta de Gemini no tuvo la estructura esperada.",
+            category="invalid_provider_response",
+            phase=current_stage,
+        ) from None
     finally:
         if remote_name:
             try:

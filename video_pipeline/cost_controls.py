@@ -49,6 +49,18 @@ class NormalizationBudgetEstimate:
     buffer_usd: float
 
 
+@dataclass(frozen=True)
+class RecoveryBudgetEstimate:
+    """Estimate only the remaining Gemini, Modal render, egress, and R2 work."""
+
+    maximum_usd: float
+    modal_render_usd: float
+    gemini_usd: float
+    modal_egress_usd: float
+    persistent_storage_usd: float
+    buffer_usd: float
+
+
 def estimate_gemini_cost_usd(input_tokens: int, output_tokens: int) -> float:
     if (
         isinstance(input_tokens, bool)
@@ -100,6 +112,29 @@ def estimate_job_budget(duration_seconds: float) -> JobBudgetEstimate:
     )
 
 
+def estimate_recovery_budget() -> RecoveryBudgetEstimate:
+    """Conservatively estimate a resumed render; Whisper and normalization are excluded."""
+    modal_render = MAX_RENDER_SECONDS * (
+        MODAL_RENDER_CPU_CORES * MODAL_CPU_USD_PER_CORE_SECOND
+        + MODAL_RENDER_MEMORY_GIB * MODAL_MEMORY_USD_PER_GIB_SECOND
+    )
+    gemini = estimate_gemini_cost_usd(
+        MAX_GEMINI_INPUT_TOKENS,
+        MAX_GEMINI_OUTPUT_TOKENS,
+    )
+    egress = MAX_RENDER_OUTPUT_GIB * MODAL_EGRESS_USD_PER_GIB
+    storage = MAX_RENDER_OUTPUT_GIB * R2_STORAGE_USD_PER_GIB_MONTH
+    maximum = modal_render + gemini + egress + storage + MISCELLANEOUS_BUDGET_BUFFER_USD
+    return RecoveryBudgetEstimate(
+        maximum_usd=round(maximum, 4),
+        modal_render_usd=round(modal_render, 4),
+        gemini_usd=round(gemini, 4),
+        modal_egress_usd=round(egress, 4),
+        persistent_storage_usd=round(storage, 4),
+        buffer_usd=MISCELLANEOUS_BUDGET_BUFFER_USD,
+    )
+
+
 def estimate_4k_normalization_budget() -> NormalizationBudgetEstimate:
     """Conservative static estimate for one 20-minute 4K normalization."""
     modal_compute = MAX_NORMALIZATION_SECONDS * (
@@ -135,5 +170,15 @@ def enforce_job_budget(duration_seconds: float) -> JobBudgetEstimate:
         raise RuntimeError(
             f"El coste máximo conservador (${estimate.maximum_usd:.4f}) supera "
             f"el límite interno de ${MAX_JOB_BUDGET_USD:.2f}; se bloqueó el procesamiento."
+        )
+    return estimate
+
+
+def enforce_recovery_budget() -> RecoveryBudgetEstimate:
+    estimate = estimate_recovery_budget()
+    if estimate.maximum_usd > MAX_JOB_BUDGET_USD:
+        raise RuntimeError(
+            f"El coste estimado de recuperación (${estimate.maximum_usd:.4f}) supera "
+            f"el límite interno de ${MAX_JOB_BUDGET_USD:.2f}; se bloqueó la recuperación."
         )
     return estimate

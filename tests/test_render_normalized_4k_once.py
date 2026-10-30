@@ -269,6 +269,57 @@ class NormalizedRenderExecutionTests(unittest.TestCase):
             patch.object(runner, "r2_configuration_status", return_value={"ready": True}),
         )
 
+    def _create_failed_gemini_checkpoint(self):
+        job_id = runner.AUTHORIZED_GEMINI_RESUME_JOB_ID
+        ledger_key = hashlib.sha256(f"{self.digest}:full".encode()).hexdigest()
+        ledger = ProcessingLedger(self.ledger)
+        ledger.claim(
+            ledger_key,
+            str(self.source),
+            max_attempts=1,
+            edit_options=runner.EDIT_OPTIONS,
+        )
+        ledger.mark_failed(ledger_key, "AuthenticationError: first attempt failed")
+        ledger.claim(
+            ledger_key,
+            str(self.source),
+            retry_failed=True,
+            max_attempts=2,
+            preserve_failure_history=True,
+            edit_options=runner.EDIT_OPTIONS,
+        )
+        ledger.mark_failed(ledger_key, "GeminiAnalysisError: ejecución detenida")
+
+        job_work = self.work_root / job_id
+        job_work.mkdir(parents=True)
+        transcript = {
+            "text": "Hola mundo",
+            "words": [
+                {"word": "Hola", "start": 0.0, "end": 0.4},
+                {"word": "mundo", "start": 0.4, "end": 0.9},
+            ],
+        }
+        transcript_path = job_work / "transcript.json"
+        transcript_path.write_text(json.dumps(transcript), encoding="utf-8")
+        events_path = job_work / "events.jsonl"
+        for event in (
+            {"phase": "claimed", "source_sha256": self.digest, "output_profile": "2160p30"},
+            {"phase": "transcribing"},
+            {
+                "phase": "transcript_persisted",
+                "transcript_sha256": hashlib.sha256(transcript_path.read_bytes()).hexdigest(),
+            },
+            {"phase": "detecting_silences"},
+            {"phase": "analyzing_with_gemini"},
+            {
+                "phase": "failed",
+                "error_type": "GeminiAnalysisError",
+                "failure_phase": "analyzing_with_gemini",
+            },
+        ):
+            runner._append_event(events_path, event)
+        return job_id, ledger_key, job_work
+
     def test_preflight_only_calls_no_providers_or_renderer(self):
         patches = self._patch_preflight()
         with (
@@ -297,6 +348,205 @@ class NormalizedRenderExecutionTests(unittest.TestCase):
         analyze.assert_not_called()
         render.assert_not_called()
         self.assertFalse(self.ledger.exists())
+
+    def test_gemini_resume_preflight_reuses_checkpoint_and_excludes_whisper_cost(self):
+        job_id, _, _ = self._create_failed_gemini_checkpoint()
+        patches = self._patch_preflight()
+        with (
+            patches[0],
+            patches[1],
+            patches[2],
+            patches[3],
+            patch.dict("os.environ", {"GEMINI_API_KEY": "test-only"}, clear=True),
+            patch.object(runner, "transcribe_video") as transcribe,
+            patch.object(runner, "analyze_video") as analyze,
+            patch.object(runner, "process_local_video_modal") as render,
+        ):
+            result = runner.run_normalized_render_once(
+                resume_job_id=job_id,
+                source_path=self.source,
+                expected_sha256=self.digest,
+                ledger_path=self.ledger,
+                panel_database_path=self.root / "panel.sqlite3",
+                output_dir=self.output_dir,
+                work_root=self.work_root,
+            )
+        self.assertEqual(result["status"], "preflight_ready")
+        self.assertTrue(result["transcription_reused"])
+        self.assertEqual(result["resume_job_id"], job_id)
+        self.assertEqual(result["pending_operations"], ["gemini_analysis", "modal_render", "r2_upload"])
+        self.assertEqual(result["pending_cost_breakdown_usd"]["whisper_usd"], 0.0)
+        self.assertEqual(result["pending_cost_breakdown_usd"]["normalization_usd"], 0.0)
+        self.assertFalse(result["silence_candidates_reused"])
+        self.assertEqual(result["preflight_blockers"], [])
+        transcribe.assert_not_called()
+        analyze.assert_not_called()
+        render.assert_not_called()
+
+    def test_gemini_checkpoint_resume_skips_whisper_and_uses_one_atomic_recovery(self):
+        job_id, ledger_key, job_work = self._create_failed_gemini_checkpoint()
+        output = self.output_dir / "recovered.mp4"
+        output.parent.mkdir(parents=True)
+        output.write_bytes(b"MP4 placeholder")
+        fake_modal = SimpleNamespace(ensure_worker_available=lambda: None)
+        analysis = {
+            "summary": "summary",
+            "suggested_zooms": [],
+            "suggested_cuts": [],
+            "copy_and_seo": {"hook": "hook"},
+        }
+        patches = self._patch_preflight()
+        with (
+            patches[0],
+            patches[1],
+            patches[2],
+            patches[3],
+            patch.dict("os.environ", {"GEMINI_API_KEY": "test-only"}, clear=True),
+            patch.object(runner, "ModalRenderClient", return_value=fake_modal) as modal_client,
+            patch.object(runner, "transcribe_video") as transcribe,
+            patch.object(runner, "detect_silence_cut_suggestions") as silence_detection,
+            patch.object(runner, "analyze_video", return_value=analysis) as analyze,
+            patch.object(runner, "_prepare_modal_render_plan", return_value=({}, [], [], [], [])),
+            patch.object(
+                runner,
+                "process_local_video_modal",
+                return_value={"output": str(output), "modal_output_sha256": "f" * 64},
+            ) as render,
+            patch.object(
+                runner,
+                "upload_mp4_to_r2",
+                return_value={"object_key": "renders/recovered.mp4", "verified": True},
+            ),
+        ):
+            result = runner.run_normalized_render_once(
+                execute=True,
+                resume_job_id=job_id,
+                source_path=self.source,
+                expected_sha256=self.digest,
+                ledger_path=self.ledger,
+                panel_database_path=self.root / "panel.sqlite3",
+                output_dir=self.output_dir,
+                work_root=self.work_root,
+                authorizations={
+                    "gemini": True,
+                    "modal": True,
+                    "r2": True,
+                    "estimated_cost": True,
+                },
+            )
+            self.assertEqual(result["status"], "completed")
+            transcribe.assert_not_called()
+            silence_detection.assert_not_called()
+            analyze.assert_called_once()
+            render.assert_called_once()
+            modal_client.assert_called_once()
+
+        record = ProcessingLedger(self.ledger).get(ledger_key)
+        self.assertEqual(record["status"], "completed")
+        self.assertEqual(record["attempts"], 2)
+        with sqlite3.connect(self.ledger) as connection:
+            snapshots = connection.execute(
+                """SELECT attempt_number, status, error
+                   FROM processing_job_attempt_history
+                   WHERE source_sha256 = ? ORDER BY attempt_number""",
+                (ledger_key,),
+            ).fetchall()
+        self.assertEqual([row[0] for row in snapshots], [1, 2])
+        self.assertEqual([row[1] for row in snapshots], ["failed", "failed"])
+        self.assertIn("first attempt failed", snapshots[0][2])
+        self.assertIn("GeminiAnalysisError", snapshots[1][2])
+        appended_phases = [
+            json.loads(line)["phase"]
+            for line in (job_work / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertIn("resumed_from_checkpoint", appended_phases)
+        self.assertIn("cuts_disabled_no_persisted_silence_candidates", appended_phases)
+        self.assertNotIn("transcribing", appended_phases[appended_phases.index("resumed_from_checkpoint"):])
+
+        with patch.object(runner, "_validate_source", return_value=(self.source, self.video, {"sha256": self.digest})):
+            blocked = runner.run_normalized_render_once(
+                resume_job_id=job_id,
+                source_path=self.source,
+                expected_sha256=self.digest,
+                ledger_path=self.ledger,
+                panel_database_path=self.root / "panel.sqlite3",
+                output_dir=self.output_dir,
+                work_root=self.work_root,
+            )
+        self.assertEqual(blocked["status"], "preflight_blocked")
+        self.assertTrue(any("normalized_source_completed" in item for item in blocked["preflight_blockers"]))
+
+    def test_gemini_error_diagnostic_is_persisted_without_message_or_secret(self):
+        job_id, ledger_key, job_work = self._create_failed_gemini_checkpoint()
+        diagnostic_error = runner.GeminiAnalysisError(
+            "provider error must not be persisted verbatim",
+            category="quota_or_rate_limit",
+            phase="generate_content",
+            http_status=429,
+            provider_status="RESOURCE_EXHAUSTED",
+        )
+        patches = self._patch_preflight()
+        with (
+            patches[0],
+            patches[1],
+            patches[2],
+            patches[3],
+            patch.dict("os.environ", {"GEMINI_API_KEY": "test-only"}, clear=True),
+            patch.object(runner, "ModalRenderClient", return_value=SimpleNamespace(ensure_worker_available=lambda: None)),
+            patch.object(runner, "analyze_video", side_effect=diagnostic_error),
+            patch.object(runner, "transcribe_video") as transcribe,
+            patch.object(runner, "process_local_video_modal") as render,
+            self.assertRaises(runner.GeminiAnalysisError),
+        ):
+            runner.run_normalized_render_once(
+                execute=True,
+                resume_job_id=job_id,
+                source_path=self.source,
+                expected_sha256=self.digest,
+                ledger_path=self.ledger,
+                panel_database_path=self.root / "panel.sqlite3",
+                output_dir=self.output_dir,
+                work_root=self.work_root,
+                authorizations={
+                    "gemini": True,
+                    "modal": True,
+                    "r2": True,
+                    "estimated_cost": True,
+                },
+            )
+        transcribe.assert_not_called()
+        render.assert_not_called()
+        ledger_record = ProcessingLedger(self.ledger).get(ledger_key)
+        self.assertEqual(ledger_record["status"], "failed")
+        self.assertNotIn("provider error must not be persisted", ledger_record["error"])
+        self.assertNotIn("test-only", ledger_record["error"])
+        events = [
+            json.loads(line)
+            for line in (job_work / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        failed = events[-1]
+        self.assertEqual(failed["phase"], "failed")
+        self.assertEqual(failed["failure_phase"], "analyzing_with_gemini")
+        self.assertEqual(failed["category"], "quota_or_rate_limit")
+        self.assertEqual(failed["http_status"], 429)
+        self.assertNotIn("provider error must not be persisted", json.dumps(failed))
+        self.assertNotIn("test-only", json.dumps(events))
+        with patch.object(
+            runner,
+            "_validate_source",
+            return_value=(self.source, self.video, {"sha256": self.digest}),
+        ):
+            blocked = runner.run_normalized_render_once(
+                resume_job_id=job_id,
+                source_path=self.source,
+                expected_sha256=self.digest,
+                ledger_path=self.ledger,
+                panel_database_path=self.root / "panel.sqlite3",
+                output_dir=self.output_dir,
+                work_root=self.work_root,
+            )
+        self.assertEqual(blocked["status"], "preflight_blocked")
+        self.assertIn("resume_already_claimed", blocked["preflight_blockers"])
 
     def test_preflight_reports_existing_dashboard_jobs_without_mutating_them(self):
         panel_database = self.root / "panel.sqlite3"

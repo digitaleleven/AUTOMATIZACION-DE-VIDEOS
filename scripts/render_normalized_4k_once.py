@@ -9,7 +9,9 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import logging
+import math
 import os
+import re
 import sqlite3
 from pathlib import Path
 import subprocess
@@ -31,8 +33,12 @@ def load_project_environment(env_path: str | Path = DOTENV_PATH) -> bool:
 # Load secrets before importing provider clients. Existing process/systemd values win.
 load_project_environment()
 
-from video_pipeline.cost_controls import MAX_JOB_BUDGET_USD, enforce_job_budget
-from video_pipeline.gemini_video import analyze_video
+from video_pipeline.cost_controls import (
+    MAX_JOB_BUDGET_USD,
+    enforce_job_budget,
+    enforce_recovery_budget,
+)
+from video_pipeline.gemini_video import GeminiAnalysisError, analyze_video
 from video_pipeline.media import detect_silence_cut_suggestions, probe_video
 from video_pipeline.modal_pipeline import process_local_video_modal
 from video_pipeline.modal_renderer import (
@@ -40,9 +46,15 @@ from video_pipeline.modal_renderer import (
     ModalRenderClient,
     modal_configuration_status,
 )
+from video_pipeline.models import WordTiming
 from video_pipeline.r2_storage import configuration_status as r2_configuration_status
 from video_pipeline.r2_storage import upload_mp4 as upload_mp4_to_r2
-from video_pipeline.state import DuplicateProcessingError, ProcessingLedger
+from video_pipeline.state import (
+    DuplicateProcessingError,
+    ProcessingLedger,
+    RetryNotAllowedError,
+    stable_execution_key,
+)
 from video_pipeline.style import VideoStyle, load_video_style, validate_output_profile
 from video_pipeline.subtitles import build_subtitle_segments
 from video_pipeline.transcription import transcribe_video
@@ -58,6 +70,8 @@ OUTPUT_DIR = Path("outputs")
 WORK_ROOT = Path("data/normalized-render-once")
 EXPECTED_DURATION_SECONDS = 59.98
 DURATION_TOLERANCE_SECONDS = 0.5
+AUTHORIZED_GEMINI_RESUME_JOB_ID = "7be6ba1a33c34124bb541e3101a7cca0"
+AUTHORIZED_GEMINI_RESUME_ATTEMPTS = 2
 
 EDIT_OPTIONS: dict[str, Any] = {
     "renderer_backend": "modal",
@@ -208,6 +222,250 @@ def _write_new_json(path: Path, payload: Any) -> None:
         os.fsync(stream.fileno())
 
 
+def _directory_can_accept_file(directory: Path) -> bool:
+    candidate = directory
+    while not candidate.exists() and candidate != candidate.parent:
+        candidate = candidate.parent
+    return candidate.is_dir() and os.access(candidate, os.W_OK | os.X_OK)
+
+
+def _load_gemini_resume_checkpoint(
+    job_id: str,
+    work_root: str | Path,
+    *,
+    source_sha256: str,
+    duration_seconds: float,
+) -> dict[str, Any]:
+    """Validate the one approved Gemini-failed checkpoint without changing it."""
+    if job_id != AUTHORIZED_GEMINI_RESUME_JOB_ID or not re.fullmatch(r"[0-9a-f]{32}", job_id):
+        raise ValueError("Solo se permite recuperar el checkpoint Gemini autorizado.")
+    root = Path(work_root).expanduser().resolve()
+    job_work = (root / job_id).resolve()
+    if job_work.parent != root or not job_work.is_dir():
+        raise ValueError("No se encontró el directorio del checkpoint autorizado.")
+
+    events_path = job_work / "events.jsonl"
+    if (
+        events_path.is_symlink()
+        or not events_path.is_file()
+        or events_path.stat().st_size > 1024 * 1024
+    ):
+        raise ValueError("El registro persistente del checkpoint no es válido.")
+    try:
+        events = [
+            json.loads(line)
+            for line in events_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        raise ValueError("No se pudo validar el registro persistente del checkpoint.") from None
+    if not events or any(not isinstance(event, dict) for event in events):
+        raise ValueError("El registro del checkpoint no tiene el formato esperado.")
+    phases = [event.get("phase") for event in events]
+    if any(not isinstance(phase, str) for phase in phases):
+        raise ValueError("El registro del checkpoint contiene fases no válidas.")
+    claims = [
+        event for event in events
+        if event.get("phase") == "claimed"
+        and event.get("source_sha256") == source_sha256
+        and event.get("output_profile") == "2160p30"
+    ]
+    last = events[-1]
+    if (
+        len(claims) != 1
+        or len(phases) < 2
+        or phases[-2:] != ["analyzing_with_gemini", "failed"]
+        or last.get("error_type") != "GeminiAnalysisError"
+        or not all(name in phases for name in ("transcribing", "detecting_silences"))
+        or phases.index("claimed") >= phases.index("transcribing")
+        or phases.index("transcribing") >= phases.index("detecting_silences")
+        or phases.index("detecting_silences") >= phases.index("analyzing_with_gemini")
+    ):
+        raise ValueError("El checkpoint no terminó exclusivamente durante el análisis Gemini.")
+    if any(
+        phase in {"rendering_on_modal", "uploading_to_r2", "completed"}
+        for phase in phases
+    ):
+        raise ValueError("El checkpoint ya avanzó a render o entrega; no se reanudará.")
+    transcript_path = job_work / "transcript.json"
+    if (
+        transcript_path.is_symlink()
+        or not transcript_path.is_file()
+        or transcript_path.stat().st_size > 2 * 1024 * 1024
+    ):
+        raise ValueError("No se encontró una transcripción de tamaño válido.")
+    try:
+        transcript = json.loads(transcript_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        raise ValueError("La transcripción guardada no es JSON válido.") from None
+    if not isinstance(transcript, dict):
+        raise ValueError("La transcripción guardada no tiene el formato esperado.")
+    text = transcript.get("text")
+    raw_words = transcript.get("words")
+    if (
+        not isinstance(text, str)
+        or not text.strip()
+        or len(text) > 500_000
+        or not isinstance(raw_words, list)
+        or not 2 <= len(raw_words) <= 12_000
+    ):
+        raise ValueError("La transcripción guardada está vacía o fuera de límites.")
+    words: list[WordTiming] = []
+    previous_start = -1.0
+    for item in raw_words:
+        if not isinstance(item, dict):
+            raise ValueError("La transcripción contiene una palabra no válida.")
+        word = item.get("word")
+        start, end = item.get("start"), item.get("end")
+        if (
+            not isinstance(word, str)
+            or not word.strip()
+            or len(word) > 250
+            or isinstance(start, bool)
+            or isinstance(end, bool)
+            or not isinstance(start, (int, float))
+            or not isinstance(end, (int, float))
+            or not math.isfinite(float(start))
+            or not math.isfinite(float(end))
+            or float(start) < 0
+            or float(end) < float(start)
+            or float(end) > duration_seconds + DURATION_TOLERANCE_SECONDS
+            or float(start) < previous_start
+        ):
+            raise ValueError("Los tiempos de la transcripción no superaron la validación.")
+        words.append(WordTiming(word, float(start), float(end)))
+        previous_start = float(start)
+    if " ".join(word.text for word in words) != text:
+        raise ValueError("El texto canónico no coincide con las palabras guardadas.")
+
+    transcript_hash = _sha256_file(transcript_path)
+    persisted_hash_events = [
+        event.get("transcript_sha256")
+        for event in events
+        if event.get("phase") == "transcript_persisted"
+    ]
+    if persisted_hash_events and transcript_hash not in persisted_hash_events:
+        raise ValueError("El hash de la transcripción no coincide con el evento persistente.")
+
+    silence_candidates: list[dict[str, float]] = []
+    silence_path = job_work / "silence-candidates.json"
+    if silence_path.is_file():
+        if silence_path.is_symlink() or silence_path.stat().st_size > 128 * 1024:
+            raise ValueError("El archivo de pausas guardado supera el límite.")
+        try:
+            raw_silences = json.loads(silence_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            raise ValueError("El archivo de pausas guardado no es válido.") from None
+        if not isinstance(raw_silences, list) or len(raw_silences) > 12:
+            raise ValueError("El archivo de pausas guardado está fuera de límites.")
+        for interval in raw_silences:
+            start = interval.get("start_seconds") if isinstance(interval, dict) else None
+            end = interval.get("end_seconds") if isinstance(interval, dict) else None
+            if (
+                isinstance(start, bool)
+                or isinstance(end, bool)
+                or not isinstance(start, (int, float))
+                or not isinstance(end, (int, float))
+                or not math.isfinite(float(start))
+                or not math.isfinite(float(end))
+                or float(start) < 0
+                or float(end) <= float(start)
+                or float(end) > duration_seconds
+            ):
+                raise ValueError("Los intervalos de silencio guardados no son válidos.")
+            silence_candidates.append({
+                "start_seconds": float(start),
+                "end_seconds": float(end),
+            })
+    return {
+        "job_id": job_id,
+        "job_work": job_work,
+        "transcript_payload": transcript,
+        "transcript_sha256": transcript_hash,
+        "transcript_integrity": (
+            "source-bound-checkpoint-and-persisted-hash"
+            if persisted_hash_events
+            else "legacy-schema-and-source-bound-event"
+        ),
+        "words": words,
+        "silence_candidates": silence_candidates,
+        "silence_candidates_reused": silence_path.is_file(),
+    }
+
+
+def _existing_modal_ledger_job(
+    database_path: str | Path,
+    source_key: str,
+) -> dict[str, Any]:
+    database = Path(database_path).expanduser().resolve()
+    if not database.is_file():
+        return {}
+    connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=5)
+    connection.row_factory = sqlite3.Row
+    try:
+        table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='processing_jobs'"
+        ).fetchone()
+        if not table:
+            return {}
+        row = connection.execute(
+            """SELECT source_sha256, status, attempts, execution_key, edit_options_json, error
+               FROM processing_jobs WHERE source_sha256 = ?""",
+            (source_key,),
+        ).fetchone()
+        return dict(row) if row else {}
+    finally:
+        connection.close()
+
+
+def _resume_history_already_recorded(database_path: str | Path, source_key: str, attempt: int) -> bool:
+    database = Path(database_path).expanduser().resolve()
+    if not database.is_file():
+        return False
+    connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=5)
+    try:
+        table = connection.execute(
+            """SELECT 1 FROM sqlite_master
+               WHERE type='table' AND name='processing_job_attempt_history'"""
+        ).fetchone()
+        if not table:
+            return False
+        return connection.execute(
+            """SELECT 1 FROM processing_job_attempt_history
+               WHERE source_sha256 = ? AND attempt_number = ?""",
+            (source_key, attempt),
+        ).fetchone() is not None
+    finally:
+        connection.close()
+
+
+def _prior_failure_snapshot_preserved(database_path: str | Path, source_key: str) -> bool:
+    database = Path(database_path).expanduser().resolve()
+    if not database.is_file():
+        return False
+    connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=5)
+    try:
+        table = connection.execute(
+            """SELECT 1 FROM sqlite_master
+               WHERE type='table' AND name='processing_job_attempt_history'"""
+        ).fetchone()
+        if not table:
+            return False
+        row = connection.execute(
+            """SELECT status, error, snapshot_json FROM processing_job_attempt_history
+               WHERE source_sha256 = ? AND attempt_number = 1""",
+            (source_key,),
+        ).fetchone()
+        if not row or row[0] != "failed" or not row[1]:
+            return False
+        snapshot = json.loads(row[2])
+        return isinstance(snapshot, dict) and snapshot.get("status") == "failed"
+    except (sqlite3.Error, TypeError, json.JSONDecodeError):
+        return False
+    finally:
+        connection.close()
+
+
 def _existing_panel_attempts(
     database_path: str | Path = PANEL_DATABASE_PATH,
 ) -> list[dict[str, str]]:
@@ -290,11 +548,13 @@ def _prior_attempt_blockers(
     *,
     normalized_source_key: str,
     retry_failed: bool = False,
+    resume_attempt: int | None = None,
 ) -> tuple[list[str], int]:
-    """Allow one explicit retry of a single failed normalized-source attempt."""
+    """Block duplicates; allow only the explicit retry or checkpoint resume requested."""
     blockers: list[str] = []
     failed_panel_attempts = 0
     retry_failure_found = False
+    resume_failure_found = False
     for attempt in panel_attempts:
         status = attempt["status"]
         phase = attempt["phase"]
@@ -319,6 +579,8 @@ def _prior_attempt_blockers(
                 blockers.append(f"normalized_source_{status or 'unknown'}")
             elif retry_failed and attempts == 1:
                 retry_failure_found = True
+            elif resume_attempt is not None and attempts == resume_attempt:
+                resume_failure_found = True
             elif retry_failed:
                 blockers.append("normalized_retry_limit_reached")
             else:
@@ -328,6 +590,8 @@ def _prior_attempt_blockers(
 
     if retry_failed and not retry_failure_found:
         blockers.append("retry_failed_requires_single_failed_ledger_attempt")
+    if resume_attempt is not None and not resume_failure_found:
+        blockers.append("resume_requires_the_exact_failed_attempt")
     return sorted(set(blockers)), failed_panel_attempts
 
 
@@ -335,6 +599,7 @@ def run_normalized_render_once(
     *,
     execute: bool = False,
     retry_failed: bool = False,
+    resume_job_id: str | None = None,
     source_path: str | Path = SOURCE_PATH,
     expected_sha256: str = SOURCE_SHA256,
     ledger_path: str | Path = LEDGER_PATH,
@@ -345,6 +610,10 @@ def run_normalized_render_once(
     preflight_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Preflight by default; submit a single full render only when explicitly authorized."""
+    if retry_failed and resume_job_id:
+        raise ValueError("--retry-failed y --resume-job-id son modos excluyentes.")
+    if resume_job_id and resume_job_id != AUTHORIZED_GEMINI_RESUME_JOB_ID:
+        raise ValueError("Solo se permite recuperar el checkpoint Gemini autorizado.")
     source, video, source_report = _validate_source(
         source_path,
         expected_sha256=expected_sha256,
@@ -360,20 +629,85 @@ def run_normalized_render_once(
     }
     ledger_keys.add(normalized_source_key)
     previous_ledger_attempts = _existing_modal_ledger_attempts(ledger_path, ledger_keys)
+    resume_attempt = AUTHORIZED_GEMINI_RESUME_ATTEMPTS if resume_job_id else None
     duplicate_blockers, failed_panel_attempts = _prior_attempt_blockers(
         previous_attempts,
         previous_ledger_attempts,
         normalized_source_key=normalized_source_key,
         retry_failed=retry_failed,
+        resume_attempt=resume_attempt,
     )
-    budget = enforce_job_budget(video.duration)
+    resume_checkpoint: dict[str, Any] | None = None
+    if resume_job_id:
+        resume_record = _existing_modal_ledger_job(ledger_path, normalized_source_key)
+        if (
+            resume_record.get("status") != "failed"
+            or int(resume_record.get("attempts") or 0) != AUTHORIZED_GEMINI_RESUME_ATTEMPTS
+        ):
+            duplicate_blockers.append("resume_ledger_must_be_failed_attempt_2")
+        try:
+            if (
+                json.loads(resume_record.get("edit_options_json") or "{}") != EDIT_OPTIONS
+                or resume_record.get("execution_key")
+                != stable_execution_key(normalized_source_key, EDIT_OPTIONS)
+            ):
+                duplicate_blockers.append("resume_ledger_profile_mismatch")
+        except (TypeError, json.JSONDecodeError):
+            duplicate_blockers.append("resume_ledger_profile_invalid")
+        if _resume_history_already_recorded(
+            ledger_path, normalized_source_key, AUTHORIZED_GEMINI_RESUME_ATTEMPTS
+        ):
+            duplicate_blockers.append("resume_already_claimed")
+        if not _prior_failure_snapshot_preserved(ledger_path, normalized_source_key):
+            duplicate_blockers.append("resume_first_failure_snapshot_missing")
+        try:
+            resume_checkpoint = _load_gemini_resume_checkpoint(
+                resume_job_id,
+                work_root,
+                source_sha256=source_report["sha256"],
+                duration_seconds=video.duration,
+            )
+        except ValueError as exc:
+            duplicate_blockers.append(f"resume_checkpoint_invalid: {exc}")
+        expected_output = (
+            Path(output_dir).expanduser().resolve()
+            / f"{source.stem}-MATRIX-MOTION-{resume_job_id[:8]}.mp4"
+        )
+        if expected_output.exists():
+            duplicate_blockers.append("resume_output_already_exists")
+        if not _directory_can_accept_file(Path(output_dir).expanduser().resolve()):
+            duplicate_blockers.append("resume_output_directory_not_writable")
+        if resume_checkpoint and not os.access(
+            resume_checkpoint["job_work"] / "events.jsonl", os.W_OK
+        ):
+            duplicate_blockers.append("resume_event_log_not_writable")
+    budget = enforce_recovery_budget() if resume_job_id else enforce_job_budget(video.duration)
     if budget.maximum_usd > MAX_JOB_BUDGET_USD:
         raise RuntimeError("La estimación conservadora supera el límite interno.")
+    if resume_job_id:
+        pending_cost_breakdown = {
+            "whisper_usd": 0.0,
+            "normalization_usd": 0.0,
+            "gemini_usd": budget.gemini_usd,
+            "modal_render_usd": budget.modal_render_usd,
+            "modal_egress_usd": budget.modal_egress_usd,
+            "persistent_storage_usd": budget.persistent_storage_usd,
+            "buffer_usd": budget.buffer_usd,
+        }
+    else:
+        pending_cost_breakdown = {
+            "modal_compute_usd": getattr(budget, "modal_compute_usd", None),
+            "gemini_usd": getattr(budget, "gemini_usd", None),
+            "whisper_usd": getattr(budget, "whisper_usd", None),
+            "modal_egress_usd": getattr(budget, "modal_egress_usd", None),
+            "persistent_storage_usd": getattr(budget, "persistent_storage_usd", None),
+            "buffer_usd": getattr(budget, "buffer_usd", None),
+        }
 
     modal_status = modal_configuration_status()
     r2_status = r2_configuration_status()
     blockers = []
-    if not os.getenv("OPENAI_API_KEY"):
+    if not resume_job_id and not os.getenv("OPENAI_API_KEY"):
         blockers.append("OPENAI_API_KEY no configurada")
     if not os.getenv("GEMINI_API_KEY"):
         blockers.append("GEMINI_API_KEY no configurada")
@@ -401,6 +735,22 @@ def run_normalized_render_once(
         "normalization_reused": True,
         "existing_panel_attempts": len(previous_attempts),
         "retry_failed_requested": retry_failed,
+        "resume_job_id": resume_job_id,
+        "transcription_reused": bool(resume_checkpoint),
+        "transcript_integrity": (
+            resume_checkpoint.get("transcript_integrity") if resume_checkpoint else None
+        ),
+        "silence_candidates_reused": (
+            resume_checkpoint.get("silence_candidates_reused") if resume_checkpoint else False
+        ),
+        "pending_operations": (
+            ["gemini_analysis", "modal_render", "r2_upload"]
+            if resume_job_id
+            else ["whisper_transcription", "gemini_analysis", "modal_render", "r2_upload"]
+        ),
+        "estimated_pending_cost_usd": budget.maximum_usd,
+        "pending_cost_breakdown_usd": pending_cost_breakdown,
+        "previous_failed_gemini_cost_known": False if resume_job_id else None,
     }
     if preflight_callback:
         preflight_callback(report)
@@ -415,12 +765,13 @@ def run_normalized_render_once(
 
     auth = authorizations or {}
     required_authorizations = {
-        "openai": "authorize_openai",
         "gemini": "authorize_gemini",
         "modal": "authorize_modal",
         "r2": "authorize_r2",
         "estimated_cost": "acknowledge_estimated_cost",
     }
+    if not resume_job_id:
+        required_authorizations["openai"] = "authorize_openai"
     missing = [flag for key, flag in required_authorizations.items() if auth.get(key) is not True]
     if missing:
         raise PermissionError("Falta autorización explícita: " + ", ".join(missing))
@@ -431,44 +782,75 @@ def run_normalized_render_once(
     source_ledger_key = normalized_source_key
     edit_options = dict(EDIT_OPTIONS)
     ledger = ProcessingLedger(ledger_path)
-    ledger.claim(
-        source_ledger_key,
-        str(source),
-        retry_failed=retry_failed,
-        max_attempts=2 if retry_failed else 1,
-        preserve_failure_history=retry_failed,
-        edit_options=edit_options,
-    )
-    job_id = uuid.uuid4().hex
+    if resume_job_id:
+        ledger.resume_failed_attempt(
+            source_ledger_key,
+            expected_attempts=AUTHORIZED_GEMINI_RESUME_ATTEMPTS,
+            edit_options=edit_options,
+        )
+        job_id = resume_job_id
+    else:
+        ledger.claim(
+            source_ledger_key,
+            str(source),
+            retry_failed=retry_failed,
+            max_attempts=2 if retry_failed else 1,
+            preserve_failure_history=retry_failed,
+            edit_options=edit_options,
+        )
+        job_id = uuid.uuid4().hex
     job_work = Path(work_root).expanduser().resolve() / job_id
     events_path = job_work / "events.jsonl"
     output_directory = Path(output_dir).expanduser().resolve()
     source_hash_before = source_report["sha256"]
 
+    current_phase = "resumed_from_checkpoint" if resume_job_id else "claimed"
+
     def phase(name: str, **details: Any) -> None:
+        nonlocal current_phase
+        if name != "failed":
+            current_phase = name
         _append_event(events_path, {"phase": name, **details})
         logger.info("normalized_render_phase=%s job_id=%s", name, job_id)
 
     try:
         output_directory.mkdir(parents=True, exist_ok=True)
-        phase("claimed", source_sha256=source_hash_before, output_profile="2160p30")
-        phase("transcribing")
-        words = transcribe_video(video, job_work / "whisper")
-        transcript_payload = {
-            "text": " ".join(word.text for word in words),
-            "words": [
-                {"word": word.text, "start": word.start, "end": word.end}
-                for word in words
-            ],
-        }
-        _write_new_json(job_work / "transcript.json", transcript_payload)
+        if resume_checkpoint:
+            transcript_payload = resume_checkpoint["transcript_payload"]
+            words = resume_checkpoint["words"]
+            silence_candidates = resume_checkpoint["silence_candidates"]
+            phase(
+                "resumed_from_checkpoint",
+                transcript_sha256=resume_checkpoint["transcript_sha256"],
+                transcript_integrity=resume_checkpoint["transcript_integrity"],
+                silence_candidates_reused=resume_checkpoint["silence_candidates_reused"],
+            )
+            if not resume_checkpoint["silence_candidates_reused"]:
+                phase("cuts_disabled_no_persisted_silence_candidates")
+        else:
+            phase("claimed", source_sha256=source_hash_before, output_profile="2160p30")
+            phase("transcribing")
+            words = transcribe_video(video, job_work / "whisper")
+            transcript_payload = {
+                "text": " ".join(word.text for word in words),
+                "words": [
+                    {"word": word.text, "start": word.start, "end": word.end}
+                    for word in words
+                ],
+            }
+            _write_new_json(job_work / "transcript.json", transcript_payload)
+            phase(
+                "transcript_persisted",
+                transcript_sha256=_sha256_file(job_work / "transcript.json"),
+            )
 
-        phase("detecting_silences")
-        silence_candidates = detect_silence_cut_suggestions(
-            source,
-            video.duration,
-            words,
-        )
+            phase("detecting_silences")
+            silence_candidates = detect_silence_cut_suggestions(
+                source,
+                video.duration,
+                words,
+            )
+            _write_new_json(job_work / "silence-candidates.json", silence_candidates)
         phase("analyzing_with_gemini")
         analysis = analyze_video(
             source,
@@ -552,9 +934,30 @@ def run_normalized_render_once(
             "ledger_path": str(Path(ledger_path)),
         }
     except BaseException as exc:
+        failure = {
+            "error_type": type(exc).__name__,
+            "failure_phase": current_phase,
+        }
+        if isinstance(exc, GeminiAnalysisError):
+            failure.update({
+                "provider": exc.diagnostic.get("provider"),
+                "category": exc.diagnostic.get("category"),
+                "provider_phase": exc.diagnostic.get("phase"),
+                "http_status": exc.diagnostic.get("http_status"),
+                "provider_status": exc.diagnostic.get("provider_status"),
+            })
+        safe_error = " ".join(
+            f"{key}={value}"
+            for key, value in failure.items()
+            if key in {
+                "error_type", "failure_phase", "provider", "category", "phase",
+                "provider_phase", "http_status", "provider_status",
+            }
+            and value is not None
+        )
         try:
-            ledger.mark_failed(source_ledger_key, f"{type(exc).__name__}: ejecución detenida")
-            phase("failed", error_type=type(exc).__name__)
+            ledger.mark_failed(source_ledger_key, safe_error or f"{type(exc).__name__}: ejecución detenida")
+            phase("failed", **failure)
         except BaseException:
             logger.error("Could not persist normalized render failure; job_id=%s", job_id)
         raise
@@ -571,6 +974,13 @@ def _parser() -> argparse.ArgumentParser:
         "--retry-failed",
         action="store_true",
         help="Autoriza una sola repetición si el ledger del máster 4K está en failed con un intento.",
+    )
+    parser.add_argument(
+        "--resume-job-id",
+        help=(
+            "Reanuda únicamente el checkpoint Gemini autorizado, reutilizando la transcripción "
+            "y sin volver a invocar Whisper."
+        ),
     )
     for flag, help_text in (
         ("--authorize-openai", "Autoriza Whisper para transcribir el audio."),
@@ -589,6 +999,7 @@ def main(argv: list[str] | None = None) -> int:
         report = run_normalized_render_once(
             execute=args.execute,
             retry_failed=args.retry_failed,
+            resume_job_id=args.resume_job_id,
             authorizations={
                 "openai": args.authorize_openai,
                 "gemini": args.authorize_gemini,
@@ -602,11 +1013,13 @@ def main(argv: list[str] | None = None) -> int:
             ),
         )
     except BaseException as exc:
+        diagnostic = exc.diagnostic if isinstance(exc, GeminiAnalysisError) else None
         print(
             json.dumps(
                 {
                     "status": "blocked_or_failed",
                     "error_type": type(exc).__name__,
+                    "diagnostic": diagnostic,
                     "message": "No se reintentó automáticamente. Consulte el log persistente del trabajo.",
                 },
                 ensure_ascii=False,

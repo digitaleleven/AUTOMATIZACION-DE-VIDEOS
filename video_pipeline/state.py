@@ -209,6 +209,73 @@ class ProcessingLedger:
             )
             return self.get(source_sha256, connection=connection)
 
+    def resume_failed_attempt(
+        self,
+        source_sha256: str,
+        *,
+        expected_attempts: int,
+        edit_options: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Resume one known failed attempt once, without incrementing its attempt count."""
+        requested_options_json = json.dumps(
+            edit_options, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        )
+        expected_execution_key = stable_execution_key(source_sha256, edit_options)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM processing_jobs WHERE source_sha256 = ?",
+                (source_sha256,),
+            ).fetchone()
+            if row is None:
+                raise RetryNotAllowedError("No existe el intento fallido que se quiere recuperar.")
+            job = dict(row)
+            if job["status"] != "failed" or int(job["attempts"]) != expected_attempts:
+                raise RetryNotAllowedError(
+                    "La recuperación exige el mismo intento en estado failed y sin cambios."
+                )
+            if json.loads(job.get("edit_options_json") or "{}") != edit_options:
+                raise RetryNotAllowedError("La configuración del intento no coincide con el checkpoint.")
+            if job.get("execution_key") != expected_execution_key:
+                raise RetryNotAllowedError("La identidad de ejecución del checkpoint no coincide.")
+            if expected_attempts == 2:
+                first_failure = connection.execute(
+                    """SELECT status FROM processing_job_attempt_history
+                       WHERE source_sha256 = ? AND attempt_number = 1""",
+                    (source_sha256,),
+                ).fetchone()
+                if not first_failure or first_failure["status"] != "failed":
+                    raise RetryNotAllowedError(
+                        "No se conserva la evidencia fallida del primer intento; la recuperación se bloqueó."
+                    )
+            prior = connection.execute(
+                """SELECT 1 FROM processing_job_attempt_history
+                   WHERE source_sha256 = ? AND attempt_number = ?""",
+                (source_sha256, expected_attempts),
+            ).fetchone()
+            if prior:
+                raise RetryNotAllowedError("Este intento ya consumió su única reanudación.")
+            now = self._now()
+            connection.execute(
+                """INSERT INTO processing_job_attempt_history
+                (source_sha256, attempt_number, status, error, snapshot_json, recorded_at)
+                VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    source_sha256,
+                    expected_attempts,
+                    str(job["status"]),
+                    job.get("error"),
+                    json.dumps(job, sort_keys=True, ensure_ascii=False, default=str),
+                    now,
+                ),
+            )
+            connection.execute(
+                """UPDATE processing_jobs SET status = 'processing', error = NULL, updated_at = ?
+                   WHERE source_sha256 = ? AND status = 'failed' AND attempts = ?""",
+                (now, source_sha256, expected_attempts),
+            )
+            return self.get(source_sha256, connection=connection)
+
     def get(self, source_sha256: str, connection: sqlite3.Connection | None = None) -> dict[str, Any]:
         if connection is not None:
             row = connection.execute(
