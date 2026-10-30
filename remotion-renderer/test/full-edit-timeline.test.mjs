@@ -34,6 +34,15 @@ test("master camera zoom stays smooth and Remotion blur is confined to cut bound
   assert.equal(cameraScaleAtFrame(50, [], 12, 1.06, [{ startFrame: 30, endFrame: 90 }]), 1.06);
   assert.equal(cameraScaleAtFrame(84, [], 12, 1.06, [{ startFrame: 30, endFrame: 90 }]), 1.03);
   assert.equal(cameraScaleAtFrame(90, [], 12, 1.06, [{ startFrame: 30, endFrame: 90 }]), 1);
+  assert.equal(cameraScaleAtFrame(44, [], 12, 1.06, [{
+    startFrame: 50, endFrame: 100, effect: "zoomOut",
+  }]), 1.03);
+  assert.equal(cameraScaleAtFrame(56, [], 12, 1.06, [{
+    startFrame: 50, endFrame: 100, effect: "zoomOut",
+  }]), 1.03);
+  assert.equal(cameraScaleAtFrame(62, [], 12, 1.06, [{
+    startFrame: 50, endFrame: 100, effect: "zoomOut",
+  }]), 1);
   assert.equal(isSceneCutBlurFrame(89, [90]), false);
   assert.equal(isSceneCutBlurFrame(90, [90]), true);
 });

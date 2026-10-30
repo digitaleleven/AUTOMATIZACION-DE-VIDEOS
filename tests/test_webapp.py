@@ -16,7 +16,11 @@ from unittest.mock import patch
 
 from video_pipeline.auth import OwnerAuth
 from video_pipeline.google_drive import DriveOAuthConfig, GoogleDriveError, GoogleDriveOAuth
-from video_pipeline.media import parse_silence_intervals, probe_video
+from video_pipeline.media import (
+    detect_silence_cut_suggestions,
+    parse_silence_intervals,
+    probe_video,
+)
 from video_pipeline.webapp import (
     DashboardStore,
     PanelError,
@@ -87,12 +91,37 @@ class ModalZoomCompatibilityTests(unittest.TestCase):
         intervals = parse_silence_intervals(
             "[silencedetect] silence_start: 1.25\n"
             "[silencedetect] silence_end: 2.50 | silence_duration: 1.25\n"
-            "[silencedetect] silence_start: 4.60\n",
+            "[silencedetect] silence_start: 4.00\n",
             5.0,
         )
         self.assertEqual(intervals, [
             {"start_seconds": 1.25, "end_seconds": 2.5},
-            {"start_seconds": 4.6, "end_seconds": 5.0},
+            {"start_seconds": 4.0, "end_seconds": 5.0},
+        ])
+
+    def test_detected_pause_cut_keeps_transcript_word_and_edge_padding(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "audio-proxy.mp4"
+            source.write_bytes(b"mock input")
+            result = subprocess.CompletedProcess(
+                args=["ffmpeg"],
+                returncode=0,
+                stdout="",
+                stderr=(
+                    "[silencedetect] silence_start: 1.0\n"
+                    "[silencedetect] silence_end: 4.0 | silence_duration: 3.0\n"
+                ),
+            )
+            with patch("video_pipeline.media.subprocess.run", return_value=result):
+                cuts = detect_silence_cut_suggestions(
+                    source,
+                    5.0,
+                    [{"word": "palabra", "start": 2.0, "end": 2.5}],
+                    max_removed_ratio=0.5,
+                )
+        self.assertEqual(cuts, [
+            {"start_seconds": 1.16, "end_seconds": 1.84},
+            {"start_seconds": 2.66, "end_seconds": 3.84},
         ])
 
 

@@ -34,3 +34,11 @@ La responsable autorizó cambiar el compositor final para que Remotion procese t
 **Why:** el compositor anterior mezclaba el vídeo en FFmpeg después de renderizar una capa gráfica transparente en Remotion, así que Remotion no podía muestrear fotogramas de la escena.
 
 **How to apply:** procesar el vídeo base dentro de la composición Remotion con una copia de trabajo BT.709 y mantener la mezcla final del audio original. La autorización de arquitectura no autoriza por sí sola desplegar el worker ni ejecutar un render remoto.
+
+### Coordinación de la edición premium
+
+Las sugerencias de corte de Gemini son candidatas: solo se aplican donde el detector local confirma silencio y el intervalo no elimina palabras transcritas. Audio, subtítulos, efectos y ventanas de zoom deben mapearse sobre los mismos segmentos conservados. La conversión FFmpeg resuelve color/escala; Remotion aplica el zoom una sola vez.
+
+**Why:** los cortes basados solo en texto pueden truncar voz, y aplicar zoom tanto en FFmpeg como en Remotion duplica el movimiento.
+
+**How to apply:** al ampliar el plan Python→Modal→Remotion, mantener la corroboración local de pausas, el límite de cortes y el mapeo de tiempos fuente a salida. No afirmar que el montaje de un vídeo real está validado sin render y revisión.

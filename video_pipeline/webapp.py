@@ -136,14 +136,27 @@ def _prepare_modal_render_plan(
     )["cuts"]
     confirmed_ai_cuts = []
     for suggestion in normalized_ai_cuts:
+        intersections = []
         for pause in silence:
             start = max(suggestion["start_seconds"], pause["start_seconds"])
             end = min(suggestion["end_seconds"], pause["end_seconds"])
             if end - start >= 0.35:
-                confirmed_ai_cuts.append({
+                intersections.append({
                     "start_seconds": round(start, 3),
                     "end_seconds": round(end, 3),
                 })
+        if intersections:
+            confirmed_ai_cuts.append(max(
+                intersections,
+                key=lambda item: item["end_seconds"] - item["start_seconds"],
+            ))
+    available_auto_cut_slots = max(0, 12 - len(manual_cut_ranges))
+    confirmed_ai_cuts = sorted(
+        confirmed_ai_cuts,
+        key=lambda item: item["end_seconds"] - item["start_seconds"],
+        reverse=True,
+    )[:available_auto_cut_slots]
+    confirmed_ai_cuts.sort(key=lambda item: item["start_seconds"])
 
     combined_cuts = sorted(
         [*manual_cut_ranges, *confirmed_ai_cuts],
