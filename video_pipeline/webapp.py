@@ -75,6 +75,7 @@ from .pipeline import (
 )
 from .modal_pipeline import process_local_video_modal
 from .modal_renderer import ModalRenderClient, modal_configuration_status
+from .cost_controls import enforce_job_budget
 from .gemini_video import analyze_video
 from .transcription import transcribe_video
 from .r2_storage import configuration_status as r2_configuration_status, upload_mp4 as upload_mp4_to_r2
@@ -357,6 +358,8 @@ class DashboardStore:
                     output_id TEXT,
                     result_json TEXT,
                     edit_options_json TEXT NOT NULL DEFAULT '{}',
+                    phase_started_at REAL,
+                    phase_history_json TEXT NOT NULL DEFAULT '[]',
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL
                 )
@@ -375,6 +378,15 @@ class DashboardStore:
                 )
             if "retry_of_job_id" not in job_columns:
                 db.execute("ALTER TABLE dashboard_jobs ADD COLUMN retry_of_job_id TEXT")
+            if "phase_started_at" not in job_columns:
+                db.execute("ALTER TABLE dashboard_jobs ADD COLUMN phase_started_at REAL")
+            if "phase_history_json" not in job_columns:
+                db.execute(
+                    "ALTER TABLE dashboard_jobs ADD COLUMN phase_history_json TEXT NOT NULL DEFAULT '[]'"
+                )
+            db.execute(
+                "UPDATE dashboard_jobs SET phase_started_at = updated_at WHERE phase_started_at IS NULL"
+            )
             db.execute(
                 "CREATE INDEX IF NOT EXISTS dashboard_jobs_source_created "
                 "ON dashboard_jobs(source_id, created_at DESC)"
@@ -484,9 +496,10 @@ class DashboardStore:
                 raise PanelError("El vídeo ya no está disponible en la biblioteca.", 404)
             db.execute(
                 """INSERT INTO dashboard_jobs
-                   (id, source_id, status, phase, progress, estimated_cost_usd,
-                    edit_options_json, attempt_number, retry_of_job_id, created_at, updated_at)
-                   VALUES (?, ?, 'queued', 'queued', NULL, ?, ?, ?, ?, ?, ?)""",
+                    (id, source_id, status, phase, progress, estimated_cost_usd,
+                     edit_options_json, attempt_number, retry_of_job_id, phase_started_at,
+                     phase_history_json, created_at, updated_at)
+                    VALUES (?, ?, 'queued', 'queued', NULL, ?, ?, ?, ?, ?, '[]', ?, ?)""",
                 (
                     job_id,
                     source_id,
@@ -494,6 +507,7 @@ class DashboardStore:
                     json.dumps(edit_options or {}, ensure_ascii=False),
                     attempt_number,
                     retry_of_job_id,
+                    now,
                     now,
                     now,
                 ),
@@ -550,8 +564,9 @@ class DashboardStore:
                 db.execute(
                     """INSERT INTO dashboard_jobs
                        (id, source_id, status, phase, progress, estimated_cost_usd,
-                    edit_options_json, attempt_number, retry_of_job_id, created_at, updated_at)
-                   VALUES (?, ?, 'queued', 'queued', NULL, ?, ?, ?, ?, ?, ?)""",
+                    edit_options_json, attempt_number, retry_of_job_id, phase_started_at,
+                    phase_history_json, created_at, updated_at)
+                   VALUES (?, ?, 'queued', 'queued', NULL, ?, ?, ?, ?, ?, '[]', ?, ?)""",
                     (
                         job_id,
                         previous["source_id"],
@@ -559,6 +574,7 @@ class DashboardStore:
                         json.dumps(edit_options, ensure_ascii=False),
                         attempt_number,
                         previous_job_id,
+                        now,
                         now,
                         now,
                     ),
@@ -571,11 +587,38 @@ class DashboardStore:
         allowed = {"status", "phase", "progress", "error", "estimated_cost_usd", "output_id", "result_json"}
         if not fields or set(fields) - allowed:
             raise ValueError("Unsupported dashboard job update.")
-        assignments = [f"{name} = ?" for name in fields]
-        values = list(fields.values())
-        assignments.append("updated_at = ?")
-        values.extend((time.time(), job_id))
         with self.lock, self._connect() as db:
+            now = time.time()
+            update_fields = dict(fields)
+            if "phase" in update_fields:
+                row = db.execute(
+                    "SELECT phase, phase_started_at, phase_history_json FROM dashboard_jobs WHERE id = ?",
+                    (job_id,),
+                ).fetchone()
+                if not row:
+                    return
+                old_phase = str(row["phase"])
+                new_phase = str(update_fields["phase"])
+                if new_phase != old_phase:
+                    try:
+                        history = json.loads(row["phase_history_json"] or "[]")
+                    except (TypeError, json.JSONDecodeError):
+                        history = []
+                    if not isinstance(history, list):
+                        history = []
+                    started_at = row["phase_started_at"]
+                    if started_at is not None:
+                        history.append({
+                            "phase": old_phase,
+                            "duration_seconds": round(max(0.0, now - float(started_at)), 3),
+                        })
+                    update_fields["phase_history_json"] = json.dumps(history, ensure_ascii=False)
+                    update_fields["phase_started_at"] = now
+            allowed.update({"phase_history_json", "phase_started_at"})
+            assignments = [f"{name} = ?" for name in update_fields]
+            values = list(update_fields.values())
+            assignments.append("updated_at = ?")
+            values.extend((now, job_id))
             db.execute(
                 f"UPDATE dashboard_jobs SET {', '.join(assignments)} WHERE id = ?",
                 values,
@@ -622,6 +665,12 @@ def _public_job(job: dict[str, Any]) -> dict[str, Any]:
         result = json.loads(job.get("result_json") or "{}")
     except (TypeError, json.JSONDecodeError):
         result = {}
+    try:
+        phase_history = json.loads(job.get("phase_history_json") or "[]")
+    except (TypeError, json.JSONDecodeError):
+        phase_history = []
+    if not isinstance(phase_history, list):
+        phase_history = []
     output_metadata = {
         "dimensions": result.get("output_dimensions"),
         "fps": result.get("output_fps"),
@@ -634,6 +683,8 @@ def _public_job(job: dict[str, Any]) -> dict[str, Any]:
     } if isinstance(result, dict) else {}
     gemini_result = result.get("gemini_analysis", {}) if isinstance(result, dict) else {}
     r2_result = result.get("r2_storage", {}) if isinstance(result, dict) else {}
+    normalization_result = result.get("normalization", {}) if isinstance(result, dict) else {}
+    budget_result = result.get("normalization_budget", {}) if isinstance(result, dict) else {}
     public_gemini = {
         "model": gemini_result.get("model"),
         "status": gemini_result.get("status") or (
@@ -650,6 +701,8 @@ def _public_job(job: dict[str, Any]) -> dict[str, Any]:
         "warnings": gemini_result.get("warnings", []),
         "usage": gemini_result.get("usage"),
         "processing_seconds": gemini_result.get("processing_seconds"),
+        "estimated_cost_usd": gemini_result.get("estimated_cost_usd"),
+        "preflight_max_cost_usd": gemini_result.get("preflight_max_cost_usd"),
         "remote_file_deleted": gemini_result.get("remote_file_deleted"),
     } if isinstance(gemini_result, dict) else {}
     public_r2 = {
@@ -657,17 +710,48 @@ def _public_job(job: dict[str, Any]) -> dict[str, Any]:
         "size_bytes": r2_result.get("size_bytes"),
         "verified": r2_result.get("verified"),
     } if isinstance(r2_result, dict) else {}
+    public_normalization = {
+        "profile_id": normalization_result.get("profile_id"),
+        "duration_seconds": normalization_result.get("duration_seconds"),
+        "size_bytes": normalization_result.get("size_bytes"),
+        "cache_hit": normalization_result.get("cache_hit"),
+        "remote_processing_seconds": normalization_result.get("remote_processing_seconds"),
+        "transfer_and_validation_seconds": normalization_result.get("transfer_and_validation_seconds"),
+        "profile": normalization_result.get("profile"),
+        "capabilities": normalization_result.get("capabilities"),
+    } if isinstance(normalization_result, dict) else {}
+    public_budget = {
+        key: budget_result.get(key)
+        for key in (
+            "maximum_usd",
+            "modal_compute_usd",
+            "gemini_usd",
+            "whisper_usd",
+            "modal_egress_usd",
+            "persistent_storage_usd",
+            "buffer_usd",
+        )
+        if isinstance(budget_result, dict) and key in budget_result
+    }
     return {
         "id": job["id"],
         "source_id": job["source_id"],
         "status": job["status"],
         "phase": job["phase"],
+        "phase_history": phase_history,
+        "phase_elapsed_seconds": round(
+            max(0.0, time.time() - float(job["phase_started_at"]))
+            if job.get("phase_started_at") is not None else 0.0,
+            3,
+        ),
         "progress": job["progress"],
         "error": job["error"],
         "estimated_cost_usd": job["estimated_cost_usd"],
         "edit_options": edit_options if isinstance(edit_options, dict) else {},
         "output_metadata": output_metadata,
         "gemini_analysis": public_gemini,
+        "normalization": public_normalization,
+        "budget_estimate": public_budget,
         "transcription": {
             "provider": result.get("transcription_provider"),
             "model": result.get("transcription_model"),
@@ -2404,6 +2488,7 @@ class VideoPanel:
         )
         modal_ledger: ProcessingLedger | None = None
         modal_ledger_claimed = False
+        modal_renderer: ModalRenderClient | None = None
         result: dict[str, Any] | None = None
         try:
             source_path = self._source_path(upload)
@@ -2434,7 +2519,26 @@ class VideoPanel:
             if retry_failed or allow_third_attempt:
                 raise PanelError("Los reintentos de Modal están bloqueados para evitar renders duplicados.", 409)
             original_video = probe_video(source_path)
-            update_phase("normalizing")
+            budget = enforce_job_budget(original_video.duration)
+            estimate = budget.maximum_usd
+            self.store.update_job(job_id, estimated_cost_usd=estimate)
+            modal_ledger = ProcessingLedger(
+                self.store.database_path.with_name("modal_processing.sqlite3")
+            )
+            ledger_key = hashlib.sha256(
+                f"{upload['source_sha256']}:{edit_options.get('render_mode', 'full')}".encode("utf-8")
+            ).hexdigest()
+            modal_ledger.claim(
+                ledger_key,
+                str(source_path),
+                max_attempts=1,
+                edit_options=edit_options,
+            )
+            modal_ledger_claimed = True
+            modal_renderer = ModalRenderClient()
+            update_phase("checking_modal_worker")
+            modal_renderer.ensure_worker_available()
+            update_phase("normalizing_on_modal")
             with temporary_work_directory() as normalization_dir:
                 analysis_source = original_video
                 if edit_options.get("render_mode") == "quick_demo":
@@ -2444,30 +2548,20 @@ class VideoPanel:
                         5.0,
                         clip_dir,
                     )
-                normalized_video, normalization_report = prepare_video_for_modal(
-                    analysis_source,
-                    Path(normalization_dir) / "analysis-proxy",
+                normalization_result = modal_renderer.normalize_input(
+                    job_id=job_id,
+                    input_path=analysis_source.path,
+                    render_source_path=source_path,
+                    output_path=Path(normalization_dir) / "analysis-proxy.mp4",
+                    progress_callback=update_phase,
                 )
-                modal_ledger = ProcessingLedger(
-                    self.store.database_path.with_name("modal_processing.sqlite3")
-                )
-                ledger_key = hashlib.sha256(
-                    f"{upload['source_sha256']}:{edit_options.get('render_mode', 'full')}".encode("utf-8")
-                ).hexdigest()
-                modal_ledger.claim(
-                    ledger_key,
-                    str(source_path),
-                    max_attempts=1,
-                    edit_options=edit_options,
-                )
-                modal_ledger_claimed = True
-                modal_renderer = ModalRenderClient()
-                modal_renderer.ensure_worker_available()
+                normalized_video = probe_video(normalization_result.output_path)
+                update_phase("normalized_proxy_verified")
                 whisper_words = []
                 if edit_options["subtitle_mode"] != "none":
                     update_phase("transcribing_with_whisper")
                     whisper_words = transcribe_video(
-                        analysis_source,
+                        normalized_video,
                         Path(normalization_dir) / "whisper-audio",
                         model="whisper-1",
                     )
@@ -2542,6 +2636,15 @@ class VideoPanel:
                 result["transcription_model"] = "whisper-1"
                 result["transcription_word_count"] = len(whisper_words)
                 result["analysis_proxy_duration_seconds"] = normalized_video.duration
+                result["normalization_budget"] = {
+                    "maximum_usd": budget.maximum_usd,
+                    "modal_compute_usd": budget.modal_compute_usd,
+                    "gemini_usd": budget.gemini_usd,
+                    "whisper_usd": budget.whisper_usd,
+                    "modal_egress_usd": budget.modal_egress_usd,
+                    "persistent_storage_usd": budget.persistent_storage_usd,
+                    "buffer_usd": budget.buffer_usd,
+                }
                 update_phase("uploading_to_r2")
                 result["r2_storage"] = upload_mp4_to_r2(result["output"], job_id)
                 result["source"] = str(source_path)
@@ -2565,6 +2668,7 @@ class VideoPanel:
                     "color_transfer": normalized_video.color_transfer,
                     "color_space": normalized_video.color_space,
                 }
+                normalization_report = normalization_result.public_dict()
                 result["normalization"] = normalization_report
                 result.setdefault("conversion", {})["input_normalization"] = normalization_report
                 result["source_modified"] = False

@@ -2,12 +2,12 @@ export const MASTER_CLI_USAGE =
   "Uso: render-master.mjs [--input MOV] [--transcript JSON] [--plan JSON] " +
   "[--effects-dir DIR] [--output MP4] [--show-subtitles true|false] " +
   "[--render-frames COUNT] [--briefing TEXT] [--caption-style-json JSON] " +
-  "[--width PX] [--height PX] [--fps FPS]";
+  "[--width PX] [--height PX] [--fps FPS] [--normalized-video MP4]";
 
 const ALLOWED_OPTIONS = new Set([
   "--input", "--transcript", "--plan", "--effects-dir", "--output",
   "--show-subtitles", "--render-frames", "--briefing", "--caption-style-json",
-  "--width", "--height", "--fps",
+  "--width", "--height", "--fps", "--normalized-video",
 ]);
 
 /** Parse argument pairs without invoking media, Chromium or filesystem operations. */

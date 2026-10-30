@@ -481,6 +481,11 @@ function statusLabel(status) {
     rendering_on_modal: "Generando el vídeo",
     downloading_from_modal: "Preparando el resultado",
     uploading_to_r2: "Guardando el resultado privado",
+    checking_modal_worker: "Comprobando el motor remoto",
+    uploading_normalization_source: "Enviando la fuente para normalización",
+    normalizing_on_modal: "Normalizando en el motor remoto",
+    downloading_normalized_proxy: "Recuperando proxy normalizado",
+    normalized_proxy_verified: "Proxy normalizado verificado",
     validating_output: "Comprobando el resultado", interrupted: "Interrumpido",
   };
   return labels[String(status || "").toLowerCase()] || (status ? String(status) : "No disponible");
@@ -1049,6 +1054,10 @@ function renderJob(job, sourceName = "") {
     ? `<div class="job-progress-track" aria-label="${escapeHtml(progressText)}"><div class="job-progress-fill" style="width:${Math.max(0, Math.min(100, progress))}%"></div></div>`
     : `<div class="job-progress-unmeasured">El servicio no informa el porcentaje de avance.</div>`;
   const phase = job.phase ? statusLabel(job.phase) : statusLabel(job.status);
+  const phaseHistory = Array.isArray(job.phase_history) ? job.phase_history : [];
+  const phaseTimelineMarkup = `<div class="job-phase-history"><strong>Fases y tiempos</strong><ol>${phaseHistory.map((entry) =>
+    `<li>${escapeHtml(statusLabel(entry.phase))} · ${Number.isFinite(Number(entry.duration_seconds)) ? `${Number(entry.duration_seconds).toFixed(1)} s` : "tiempo no disponible"}</li>`
+  ).join("")}<li aria-current="step">${escapeHtml(phase)} · ${Number.isFinite(Number(job.phase_elapsed_seconds)) ? `${Number(job.phase_elapsed_seconds).toFixed(1)} s en curso` : "en curso"}</li></ol></div>`;
   const metadata = job.output_metadata || {};
   const dimensions = metadata.dimensions;
   const bitrate = Number(metadata.video_bit_rate_bps || metadata.format_bit_rate_bps || 0);
@@ -1061,12 +1070,21 @@ function renderJob(job, sourceName = "") {
   const zooms = Array.isArray(gemini.suggested_zooms) ? gemini.suggested_zooms : [];
   const copySeo = gemini.copy_and_seo || {};
   const transcription = job.transcription || {};
+  const normalization = job.normalization || {};
+  const normalizedProfile = normalization.profile || {};
+  const budget = job.budget_estimate || {};
   const geminiMarkup = gemini.status === "failed"
     ? '<div class="job-output-metadata"><strong>Estrategia Copywriting &amp; SEO pendiente</strong><span>El servicio de análisis no pudo completar la solicitud. El estado del vídeo se conserva por separado; no se han inventado textos.</span></div>'
     : gemini.model
-    ? `<div class="job-output-metadata"><strong>Estrategia Copywriting &amp; SEO</strong><span>Transcripción: ${escapeHtml(transcription.word_count ?? 0)} palabras con marcas temporales. Análisis visual: ${escapeHtml(whiteLabelText(gemini.summary || "Sin resumen disponible"))}</span><span>Archivo temporal eliminado: ${gemini.remote_file_deleted === true ? "sí" : "no confirmado"} · unidades informadas: ${escapeHtml(gemini.usage?.total_tokens ?? "no disponibles")}</span><span>Momentos visuales: ${moments.length}; reencuadres sugeridos ${zooms.length}, aplicados ${gemini.suggested_zooms_applied === true ? "sí" : "no"}. Los cortes no se aplicaron y requieren revisión humana.</span>${moments.length ? `<ul>${moments.map((item) => `<li>${Number(item.start_seconds).toFixed(2)}–${Number(item.end_seconds).toFixed(2)} s · ${escapeHtml(item.label || "")}: ${escapeHtml(whiteLabelText(item.reason || ""))}</li>`).join("")}</ul>` : ""}${suggestedCuts.length ? `<ul>${suggestedCuts.map((cut) => `<li>Corte sugerido ${Number(cut.start_seconds).toFixed(2)}–${Number(cut.end_seconds).toFixed(2)} s · ${escapeHtml(whiteLabelText(cut.reason || ""))}</li>`).join("")}</ul>` : "<span>Sin cortes sugeridos.</span>"}</div>`
+    ? `<div class="job-output-metadata"><strong>Estrategia Copywriting &amp; SEO</strong><span>Transcripción: ${escapeHtml(transcription.word_count ?? 0)} palabras con marcas temporales. Análisis visual: ${escapeHtml(whiteLabelText(gemini.summary || "Sin resumen disponible"))}</span><span>Archivo temporal eliminado: ${gemini.remote_file_deleted === true ? "sí" : "no confirmado"} · unidades informadas: ${escapeHtml(gemini.usage?.total_tokens ?? "no disponibles")} · coste estimado de análisis: ${formatCost(gemini.estimated_cost_usd)}</span><span>Momentos visuales: ${moments.length}; reencuadres sugeridos ${zooms.length}, aplicados ${gemini.suggested_zooms_applied === true ? "sí" : "no"}. Los cortes no se aplicaron y requieren revisión humana.</span>${moments.length ? `<ul>${moments.map((item) => `<li>${Number(item.start_seconds).toFixed(2)}–${Number(item.end_seconds).toFixed(2)} s · ${escapeHtml(item.label || "")}: ${escapeHtml(whiteLabelText(item.reason || ""))}</li>`).join("")}</ul>` : ""}${suggestedCuts.length ? `<ul>${suggestedCuts.map((cut) => `<li>Corte sugerido ${Number(cut.start_seconds).toFixed(2)}–${Number(cut.end_seconds).toFixed(2)} s · ${escapeHtml(whiteLabelText(cut.reason || ""))}</li>`).join("")}</ul>` : "<span>Sin cortes sugeridos.</span>"}</div>`
     : "";
   const r2 = job.r2_storage || {};
+  const normalizationMarkup = normalization.profile_id
+    ? `<div class="job-output-metadata"><strong>Normalización reutilizable</strong><span>Perfil ${escapeHtml(normalization.profile_id)} · caché ${normalization.cache_hit === true ? "reutilizada" : "generada"} · Modal ${Number.isFinite(Number(normalization.remote_processing_seconds)) ? `${Number(normalization.remote_processing_seconds).toFixed(1)} s` : "tiempo no disponible"}</span><span>${escapeHtml(normalizedProfile.width ?? 0)} × ${escapeHtml(normalizedProfile.height ?? 0) || "—"} · ${escapeHtml(normalizedProfile.fps ?? "—")} FPS · ${escapeHtml(normalizedProfile.color_primaries || "color no informado")} / ${escapeHtml(normalizedProfile.color_transfer || "transferencia no informada")} / ${escapeHtml(normalizedProfile.color_range || "rango no informado")}</span><span>Comprobación de FFmpeg: ${escapeHtml(normalization.capabilities?.ffmpeg_version || "versión no registrada")}; filtros ${escapeHtml(normalization.capabilities?.filters || "no verificados")}</span></div>`
+    : "";
+  const budgetMarkup = Number.isFinite(Number(budget.maximum_usd))
+    ? `<div class="job-output-metadata"><strong>Límite conservador estimado</strong><span>Máximo calculado para el trabajo: ${formatCost(budget.maximum_usd)} (tope interno: $1.50). Incluye tiempos máximos de Modal, límites de tokens, Whisper, transferencia, almacenamiento y margen.</span></div>`
+    : "";
   const r2Markup = r2.object_key
     ? `<div class="job-output-metadata"><strong>Almacenamiento privado</strong><span>${escapeHtml(whiteLabelText(r2.object_key))} · ${Number.isFinite(Number(r2.size_bytes)) ? `${(Number(r2.size_bytes) / 1048576).toFixed(1)} MiB` : "tamaño no disponible"} · verificación ${r2.verified === true ? "confirmada" : "pendiente"}</span></div>`
     : "";
@@ -1076,7 +1094,10 @@ function renderJob(job, sourceName = "") {
     <div><strong>${escapeHtml(sourceName || "Procesamiento")}</strong><p>${escapeHtml(phase)} · Identificador ${escapeHtml(job.id ?? "No disponible")}</p>${progressMarkup}</div>
     <span class="job-progress-label">${escapeHtml(whiteLabelText(progressText))}</span>
     ${job.error ? `<div class="job-error">${escapeHtml(whiteLabelText(job.error))}</div>` : ""}
+    ${phaseTimelineMarkup}
     ${geminiMarkup}
+    ${normalizationMarkup}
+    ${budgetMarkup}
     ${outputMetadataMarkup}
     ${r2Markup}
   </div>`;

@@ -59,14 +59,20 @@ class FakeVolume:
         self.rendered_bytes = rendered_bytes
         self.uploads = {}
         self.removals = []
+        self.files = {}
 
     def batch_upload(self):
         return FakeBatch(self)
 
     def read_file(self, remote_path):
-        assert remote_path == "jobs/" + self.job_id + "/output.mp4"
-        yield self.rendered_bytes[:5]
-        yield self.rendered_bytes[5:]
+        if remote_path == "jobs/" + self.job_id + "/output.mp4":
+            payload = self.rendered_bytes
+        elif remote_path in self.files:
+            payload = self.files[remote_path]
+        else:
+            raise FileNotFoundError(remote_path)
+        yield payload[:5]
+        yield payload[5:]
 
     def remove_file(self, remote_path, recursive=False):
         self.removals.append((remote_path, recursive))
@@ -77,6 +83,8 @@ class FakeSDK:
         self.volume = volume
         self.result = result
         self.function_lookups = []
+        self.remote_calls = []
+        self.results_by_operation = {}
 
     class _VolumeFactory:
         def __init__(self, owner):
@@ -93,7 +101,10 @@ class FakeSDK:
 
         def from_name(self, app_name, function_name):
             self.owner.function_lookups.append((app_name, function_name))
-            return SimpleNamespace(remote=lambda job_id: self.owner.result)
+            def remote(job_id, operation="render"):
+                self.owner.remote_calls.append((job_id, operation))
+                return self.owner.results_by_operation.get(operation, self.owner.result)
+            return SimpleNamespace(remote=remote)
 
     @property
     def Volume(self):
@@ -188,6 +199,108 @@ class ModalRenderClientTests(unittest.TestCase):
             volume.uploads[f"/jobs/{job_id}/effects/client-brand-logo.png"],
             b"local-logo-asset",
         )
+
+    def test_normalization_cache_hit_downloads_verified_proxy_without_worker_submission(self):
+        source = self.root / "source.MOV"
+        source.write_bytes(b"keep-original")
+        output = self.root / "analysis-proxy.mp4"
+        job_id = "b" * 32
+        proxy = b"cached-normalized-proxy"
+        source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+        prefix = f"normalized-cache/{source_hash}/{modal_renderer.NORMALIZATION_PROFILE_ID}"
+        manifest = {
+            "source_sha256": source_hash,
+            "profile_id": modal_renderer.NORMALIZATION_PROFILE_ID,
+            "proxy_path": f"{prefix}/proxy.mp4",
+            "proxy_sha256": hashlib.sha256(proxy).hexdigest(),
+            "proxy_size_bytes": len(proxy),
+            "duration_seconds": 2.0,
+            "profile": {
+                "width": 1080, "height": 1920, "fps": 30,
+                "codec": "h264", "pixel_format": "yuv420p", "color_range": "tv",
+                "color_primaries": "bt709", "color_transfer": "bt709",
+                "color_space": "bt709", "audio_codec": "aac",
+                "audio_sample_rate": 48000, "audio_channels": 2,
+                "duration_seconds": 2.0,
+            },
+            "capabilities": {"ffmpeg_version": "ffmpeg test"},
+            "processing_seconds": 12.5,
+        }
+        volume = FakeVolume(b"unused")
+        volume.job_id = job_id
+        volume.files[f"{prefix}/manifest.json"] = json.dumps(manifest).encode()
+        volume.files[f"{prefix}/proxy.mp4"] = proxy
+        sdk = FakeSDK(volume, {})
+        with patch.object(modal_renderer, "modal_configuration_status", return_value=_modal_status()):
+            result = modal_renderer.ModalRenderClient(sdk).normalize_input(
+                job_id=job_id,
+                input_path=source,
+                output_path=output,
+            )
+
+        self.assertTrue(result.cache_hit)
+        self.assertEqual(result.output_path.read_bytes(), proxy)
+        self.assertEqual(source.read_bytes(), b"keep-original")
+        self.assertEqual(sdk.remote_calls, [])
+        self.assertEqual(result.remote_processing_seconds, 0)
+
+    def test_normalization_miss_stages_source_once_for_following_render(self):
+        source, effects, plan, transcript, job_id, output, volume, sdk = _input_bundle(
+            self.root, b"render-result"
+        )
+        proxy = b"new-normalized-proxy"
+        source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+        cache_path = (
+            f"normalized-cache/{source_hash}/{modal_renderer.NORMALIZATION_PROFILE_ID}/proxy.mp4"
+        )
+        sdk.results_by_operation["normalize"] = {
+            "job_id": job_id,
+            "normalized_proxy_path": cache_path,
+            "source_sha256": source_hash,
+            "profile_id": modal_renderer.NORMALIZATION_PROFILE_ID,
+            "proxy_sha256": hashlib.sha256(proxy).hexdigest(),
+            "proxy_size_bytes": len(proxy),
+            "duration_seconds": 1.0,
+            "profile": {
+                "width": 1080, "height": 1920, "fps": 30,
+                "codec": "h264", "pixel_format": "yuv420p", "color_range": "tv",
+                "color_primaries": "bt709", "color_transfer": "bt709",
+                "color_space": "bt709", "audio_codec": "aac",
+                "audio_sample_rate": 48000, "audio_channels": 2,
+                "duration_seconds": 1.0,
+            },
+            "capabilities": {"ffmpeg_version": "ffmpeg test"},
+            "cache_hit": False,
+            "processing_seconds": 5.0,
+        }
+        volume.files[cache_path] = proxy
+        client = modal_renderer.ModalRenderClient(sdk)
+        with patch.object(modal_renderer, "modal_configuration_status", return_value=_modal_status()):
+            normalization = client.normalize_input(
+                job_id=job_id,
+                input_path=source,
+                render_source_path=source,
+                output_path=self.root / "normalized.mp4",
+            )
+            client.render(
+                job_id=job_id,
+                input_path=source,
+                transcript=transcript,
+                plan=plan,
+                effects_dir=effects,
+                output_path=output,
+                show_subtitles=False,
+            )
+
+        self.assertFalse(normalization.cache_hit)
+        self.assertEqual(normalization.output_path.read_bytes(), proxy)
+        self.assertEqual(sdk.remote_calls, [(job_id, "normalize"), (job_id, "render")])
+        self.assertEqual(
+            volume.uploads[f"/jobs/{job_id}/source.mov"],
+            b"unmodified original bytes",
+        )
+        manifest = json.loads(volume.uploads[f"/jobs/{job_id}/manifest.json"])
+        self.assertEqual(manifest["normalized_proxy_path"], cache_path)
 
     def test_render_client_accepts_4k_60_and_passes_profile_to_worker(self):
         source, effects, plan, transcript, job_id, output, volume, sdk = _input_bundle(

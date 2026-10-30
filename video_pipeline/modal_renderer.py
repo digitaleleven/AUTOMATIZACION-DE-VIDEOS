@@ -23,6 +23,8 @@ MODAL_FUNCTION_NAME = "render_master"
 MODAL_VOLUME_NAME = "matrix-motion-render-staging"
 MAX_SOURCE_BYTES = 2 * 1024**3
 MAX_OUTPUT_BYTES = 4 * 1024**3
+MAX_NORMALIZED_PROXY_BYTES = 2 * 1024**3
+NORMALIZATION_PROFILE_ID = "matrix-sdr-bt709-1080x1920-30-crf12-v1"
 JOB_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 
 
@@ -64,12 +66,50 @@ class ModalRenderResult:
     temporary_storage_cleaned: bool
 
 
+@dataclass(frozen=True)
+class ModalNormalizationResult:
+    output_path: Path
+    duration_seconds: float
+    size_bytes: int
+    sha256: str
+    source_sha256: str
+    profile_id: str
+    remote_proxy_path: str
+    cache_hit: bool
+    remote_processing_seconds: float | None
+    elapsed_seconds: float
+    profile: dict[str, Any]
+    capabilities: dict[str, Any] | None
+
+    def public_dict(self) -> dict[str, Any]:
+        return {
+            "duration_seconds": self.duration_seconds,
+            "size_bytes": self.size_bytes,
+            "sha256": self.sha256,
+            "source_sha256": self.source_sha256,
+            "profile_id": self.profile_id,
+            "cache_hit": self.cache_hit,
+            "remote_processing_seconds": 0.0 if self.cache_hit else self.remote_processing_seconds,
+            "cached_conversion_seconds": (
+                self.remote_processing_seconds if self.cache_hit else None
+            ),
+            "transfer_and_validation_seconds": round(
+                max(0.0, self.elapsed_seconds - float(self.remote_processing_seconds or 0)),
+                3,
+            ),
+            "profile": self.profile,
+            "capabilities": self.capabilities,
+        }
+
+
 class ModalRenderClient:
     """Uploads per-job inputs to a Modal Volume and downloads the result locally."""
 
     def __init__(self, modal_sdk: Any | None = None):
         self._modal = modal_sdk
         self._worker = None
+        self._normalized_jobs: dict[str, dict[str, Any]] = {}
+        self._staged_sources: dict[str, str] = {}
 
     def _sdk(self) -> Any:
         if self._modal is None:
@@ -102,6 +142,213 @@ class ModalRenderClient:
                 "El worker de Modal no está desplegado o no es accesible; "
                 "no se subió el vídeo ni se inició una transcripción."
             ) from None
+
+    @staticmethod
+    def _read_volume_small(volume: Any, remote_path: str, *, maximum_bytes: int = 64 * 1024) -> bytes | None:
+        try:
+            chunks = volume.read_file(remote_path)
+            payload = bytearray()
+            for chunk in chunks:
+                if not isinstance(chunk, (bytes, bytearray)):
+                    raise RuntimeError("Modal devolvió metadatos de caché no binarios.")
+                payload.extend(chunk)
+                if len(payload) > maximum_bytes:
+                    raise RuntimeError("El manifiesto remoto de normalización supera el límite permitido.")
+            return bytes(payload)
+        except FileNotFoundError:
+            return None
+
+    @staticmethod
+    def _validate_normalized_profile(profile: Any) -> dict[str, Any]:
+        if not isinstance(profile, dict):
+            raise RuntimeError("Modal no devolvió metadatos FFprobe del proxy.")
+        expected = {
+            "width": 1080,
+            "height": 1920,
+            "codec": "h264",
+            "pixel_format": "yuv420p",
+            "color_range": "tv",
+            "color_primaries": "bt709",
+            "color_transfer": "bt709",
+            "color_space": "bt709",
+            "audio_codec": "aac",
+            "audio_sample_rate": 48000,
+            "audio_channels": 2,
+        }
+        if any(profile.get(key) != value for key, value in expected.items()):
+            raise RuntimeError("Los metadatos del proxy Modal no coinciden con el perfil SDR aprobado.")
+        try:
+            fps = float(profile.get("fps"))
+            duration = float(profile.get("duration_seconds"))
+        except (TypeError, ValueError):
+            raise RuntimeError("Modal devolvió metadatos de cadencia o duración no válidos.") from None
+        if abs(fps - 30) > 0.05 or duration <= 0:
+            raise RuntimeError("El proxy Modal debe conservar 30 FPS y una duración positiva.")
+        return profile
+
+    def normalize_input(
+        self,
+        *,
+        job_id: str,
+        input_path: str | Path,
+        render_source_path: str | Path | None = None,
+        output_path: str | Path,
+        progress_callback: Callable[[str], None] | None = None,
+    ) -> ModalNormalizationResult:
+        """Normalize on Modal once per source/profile and return a verified local proxy."""
+        if not JOB_ID_PATTERN.fullmatch(job_id or ""):
+            raise ValueError("Identificador de trabajo Modal no válido.")
+        source = Path(input_path).expanduser().resolve()
+        destination = Path(output_path).expanduser().resolve()
+        if not source.is_file() or source.stat().st_size <= 0:
+            raise ValueError("El vídeo fuente no existe o está vacío.")
+        if source.stat().st_size > MAX_SOURCE_BYTES:
+            raise ValueError("El vídeo supera el límite de subida configurado para Modal (2 GiB).")
+        if source.suffix.lower() not in {".mov", ".mp4"}:
+            raise ValueError("Modal solo admite archivos .MOV o .MP4.")
+        if destination.exists():
+            raise FileExistsError("Se rechaza sobrescribir un proxy normalizado existente.")
+
+        self.ensure_worker_available()
+        sdk = self._sdk()
+        volume = sdk.Volume.from_name(MODAL_VOLUME_NAME, create_if_missing=True)
+        reload_volume = getattr(volume, "reload", None)
+        if callable(reload_volume):
+            reload_volume()
+        started = time.monotonic()
+        source_sha256 = _safe_sha256(source)
+        render_source = (
+            Path(render_source_path).expanduser().resolve()
+            if render_source_path is not None else source
+        )
+        source_is_render_source = source == render_source
+        cache_prefix = f"normalized-cache/{source_sha256}/{NORMALIZATION_PROFILE_ID}"
+        cache_manifest_path = f"{cache_prefix}/manifest.json"
+        cache_manifest_bytes = self._read_volume_small(volume, cache_manifest_path)
+        cache_result: dict[str, Any] | None = None
+        if cache_manifest_bytes is not None:
+            try:
+                cached = json.loads(cache_manifest_bytes)
+            except json.JSONDecodeError:
+                raise RuntimeError("El manifiesto de la caché Modal está malformado; se bloqueó una conversión nueva.") from None
+            if (
+                cached.get("source_sha256") != source_sha256
+                or cached.get("profile_id") != NORMALIZATION_PROFILE_ID
+                or cached.get("proxy_path") != f"{cache_prefix}/proxy.mp4"
+            ):
+                raise RuntimeError("La caché Modal no coincide con el origen y perfil solicitados.")
+            self._validate_normalized_profile(cached.get("profile"))
+            cache_result = {
+                "job_id": job_id,
+                "normalized_proxy_path": cached["proxy_path"],
+                "source_sha256": source_sha256,
+                "profile_id": NORMALIZATION_PROFILE_ID,
+                "proxy_sha256": cached.get("proxy_sha256"),
+                "proxy_size_bytes": cached.get("proxy_size_bytes"),
+                "duration_seconds": cached.get("duration_seconds"),
+                "profile": cached.get("profile"),
+                "capabilities": cached.get("capabilities"),
+                "cache_hit": True,
+                "processing_seconds": cached.get("processing_seconds"),
+            }
+        else:
+            remote_prefix = f"jobs/{job_id}"
+            remote_source_name = (
+                f"source{source.suffix.lower()}"
+                if source_is_render_source
+                else f"analysis-source{source.suffix.lower()}"
+            )
+            manifest = {
+                "job_id": job_id,
+                "source_name": remote_source_name,
+                "source_sha256": source_sha256,
+                "profile_id": NORMALIZATION_PROFILE_ID,
+            }
+            with tempfile.TemporaryDirectory(prefix="matrix-motion-normalize-stage-") as staging:
+                manifest_path = Path(staging) / "normalization.json"
+                manifest_path.write_text(
+                    json.dumps(manifest, separators=(",", ":")),
+                    encoding="utf-8",
+                )
+                if progress_callback:
+                    progress_callback("uploading_normalization_source")
+                with volume.batch_upload() as batch:
+                    batch.put_file(str(source), f"/{remote_prefix}/{remote_source_name}")
+                    batch.put_file(str(manifest_path), f"/{remote_prefix}/normalization.json")
+            if progress_callback:
+                progress_callback("normalizing_on_modal")
+            cache_result = self._worker.remote(job_id, "normalize")
+            if source_is_render_source:
+                self._staged_sources[job_id] = source_sha256
+
+        if not isinstance(cache_result, dict) or cache_result.get("job_id") != job_id:
+            raise RuntimeError("Modal devolvió una respuesta de normalización no reconocida.")
+        if callable(reload_volume):
+            reload_volume()
+        remote_proxy_path = cache_result.get("normalized_proxy_path")
+        expected_remote_path = f"{cache_prefix}/proxy.mp4"
+        if remote_proxy_path != expected_remote_path:
+            raise RuntimeError("Modal devolvió una ruta de proxy normalizado no válida.")
+        try:
+            expected_size = int(cache_result.get("proxy_size_bytes") or 0)
+        except (TypeError, ValueError):
+            expected_size = 0
+        expected_hash = cache_result.get("proxy_sha256")
+        if expected_size <= 0 or expected_size > MAX_NORMALIZED_PROXY_BYTES:
+            raise RuntimeError("Modal devolvió un proxy normalizado fuera del límite de 2 GiB.")
+        if not isinstance(expected_hash, str) or not re.fullmatch(r"[a-f0-9]{64}", expected_hash):
+            raise RuntimeError("Modal devolvió un checksum no válido para el proxy normalizado.")
+        normalized_profile = self._validate_normalized_profile(cache_result.get("profile"))
+
+        if progress_callback:
+            progress_callback("downloading_normalized_proxy")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        partial = destination.with_name(destination.name + ".part")
+        digest = hashlib.sha256()
+        size = 0
+        try:
+            with partial.open("xb") as output:
+                for chunk in volume.read_file(remote_proxy_path):
+                    if not isinstance(chunk, (bytes, bytearray)):
+                        raise RuntimeError("Modal envió un bloque de proxy no binario.")
+                    size += len(chunk)
+                    if size > MAX_NORMALIZED_PROXY_BYTES:
+                        raise RuntimeError("La descarga del proxy superó el límite de 2 GiB.")
+                    digest.update(chunk)
+                    output.write(chunk)
+                output.flush()
+                os.fsync(output.fileno())
+            if size != expected_size or digest.hexdigest() != expected_hash:
+                raise RuntimeError("El proxy descargado no coincide con su tamaño o checksum remoto.")
+            os.replace(partial, destination)
+        except Exception:
+            partial.unlink(missing_ok=True)
+            raise
+
+        self._normalized_jobs[job_id] = {
+            "source_sha256": source_sha256,
+            "profile_id": NORMALIZATION_PROFILE_ID,
+            "remote_proxy_path": remote_proxy_path,
+            "proxy_sha256": expected_hash,
+        }
+        return ModalNormalizationResult(
+            output_path=destination,
+            duration_seconds=float(cache_result.get("duration_seconds") or 0),
+            size_bytes=size,
+            sha256=digest.hexdigest(),
+            source_sha256=source_sha256,
+            profile_id=NORMALIZATION_PROFILE_ID,
+            remote_proxy_path=remote_proxy_path,
+            cache_hit=bool(cache_result.get("cache_hit")),
+            remote_processing_seconds=(
+                0.0 if cache_result.get("cache_hit") else
+                float(cache_result["processing_seconds"])
+                if cache_result.get("processing_seconds") is not None else None
+            ),
+            elapsed_seconds=time.monotonic() - started,
+            profile=normalized_profile,
+            capabilities=cache_result.get("capabilities") if isinstance(cache_result.get("capabilities"), dict) else None,
+        )
 
     def render(
         self,
@@ -158,6 +405,10 @@ class ModalRenderClient:
         remote_prefix = f"jobs/{job_id}"
         remote_input = f"/{remote_prefix}/source{source.suffix.lower()}"
         started = time.monotonic()
+        source_sha256 = _safe_sha256(source)
+        staged_source_sha256 = self._staged_sources.get(job_id)
+        source_already_staged = staged_source_sha256 == source_sha256
+        normalized_state = self._normalized_jobs.get(job_id)
         if progress_callback:
             progress_callback("uploading_to_modal")
 
@@ -178,10 +429,20 @@ class ModalRenderClient:
                 json.dumps(
                     {
                         "job_id": job_id,
+                        "operation": "render",
                         "source_name": source.name,
+                        "source_sha256": source_sha256,
                         "show_subtitles": show_subtitles,
                         "briefing": briefing,
                         "caption_style": caption_style or {},
+                        **(
+                            {
+                                "normalized_proxy_path": normalized_state["remote_proxy_path"],
+                                "normalized_proxy_sha256": normalized_state["proxy_sha256"],
+                                "normalization_profile_id": normalized_state["profile_id"],
+                            }
+                            if normalized_state else {}
+                        ),
                     },
                     ensure_ascii=False,
                     separators=(",", ":"),
@@ -189,7 +450,8 @@ class ModalRenderClient:
                 encoding="utf-8",
             )
             with volume.batch_upload() as batch:
-                batch.put_file(str(source), remote_input)
+                if not source_already_staged:
+                    batch.put_file(str(source), remote_input)
                 batch.put_file(str(transcript_file), f"/{remote_prefix}/transcript.json")
                 batch.put_file(str(plan_file), f"/{remote_prefix}/plan.json")
                 batch.put_file(str(manifest_file), f"/{remote_prefix}/manifest.json")
@@ -207,7 +469,7 @@ class ModalRenderClient:
 
         if progress_callback:
             progress_callback("rendering_on_modal")
-        result = self._worker.remote(job_id)
+        result = self._worker.remote(job_id, "render")
         if not isinstance(result, dict) or result.get("job_id") != job_id:
             raise RuntimeError("Modal devolvió una respuesta de trabajo no reconocida.")
         remote_output = result.get("output_path")
@@ -265,6 +527,8 @@ class ModalRenderClient:
         temporary_storage_cleaned = True
         try:
             volume.remove_file(remote_prefix, recursive=True)
+            self._staged_sources.pop(job_id, None)
+            self._normalized_jobs.pop(job_id, None)
         except Exception as exc:  # Cleanup failure must not invalidate a verified local MP4.
             temporary_storage_cleaned = False
             logger.warning(

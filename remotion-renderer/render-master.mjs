@@ -85,6 +85,9 @@ const parseArguments = (args) => {
     renderFramesArg: parsed["--render-frames"],
     briefing: parsed["--briefing"] || "",
     captionStyleJsonArg: parsed["--caption-style-json"],
+    normalizedVideo: parsed["--normalized-video"]
+      ? path.resolve(parsed["--normalized-video"])
+      : null,
     width: parsed["--width"] === undefined ? DEFAULT_WIDTH : Number(parsed["--width"]),
     height: parsed["--height"] === undefined ? DEFAULT_HEIGHT : Number(parsed["--height"]),
     fps: parsed["--fps"] === undefined ? DEFAULT_FPS : Number(parsed["--fps"]),
@@ -227,7 +230,12 @@ try {
   );
 
   await mkdir(outputDirectory, { recursive: true });
-  for (const filePath of [inputPath, transcriptPath, planPath]) {
+  for (const filePath of [
+    inputPath,
+    transcriptPath,
+    planPath,
+    ...(options.normalizedVideo ? [options.normalizedVideo] : []),
+  ]) {
     const info = await stat(filePath);
     if (!info.isFile() || info.size === 0) {
       throw new Error(`Se esperaba un archivo existente y no vacío: ${filePath}`);
@@ -498,22 +506,55 @@ try {
   await mkdir(publicMediaDirectory, { recursive: true });
   const sourceVideoAsset = "matrix-master-source.mp4";
   const sourceVideoPath = path.join(publicMediaDirectory, sourceVideoAsset);
-  console.log("stage=preprocess_scene_video");
-  await run("ffmpeg", [
-    "-nostdin", "-n", "-hide_banner", "-loglevel", "error",
-    "-threads", "2", "-i", inputPath,
-    "-map", "0:v:0",
-    "-vf", sourceVideoFilter,
-    "-frames:v", String(sourceFramesNeeded),
-    "-an",
-    "-c:v", "libx264", "-threads", "2", "-preset", "medium", "-crf", "12",
-    "-profile:v", "high", "-pix_fmt", "yuv420p",
-    "-fps_mode", "cfr",
-    "-color_range", "tv", "-colorspace", "bt709",
-    "-color_primaries", "bt709", "-color_trc", "bt709",
-    "-movflags", "+faststart",
-    sourceVideoPath,
-  ]);
+  let normalizedProxyUsed = false;
+  if (options.normalizedVideo) {
+    if (options.normalizedVideo === inputPath || options.normalizedVideo === outputPath) {
+      throw new Error("El proxy normalizado debe ser un archivo separado del original y de la salida.");
+    }
+    console.log("stage=validate_reused_normalized_proxy");
+    const normalizedProbe = await probe(options.normalizedVideo, true);
+    const normalizedVideo = normalizedProbe.streams?.find(
+      (stream) => stream.codec_type === "video",
+    );
+    const normalizedDuration = Number(normalizedProbe.format?.duration);
+    const normalizedFrames = Number(normalizedVideo?.nb_read_frames);
+    if (
+      normalizedVideo?.codec_name !== "h264" ||
+      normalizedVideo.width !== FULL_WIDTH ||
+      normalizedVideo.height !== FULL_HEIGHT ||
+      normalizedVideo.pix_fmt !== "yuv420p" ||
+      parseRate(normalizedVideo.avg_frame_rate) !== FULL_FPS ||
+      normalizedVideo.color_primaries !== "bt709" ||
+      normalizedVideo.color_transfer !== "bt709" ||
+      normalizedVideo.color_space !== "bt709" ||
+      normalizedVideo.color_range !== "tv" ||
+      !Number.isFinite(normalizedDuration) ||
+      normalizedDuration + 1 / FULL_FPS < sourceFramesNeeded / FULL_FPS ||
+      !Number.isFinite(normalizedFrames) ||
+      normalizedFrames < sourceFramesNeeded
+    ) {
+      throw new Error("El proxy normalizado no coincide con el perfil BT.709 o no cubre los fotogramas del montaje.");
+    }
+    await copyFile(options.normalizedVideo, sourceVideoPath);
+    normalizedProxyUsed = true;
+  } else {
+    console.log("stage=preprocess_scene_video");
+    await run("ffmpeg", [
+      "-nostdin", "-n", "-hide_banner", "-loglevel", "error",
+      "-threads", "2", "-i", inputPath,
+      "-map", "0:v:0",
+      "-vf", sourceVideoFilter,
+      "-frames:v", String(sourceFramesNeeded),
+      "-an",
+      "-c:v", "libx264", "-threads", "2", "-preset", "medium", "-crf", "12",
+      "-profile:v", "high", "-pix_fmt", "yuv420p",
+      "-fps_mode", "cfr",
+      "-color_range", "tv", "-colorspace", "bt709",
+      "-color_primaries", "bt709", "-color_trc", "bt709",
+      "-movflags", "+faststart",
+      sourceVideoPath,
+    ]);
+  }
   const sourceProxyProbe = await probe(sourceVideoPath, true);
   const sourceProxyVideo = sourceProxyProbe.streams?.find(
     (stream) => stream.codec_type === "video",
@@ -523,7 +564,9 @@ try {
     sourceProxyVideo.width !== FULL_WIDTH ||
     sourceProxyVideo.height !== FULL_HEIGHT ||
     parseRate(sourceProxyVideo.avg_frame_rate) !== FULL_FPS ||
-    Number(sourceProxyVideo.nb_read_frames) !== sourceFramesNeeded ||
+    (normalizedProxyUsed
+      ? Number(sourceProxyVideo.nb_read_frames) < sourceFramesNeeded
+      : Number(sourceProxyVideo.nb_read_frames) !== sourceFramesNeeded) ||
     sourceProxyVideo.color_primaries !== "bt709" ||
     sourceProxyVideo.color_transfer !== "bt709" ||
     sourceProxyVideo.color_space !== "bt709" ||
@@ -728,6 +771,7 @@ try {
     input: {
       path: inputPath,
       durationSeconds: sourceDuration,
+      normalizedProxyReused: normalizedProxyUsed,
       videoStream: inputVideo,
       audioStream: inputAudio,
       sha256: inputHashBefore,

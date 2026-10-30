@@ -48,9 +48,12 @@ const frameRate = (value) => {
 };
 
 const main = () => {
-  const [inputPath, outputPath] = process.argv.slice(2);
-  if (!inputPath || !outputPath || process.argv.length !== 4) {
-    fail("Uso: normalize-input.mjs INPUT.mp4|mov OUTPUT.mp4");
+  const [inputPath, outputPath, qualityArg] = process.argv.slice(2);
+  if (!inputPath || !outputPath || process.argv.length > 5) {
+    fail("Uso: normalize-input.mjs INPUT.mp4|mov OUTPUT.mp4 [--master-proxy]");
+  }
+  if (qualityArg !== undefined && qualityArg !== "--master-proxy") {
+    fail("La opción de calidad de normalización no es válida.");
   }
   if (inputPath === outputPath || existsSync(outputPath)) {
     fail("La normalización requiere una salida nueva; no se sobrescriben archivos.");
@@ -89,7 +92,7 @@ const main = () => {
     "-vf", filter,
     // The fps=30 filter sets constant frame timestamps and is supported by FFmpeg 4.4.
     // Avoid -fps_mode, which is unavailable in the production FFmpeg 4.4.2 build.
-    "-c:v", "libx264", "-preset", "medium", "-crf", "17",
+    "-c:v", "libx264", "-preset", "medium", "-crf", qualityArg ? "12" : "17",
     "-profile:v", "high", "-pix_fmt", REMOTION_RENDER_PROFILE.pixelFormat,
     "-threads", "2",
     "-c:a", "aac", "-b:a", "192k", "-ac", "2", "-ar", "48000",

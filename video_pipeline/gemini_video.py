@@ -14,6 +14,11 @@ from typing import Any
 import requests
 
 from .edit_plan import EditPlanError, normalize_edit_plan
+from .cost_controls import (
+    MAX_GEMINI_INPUT_TOKENS,
+    MAX_GEMINI_OUTPUT_TOKENS,
+    estimate_gemini_cost_usd,
+)
 from .models import WordTiming
 
 logger = logging.getLogger(__name__)
@@ -303,21 +308,45 @@ def analyze_video(
             f"Transcripción Whisper de referencia: {transcript_context}. "
             f"Instrucciones del cliente: {briefing.strip() or 'sin instrucciones adicionales'}."
         )
+        contents = [{
+            "parts": [
+                {"text": prompt},
+                {"file_data": {"mime_type": mime_type, "file_uri": file_uri}},
+            ],
+        }]
+        token_response = http.post(
+            f"{API_BASE_URL}/models/{GEMINI_MODEL}:countTokens",
+            headers={**headers, "Content-Type": "application/json"},
+            json={"contents": contents},
+            timeout=(20, 60),
+        )
+        if not token_response.ok:
+            raise _provider_error(token_response, "la comprobación del presupuesto de tokens")
+        token_body = token_response.json()
+        try:
+            input_tokens = int(token_body.get("totalTokens"))
+        except (TypeError, ValueError):
+            raise GeminiAnalysisError("Gemini no devolvió un recuento previo de tokens válido.") from None
+        if not 0 < input_tokens <= MAX_GEMINI_INPUT_TOKENS:
+            raise GeminiAnalysisError(
+                "El vídeo o el contexto supera el límite de tokens autorizado; no se generó el análisis."
+            )
+        max_gemini_cost = estimate_gemini_cost_usd(
+            input_tokens,
+            MAX_GEMINI_OUTPUT_TOKENS,
+        )
+        generation_config = {
+            "temperature": 0.1,
+            "maxOutputTokens": MAX_GEMINI_OUTPUT_TOKENS,
+            "responseMimeType": "application/json",
+            "responseSchema": _ANALYSIS_SCHEMA,
+        }
         response = http.post(
             f"{API_BASE_URL}/models/{GEMINI_MODEL}:generateContent",
             headers={**headers, "Content-Type": "application/json"},
             json={
-                "contents": [{
-                    "parts": [
-                        {"text": prompt},
-                        {"file_data": {"mime_type": mime_type, "file_uri": file_uri}},
-                    ],
-                }],
-                "generationConfig": {
-                    "temperature": 0.1,
-                    "responseMimeType": "application/json",
-                    "responseSchema": _ANALYSIS_SCHEMA,
-                },
+                "contents": contents,
+                "generationConfig": generation_config,
             },
             timeout=(20, max(timeout_seconds, 180)),
         )
@@ -342,6 +371,20 @@ def analyze_video(
             raise GeminiAnalysisError("Gemini devolvió JSON malformado; no se usará para el render.") from None
         analysis = validate_gemini_analysis(parsed, duration_seconds)
         usage = body.get("usageMetadata", {})
+        try:
+            actual_input_tokens = int(usage.get("promptTokenCount", input_tokens))
+            actual_output_tokens = int(usage.get("candidatesTokenCount", 0))
+        except (TypeError, ValueError):
+            raise GeminiAnalysisError("Gemini devolvió un consumo de tokens no válido.") from None
+        if (
+            actual_input_tokens > MAX_GEMINI_INPUT_TOKENS
+            or actual_output_tokens > MAX_GEMINI_OUTPUT_TOKENS
+        ):
+            raise GeminiAnalysisError("El consumo informado de Gemini excedió el límite autorizado.")
+        actual_gemini_cost = estimate_gemini_cost_usd(
+            actual_input_tokens,
+            actual_output_tokens,
+        )
         elapsed = round(time.monotonic() - started, 3)
         result = {
             **analysis,
@@ -352,6 +395,8 @@ def analyze_video(
                 "total_tokens": usage.get("totalTokenCount"),
             },
             "processing_seconds": elapsed,
+            "estimated_cost_usd": round(actual_gemini_cost, 6),
+            "preflight_max_cost_usd": round(max_gemini_cost, 6),
             "input_video_bytes": size,
             "remote_file_deleted": None,
         }
