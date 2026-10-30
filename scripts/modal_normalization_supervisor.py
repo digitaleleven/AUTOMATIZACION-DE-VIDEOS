@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+from importlib.metadata import PackageNotFoundError, version as package_version
 import json
 import os
 from pathlib import Path
@@ -220,6 +221,79 @@ def record_manual_modal_cancellation_evidence(
         evidence_sha256=evidence_sha256,
     )
     return reconciled, evidence_sha256, created
+
+
+def inspect_existing_modal_call_status(
+    store: ModalExecutionStore,
+    client: ModalRenderClient,
+    *,
+    call_id: str,
+) -> tuple[ModalExecution, str, str, bool]:
+    """Read one persisted attempt by its existing ID and append the provider observation."""
+    if not call_id.startswith("fc-") or len(call_id) > 128:
+        raise ValueError("ID de ejecución Modal no válido.")
+    record = store.get_by_call_id(call_id)
+    if record is None:
+        raise KeyError("No existe una ejecución persistida con ese ID de Modal.")
+    if (
+        record.attempt_number != 2
+        or record.status != "failed"
+        or record.error_type != "AuthError"
+        or record.function_call_id != call_id
+    ):
+        raise ModalExecutionConflict(
+            "La consulta solo admite el intento 2 fallido por AuthError y el mismo ID."
+        )
+
+    observed_at = datetime.now(timezone.utc).isoformat()
+    exception_type: str | None = None
+    error_message: str | None = None
+    response_sha256: str | None = None
+    try:
+        remote_result = client.poll_normalization_call(call_id)
+        if remote_result is None:
+            provider_status = "running"
+            exception_type = "TimeoutError"
+        else:
+            provider_status = "completed"
+            canonical_result = json.dumps(
+                remote_result,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            response_sha256 = hashlib.sha256(canonical_result).hexdigest()
+    except BaseException as exc:
+        if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit)):
+            raise
+        exception_type = f"{type(exc).__module__}.{type(exc).__name__}"
+        error_message = str(exc)
+        if (
+            type(exc).__module__ == "modal.exception"
+            and type(exc).__name__ == "InputCancellation"
+        ):
+            provider_status = "cancelled"
+        elif type(exc).__name__.lower() == "autherror":
+            provider_status = "auth_error"
+        else:
+            provider_status = "query_error"
+
+    try:
+        sdk_version = package_version("modal")
+    except PackageNotFoundError:
+        sdk_version = None
+    observed_record, evidence_sha256, created = store.record_modal_status_observation(
+        record.execution_id,
+        function_call_id=call_id,
+        provider_status=provider_status,
+        observation_method="FunctionCall.from_id.get(timeout=0)",
+        observed_at_utc=observed_at,
+        exception_type=exception_type,
+        sdk_version=sdk_version,
+        response_sha256=response_sha256,
+        error_message=error_message,
+    )
+    return observed_record, provider_status, evidence_sha256, created
 
 
 def _is_transient_poll_error(exc: BaseException) -> bool:
@@ -473,6 +547,11 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="FC_ID",
         help="Registra evidencia revisada del estado Cancelled; no consulta ni invoca Modal.",
     )
+    modes.add_argument(
+        "--inspect-modal-call",
+        metavar="FC_ID",
+        help="Consulta un ID ya persistido una vez; no crea, reintenta ni cancela trabajos.",
+    )
     modes.add_argument("--once", action="store_true", help="Consulta llamadas persistidas una vez.")
     modes.add_argument("--watch", action="store_true", help="Supervisa llamadas desde un servicio persistente.")
     parser.add_argument("--source", type=Path)
@@ -486,7 +565,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if args.record_modal_cancellation and not args.store.is_file():
+    if (args.record_modal_cancellation or args.inspect_modal_call) and not args.store.is_file():
         raise SystemExit(
             "No existe el almacén de supervisión indicado; se rechaza crear uno nuevo."
         )
@@ -509,6 +588,23 @@ def main(argv: list[str] | None = None) -> int:
             "error_type_unchanged": record.error_type,
             "function_call_id": record.function_call_id,
             "evidence_sha256": evidence_sha256,
+        }, ensure_ascii=False))
+        return 0
+    if args.inspect_modal_call:
+        client = ModalRenderClient()
+        record, provider_status, evidence_sha256, created = inspect_existing_modal_call_status(
+            store,
+            client,
+            call_id=args.inspect_modal_call,
+        )
+        print(json.dumps({
+            "recorded": created,
+            "provider_status": provider_status,
+            "stored_status_unchanged": record.status,
+            "stored_error_type_unchanged": record.error_type,
+            "function_call_id": record.function_call_id,
+            "evidence_sha256": evidence_sha256,
+            "worker_invoked": False,
         }, ensure_ascii=False))
         return 0
     if args.attach_call_id:

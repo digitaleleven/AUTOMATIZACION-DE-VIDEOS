@@ -121,42 +121,67 @@ MATRIX_MODAL_CODE_VERSION="$DEPLOYED_VERSION" \
   modal deploy video_pipeline/modal_render_app.py
 ```
 
-Antes de solicitar la única conversión, el intento 2 debe estar adjuntado al
-ID histórico exacto y la caché debe haberse comprobado sin resultado
-reutilizable. Si `FunctionCall.from_id()` falla con `AuthError`, no se infiere
-cancelación: el estado continúa `failed`. Solo la propietaria, tras revisar una
-captura o registro guardado de Modal que muestre ese ID como `Cancelled`, puede
-registrar su SHA-256 como evidencia:
-
-```sh
-PYTHONPATH="$PWD" /usr/bin/python3 scripts/modal_normalization_supervisor.py \
-  --record-modal-cancellation fc-ID-DEL-INTENTO-2 \
-  --evidence-file /ruta/a/evidencia-modal.png \
-  --confirm-modal-status Cancelled
-```
-
-El evento de evidencia es append-only: conserva el error `AuthError`, el estado
-`failed`, el ledger y el JSONL previos. El programa calcula el hash del archivo,
-pero no puede validar semánticamente una captura; su contenido debe ser
-revisado por la propietaria y conservarse para auditoría. El tercer envío solo
-acepta el SHA-256 que imprima el preflight y ese ID:
+Después de publicar el código aprobado y reiniciar el supervisor en
+DigitalOcean, consultar solo el ID ya almacenado. Este modo llama a
+`FunctionCall.from_id(id).get(timeout=0)`: no hace `spawn`, no reintenta ni
+cancela. Guarda en SQLite un evento append-only con el ID, resultado tipado,
+versión del SDK, hora UTC y SHA-256 de la observación. El estado histórico
+`failed/AuthError` se conserva:
 
 ```sh
 cd /var/www/matrix-motion
-PYTHONPATH="$PWD" /usr/bin/python3 scripts/normalize_modal_4k_once.py \
-  --source data/incoming/44e426722ccc4f01aaaf8662298b638f.mov \
-  --output generated-artifacts/normalization-4k/IMG_1254-2160x3840-30.mp4 \
-  --allow-third-attempt \
-  --confirm-source-sha256 SHA256_DEL_PREFLIGHT \
-  --confirm-cancelled-call-id fc-ID-DEL-INTENTO-2 \
-  --confirm-worker-code-version "$DEPLOYED_VERSION"
+PYTHONPATH="$PWD" /usr/bin/python3 scripts/modal_normalization_supervisor.py \
+  --inspect-modal-call fc-01M66Z9ME4CX5E9CDW0J5D787K \
+  --store data/modal-execution-supervision.sqlite3
 ```
 
-Ese gate exige dos intentos en el ledger, el JSONL previo, estado Modal
-`cancelled` consultado directamente o evidencia manual asociada al mismo ID,
-ausencia de caché reutilizable y presupuesto bajo el límite interno. Reserva de
-forma atómica el intento 3; no hay reintentos automáticos y cualquier intento
-posterior queda bloqueado.
+Solo `modal.exception.InputCancellation` cuenta como cancelación consultada. Un
+`AuthError`, un timeout u otro error queda registrado como `auth_error`,
+`running` o `query_error`, y no desbloquea el tercer intento.
+
+Si el SDK de Modal no puede consultar el ID, alternativa solo desde
+DigitalOcean: descargar los logs de esa llamada al disco local del servidor,
+verificar que ambos mensajes de cancelación llevan el ID correcto y registrar
+el hash del archivo. No se requiere Mac ni transferencia manual:
+
+```sh
+cd /var/www/matrix-motion
+FC_ID=fc-01M66Z9ME4CX5E9CDW0J5D787K
+EVIDENCE="data/normalization-4k-history/${FC_ID}.log"
+modal app logs matrix-motion-remotion \
+  --function-call "$FC_ID" --timestamps --show-function-call-id \
+  --since "2026-10-30T18:56:38+01:00" --until "2026-10-30T19:06:07+01:00" \
+  | awk -v id="$FC_ID" 'index($0,id) && ($0 ~ /Received a cancellation signal/ || $0 ~ /Successfully canceled input/) { print }' \
+  > "$EVIDENCE"
+grep -F "$FC_ID" "$EVIDENCE"
+grep -F "Received a cancellation signal" "$EVIDENCE"
+grep -F "Successfully canceled input" "$EVIDENCE"
+PYTHONPATH="$PWD" /usr/bin/python3 scripts/modal_normalization_supervisor.py \
+  --record-modal-cancellation "$FC_ID" \
+  --evidence-file "$EVIDENCE" \
+  --confirm-modal-status Cancelled
+```
+
+El evento de evidencia manual es append-only: conserva el error `AuthError`, el
+estado `failed`, el ledger y el JSONL previos. Solo debe ejecutarse después de
+que los `grep` confirmen ID y mensajes. El tercer intento existente sigue
+bloqueado hasta que una de estas dos rutas registre cancelación para ese ID;
+ninguno de estos comandos crea una ejecución:
+
+```sh
+# Despliegue del código en DO, una vez que el commit esté publicado en main:
+cd /var/www/matrix-motion
+git pull --ff-only origin main
+PYTHONPATH="$PWD" /usr/bin/python3 -m unittest \
+  tests.test_modal_normalization_supervisor tests.test_modal_execution_store
+sudo systemctl restart matrix-motion-normalization-supervisor
+sudo systemctl status matrix-motion-normalization-supervisor --no-pager
+```
+
+El gate del tercer intento mantiene el límite de dos intentos anteriores, el
+JSONL, la identidad exacta del ID, la ausencia de caché reutilizable y el
+presupuesto interno; solo permite una reserva atómica, sin reintentos
+automáticos. Esta guía no autoriza su ejecución.
 El preflight local no puede inspeccionar los archivos de DigitalOcean ni la
 versión actualmente desplegada de Modal; el manifiesto impide procesar con una
 versión Modal distinta de `--confirm-worker-code-version`. Confirme el valor de

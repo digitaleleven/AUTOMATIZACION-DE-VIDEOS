@@ -231,16 +231,28 @@ def verify_third_attempt_authorization(
     ):
         for event in execution_store.events(record.execution_id):
             details = event.get("details") or {}
-            if (
+            same_identity_and_hash = (
                 event.get("status") == "failed"
-                and event.get("phase") == "manual_modal_cancellation_evidence"
                 and details.get("provider") == "modal"
                 and details.get("provider_status") == "cancelled"
                 and details.get("function_call_id") == confirmed_cancelled_call_id
-                and details.get("operator_confirmed") is True
-                and isinstance(details.get("evidence_file_name"), str)
                 and isinstance(details.get("evidence_sha256"), str)
                 and re.fullmatch(r"[a-f0-9]{64}", details["evidence_sha256"])
+            )
+            manual_artifact_evidence = (
+                event.get("phase") == "manual_modal_cancellation_evidence"
+                and details.get("operator_confirmed") is True
+                and isinstance(details.get("evidence_file_name"), str)
+            )
+            direct_modal_query_evidence = (
+                event.get("phase") == "modal_status_observation"
+                and details.get("observation_method")
+                == "FunctionCall.from_id.get(timeout=0)"
+                and details.get("exception_type") == "modal.exception.InputCancellation"
+            )
+            if (
+                same_identity_and_hash
+                and (manual_artifact_evidence or direct_modal_query_evidence)
             ):
                 manual_evidence = True
                 break

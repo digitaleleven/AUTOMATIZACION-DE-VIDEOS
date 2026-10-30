@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import hashlib
 import math
 from pathlib import Path
 import re
@@ -467,6 +468,92 @@ class ModalExecutionStore:
             confirmed = self._row(updated)
             assert confirmed is not None
             return confirmed, True
+
+    def record_modal_status_observation(
+        self,
+        execution_id: str,
+        *,
+        function_call_id: str,
+        provider_status: str,
+        observation_method: str,
+        observed_at_utc: str,
+        exception_type: str | None,
+        sdk_version: str | None,
+        response_sha256: str | None = None,
+        error_message: str | None = None,
+    ) -> tuple[ModalExecution, str, bool]:
+        """Append a direct read-only Modal lookup without changing the stored attempt."""
+        if (
+            not function_call_id.startswith("fc-")
+            or len(function_call_id) > 128
+            or provider_status not in {"cancelled", "running", "completed", "auth_error", "query_error"}
+            or observation_method != "FunctionCall.from_id.get(timeout=0)"
+            or not observed_at_utc
+            or len(observed_at_utc) > 80
+            or (sdk_version is not None and len(sdk_version) > 80)
+            or (
+                response_sha256 is not None
+                and not re.fullmatch(r"[a-f0-9]{64}", response_sha256)
+            )
+        ):
+            raise ValueError("La observación de estado de Modal no tiene un formato válido.")
+        if provider_status == "cancelled" and (
+            exception_type != "modal.exception.InputCancellation"
+        ):
+            raise ValueError("La cancelación requiere una excepción terminal tipada del SDK.")
+        now = _utc_now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM modal_executions WHERE execution_id = ?",
+                (execution_id,),
+            ).fetchone()
+            record = self._row(row)
+            if record is None:
+                raise KeyError("No existe la ejecución Modal que se quiere consultar.")
+            if (
+                record.attempt_number != 2
+                or record.status != "failed"
+                or record.error_type != "AuthError"
+                or record.function_call_id != function_call_id
+            ):
+                raise ModalExecutionConflict(
+                    "La consulta solo puede observar el intento 2 fallido con AuthError y el mismo ID."
+                )
+            details = {
+                "provider": "modal",
+                "provider_status": provider_status,
+                "function_call_id": function_call_id,
+                "observation_method": observation_method,
+                "observed_at_utc": observed_at_utc,
+                "exception_type": exception_type,
+                "sdk_version": sdk_version,
+                "response_sha256": response_sha256,
+                "error_message": safe_error_message(error_message),
+            }
+            canonical = json.dumps(
+                details,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            evidence_sha256 = hashlib.sha256(canonical).hexdigest()
+            details["evidence_sha256"] = evidence_sha256
+            self._append_event(
+                connection,
+                execution_id,
+                record.status,
+                "modal_status_observation",
+                details,
+                now,
+            )
+            updated = connection.execute(
+                "SELECT * FROM modal_executions WHERE execution_id = ?",
+                (execution_id,),
+            ).fetchone()
+            observed = self._row(updated)
+            assert observed is not None
+            return observed, evidence_sha256, True
 
     def update(
         self,

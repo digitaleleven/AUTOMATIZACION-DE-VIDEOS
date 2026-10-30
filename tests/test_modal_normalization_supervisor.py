@@ -9,19 +9,23 @@ from unittest.mock import patch
 from scripts.modal_normalization_supervisor import (
     attach_existing_call,
     main as supervisor_main,
+    inspect_existing_modal_call_status,
     poll_execution,
     poll_once,
     record_manual_modal_cancellation_evidence,
     reconcile_legacy_terminal_records,
 )
-from scripts.normalize_modal_4k_once import verify_third_attempt_authorization
+from scripts.normalize_modal_4k_once import (
+    RetryNotAllowedError,
+    verify_third_attempt_authorization,
+)
 from video_pipeline.modal_execution_store import ModalExecutionStore
 from video_pipeline.modal_renderer import MASTER_4K_NORMALIZATION_PROFILE_ID
 from video_pipeline.state import ProcessingLedger
 
 
 class InputCancellation(BaseException):
-    pass
+    __module__ = "modal.exception"
 
 
 class AuthError(RuntimeError):
@@ -101,10 +105,10 @@ class ModalNormalizationSupervisorTests(unittest.TestCase):
         self.assertEqual(self.store.list_active(), [])
         self.assertEqual(self.legacy.get(self.source_hash)["attempts"], 2)
 
-    def attach(self):
+    def attach(self, call_id="fc-existing-123"):
         return attach_existing_call(
             self.store,
-            call_id="fc-existing-123",
+            call_id=call_id,
             source_path=self.source,
             output_path=self.output,
             attempt_number=2,
@@ -282,6 +286,102 @@ class ModalNormalizationSupervisorTests(unittest.TestCase):
                 str(missing_store),
             ])
         self.assertFalse(missing_store.exists())
+
+    def test_direct_modal_lookup_records_cancelled_status_for_exact_call_without_rewrite(self):
+        call_id = "fc-01M66Z9ME4CX5E9CDW0J5D787K"
+        record = self.attach(call_id)
+        self.store.update(
+            record.execution_id,
+            status="failed",
+            phase="modal_call_failed",
+            error=AuthError("previous status lookup failed"),
+        )
+        history_before = self.prior_history.read_bytes()
+        client = FakeClient(poll_error=InputCancellation("Modal input cancelled"))
+        observed, provider_status, evidence_sha256, created = inspect_existing_modal_call_status(
+            self.store,
+            client,
+            call_id=call_id,
+        )
+        self.assertTrue(created)
+        self.assertEqual(provider_status, "cancelled")
+        self.assertEqual(observed.status, "failed")
+        self.assertEqual(observed.error_type, "AuthError")
+        self.assertEqual(client.call_ids, [call_id])
+        self.assertEqual(client.cache_reads, [])
+        self.assertEqual(client.cancel_calls, [])
+        self.assertEqual(self.prior_history.read_bytes(), history_before)
+        event = self.store.events(record.execution_id)[-1]
+        self.assertEqual(event["phase"], "modal_status_observation")
+        self.assertEqual(event["details"]["function_call_id"], call_id)
+        self.assertEqual(
+            event["details"]["exception_type"],
+            "modal.exception.InputCancellation",
+        )
+        self.assertEqual(event["details"]["evidence_sha256"], evidence_sha256)
+        self.assertEqual(len(evidence_sha256), 64)
+        authorized = verify_third_attempt_authorization(
+            self.legacy,
+            self.store,
+            source_hash=self.source_hash,
+            confirmed_source_hash=self.source_hash,
+            confirmed_cancelled_call_id=call_id,
+            history_path=self.prior_history,
+        )
+        self.assertEqual(authorized.status, "failed")
+
+    def test_direct_modal_auth_error_is_persisted_as_unverified_not_cancelled(self):
+        call_id = "fc-01M66Z9ME4CX5E9CDW0J5D787K"
+        record = self.attach(call_id)
+        self.store.update(
+            record.execution_id,
+            status="failed",
+            phase="modal_call_failed",
+            error=AuthError("authorization failed; previous UI said cancelled"),
+        )
+        observed, provider_status, _, _ = inspect_existing_modal_call_status(
+            self.store,
+            FakeClient(poll_error=AuthError("auth denied for call fc-id-cancelled")),
+            call_id=call_id,
+        )
+        self.assertEqual(provider_status, "auth_error")
+        self.assertEqual(observed.status, "failed")
+        self.assertEqual(observed.error_type, "AuthError")
+        event = self.store.events(record.execution_id)[-1]
+        self.assertEqual(event["details"]["provider_status"], "auth_error")
+        with self.assertRaises(RetryNotAllowedError):
+            verify_third_attempt_authorization(
+                self.legacy,
+                self.store,
+                source_hash=self.source_hash,
+                confirmed_source_hash=self.source_hash,
+                confirmed_cancelled_call_id=call_id,
+                history_path=self.prior_history,
+            )
+
+    def test_direct_inspection_cli_queries_one_persisted_call_without_spawning(self):
+        call_id = "fc-01M66Z9ME4CX5E9CDW0J5D787K"
+        record = self.attach(call_id)
+        self.store.update(
+            record.execution_id,
+            status="failed",
+            phase="modal_call_failed",
+            error=AuthError("prior lookup failed"),
+        )
+        fake_client = FakeClient(poll_error=InputCancellation("cancelled"))
+        with patch(
+            "scripts.modal_normalization_supervisor.ModalRenderClient",
+            return_value=fake_client,
+        ):
+            result = supervisor_main([
+                "--inspect-modal-call",
+                call_id,
+                "--store",
+                str(self.root / "supervisor.sqlite3"),
+            ])
+        self.assertEqual(result, 0)
+        self.assertEqual(fake_client.call_ids, [call_id])
+        self.assertEqual(fake_client.cancel_calls, [])
 
     def test_supervisor_persists_worker_code_version_from_remote_progress(self):
         record, _ = self.store.reserve(
