@@ -8,6 +8,7 @@ import unittest
 from scripts.modal_normalization_supervisor import (
     attach_existing_call,
     poll_execution,
+    poll_once,
     reconcile_legacy_terminal_records,
 )
 from video_pipeline.modal_execution_store import ModalExecutionStore
@@ -74,6 +75,16 @@ class ModalNormalizationSupervisorTests(unittest.TestCase):
             + json.dumps({"attempt": 2, "status": "started"}) + "\n",
             encoding="utf-8",
         )
+
+    def test_empty_supervisor_start_does_not_submit_or_poll_modal_work(self):
+        client = FakeClient()
+        updated = poll_once(self.store, client)
+        self.assertEqual(updated, [])
+        self.assertEqual(client.call_ids, [])
+        self.assertEqual(client.cache_reads, [])
+        self.assertEqual(client.progress_reads, [])
+        self.assertEqual(self.store.list_active(), [])
+        self.assertEqual(self.legacy.get(self.source_hash)["attempts"], 2)
 
     def attach(self):
         return attach_existing_call(

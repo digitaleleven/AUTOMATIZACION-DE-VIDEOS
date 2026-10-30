@@ -10,9 +10,10 @@ El worker guarda las fases y errores en el volumen de Modal.
 
 1. Desplegar el worker revisado y publicar el código aprobado en DigitalOcean.
    No se requiere desplegarlo desde esta preparación.
-2. Asegurar que `data/` —incluidas las dos bases SQLite y el JSONL histórico—
-   apunta a almacenamiento persistente, legible y escribible por el usuario de
-   la aplicación. No copiar, recrear ni vaciar esos registros durante el cambio.
+2. Asegurar que `data/` —los ledgers SQLite existentes, el nuevo almacén de
+   supervisión y los JSONL históricos— apunta a almacenamiento persistente,
+   legible y escribible por el usuario de la aplicación. No copiar, recrear ni
+   vaciar esos registros durante el cambio.
 3. Instalar `deploy/systemd/matrix-modal-normalization-supervisor.service`,
    ajustando usuario, directorio y ruta de Python a la instalación real.
    Proporcionar las credenciales de Modal mediante el mecanismo de secretos ya
@@ -41,6 +42,31 @@ El worker guarda las fases y errores en el volumen de Modal.
    matrix-modal-normalization-supervisor.service -f` y revisar
    `data/modal-execution-supervision.sqlite3`. El supervisor recupera y verifica
    el MP4 local mediante el manifiesto y checksum antes de marcarlo completado.
+
+## Comprobación, diagnóstico y reversión
+
+- Antes de instalar, ejecutar `sudo systemd-analyze verify
+  /etc/systemd/system/matrix-modal-normalization-supervisor.service`.
+- Tras iniciar, comprobar `systemctl is-active
+  matrix-modal-normalization-supervisor.service` y consultar los eventos con
+  `journalctl -u matrix-modal-normalization-supervisor.service -n 100`.
+  Para una comprobación SQLite de solo lectura, ejecutar
+  `sqlite3 data/modal-execution-supervision.sqlite3 'PRAGMA integrity_check;'`.
+- El servicio `--watch` solo inspecciona registros persistidos, consulta sus
+  IDs existentes, lee progreso/caché y reconcilia resultados terminales. No
+  llama a `spawn`, `.remote()` ni `cancel()`, y no importa automáticamente
+  llamadas históricas desde el JSONL. Registrar una llamada antigua requiere
+  `--attach-call-id` con el ID exacto, el hash/perfil comprobados y el intento
+  actual; esa operación no crea un trabajo ni incrementa el contador.
+- Para revertir, detener y deshabilitar únicamente el supervisor, restaurar el
+  commit previo de la aplicación y reiniciar el servicio web. Conservar todas
+  las bases SQLite, JSONL, originales y resultados; no borrar el almacén nuevo.
+  Detener systemd no cancela las ejecuciones remotas ya aceptadas.
+
+El código nuevo usa una base de supervisión separada; no elimina ni reinicia el
+ledger heredado. La reconciliación de un resultado terminal puede actualizar el
+estado/salida/error del registro heredado, pero conserva su contador de intentos
+y agrega un evento al historial en vez de sustituir los eventos anteriores.
 
 ## Reconectar una llamada histórica
 
