@@ -375,6 +375,11 @@ class DashboardStore:
     ) -> None:
         now = time.time()
         with self.lock, self._connect() as db:
+            if not db.execute(
+                "SELECT 1 FROM dashboard_uploads WHERE id = ?",
+                (source_id,),
+            ).fetchone():
+                raise PanelError("El vídeo ya no está disponible en la biblioteca.", 404)
             db.execute(
                 """INSERT INTO dashboard_jobs
                    (id, source_id, status, phase, progress, estimated_cost_usd,
@@ -415,6 +420,11 @@ class DashboardStore:
             if not previous:
                 raise PanelError("No se encontró el intento fallido.", 404)
             previous = dict(previous)
+            if not db.execute(
+                "SELECT 1 FROM dashboard_uploads WHERE id = ?",
+                (previous["source_id"],),
+            ).fetchone():
+                raise PanelError("El vídeo original ya no está disponible en la biblioteca.", 404)
             latest = db.execute(
                 """SELECT id FROM dashboard_jobs WHERE source_id = ?
                    ORDER BY created_at DESC, rowid DESC LIMIT 1""",
@@ -1398,6 +1408,116 @@ class VideoPanel:
 
     def library(self) -> list[dict[str, Any]]:
         return [self._public_library_item(item) for item in self.store.list_uploads()]
+
+    def delete_library_video(self, file_id: str, *, confirmed: bool) -> dict[str, Any]:
+        """Delete one local source and its library row; keep job history and outputs."""
+        if confirmed is not True:
+            raise PanelError("Confirma la eliminación del vídeo seleccionado.", 400)
+        if not re.fullmatch(r"[0-9a-f]{32}", str(file_id or "")):
+            raise PanelError("Identificador de vídeo no válido.", 404)
+
+        upload = self.store.get_upload(file_id)
+        if not upload:
+            raise PanelError("No se encontró el vídeo solicitado.", 404)
+        source_path = self._source_path(upload)
+        thumbnail_path = self.thumbnail_dir / f"{file_id}.jpg"
+        source_staged = source_path.with_name(f".matrix-delete-{uuid.uuid4().hex}")
+        thumbnail_staged = thumbnail_path.with_name(f".matrix-delete-{uuid.uuid4().hex}")
+        row_deleted = False
+
+        with self.store.lock:
+            try:
+                with self.store._connect() as db:
+                    db.execute("BEGIN IMMEDIATE")
+                    current = db.execute(
+                        "SELECT * FROM dashboard_uploads WHERE id = ?",
+                        (file_id,),
+                    ).fetchone()
+                    if not current:
+                        raise PanelError("No se encontró el vídeo solicitado.", 404)
+                    current = dict(current)
+                    if current["filename"] != upload["filename"]:
+                        raise PanelError("El registro del vídeo cambió; actualiza la biblioteca.", 409)
+
+                    active_job = db.execute(
+                        """SELECT 1 FROM dashboard_jobs
+                           WHERE source_id = ? AND lower(status) IN ('queued', 'processing')
+                           LIMIT 1""",
+                        (file_id,),
+                    ).fetchone()
+                    active_ledger = db.execute(
+                        """SELECT 1 FROM processing_jobs
+                           WHERE source_sha256 = ? AND lower(status) = 'processing'
+                           LIMIT 1""",
+                        (current["source_sha256"],),
+                    ).fetchone()
+                    if active_job or active_ledger:
+                        raise PanelError(
+                            "No se puede eliminar un vídeo mientras está en procesamiento.",
+                            409,
+                        )
+
+                    os.replace(source_path, source_staged)
+                    if thumbnail_path.is_file():
+                        os.replace(thumbnail_path, thumbnail_staged)
+                    cursor = db.execute(
+                        "DELETE FROM dashboard_uploads WHERE id = ?",
+                        (file_id,),
+                    )
+                    if cursor.rowcount != 1:
+                        raise PanelError("No se pudo eliminar el registro del vídeo.", 409)
+                    db.commit()
+                    row_deleted = True
+
+                # Remove the thumbnail first. If either cleanup fails, restore the
+                # source and registration; a missing thumbnail is non-destructive.
+                if thumbnail_staged.exists():
+                    thumbnail_staged.unlink()
+                source_staged.unlink()
+            except PanelError:
+                if source_staged.exists():
+                    os.replace(source_staged, source_path)
+                if thumbnail_staged.exists():
+                    os.replace(thumbnail_staged, thumbnail_path)
+                if row_deleted:
+                    with self.store._connect() as db:
+                        db.execute(
+                            """INSERT OR IGNORE INTO dashboard_uploads
+                               (id, filename, original_filename, source_sha256,
+                                size_bytes, metadata_json, created_at)
+                               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                            (
+                                current["id"], current["filename"], current["original_filename"],
+                                current["source_sha256"], current["size_bytes"],
+                                current["metadata_json"], current["created_at"],
+                            ),
+                        )
+                raise
+            except Exception as exc:
+                if source_staged.exists():
+                    os.replace(source_staged, source_path)
+                if thumbnail_staged.exists():
+                    os.replace(thumbnail_staged, thumbnail_path)
+                if row_deleted:
+                    with self.store._connect() as db:
+                        db.execute(
+                            """INSERT OR IGNORE INTO dashboard_uploads
+                               (id, filename, original_filename, source_sha256,
+                                size_bytes, metadata_json, created_at)
+                               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                            (
+                                current["id"], current["filename"], current["original_filename"],
+                                current["source_sha256"], current["size_bytes"],
+                                current["metadata_json"], current["created_at"],
+                            ),
+                        )
+                logger.exception("No se pudo completar la eliminación del vídeo %s", file_id)
+                raise PanelError(
+                    "No se pudo eliminar el vídeo; se ha conservado su registro en la biblioteca.",
+                    500,
+                ) from exc
+
+        return {"deleted": True, "id": file_id}
 
     def _public_library_item(self, upload: dict[str, Any]) -> dict[str, Any]:
         metadata = json.loads(upload["metadata_json"])
@@ -2852,6 +2972,7 @@ required minlength="16" {disabled}>
             "app.js",
             "upload-controller.js",
             "library-selection-controller.js",
+            "library-delete-controller.js",
             "premium.css",
         }
         if relative not in allowed and relative != "index.html":
@@ -2971,6 +3092,7 @@ required minlength="16" {disabled}>
                     "/app.js",
                     "/upload-controller.js",
                     "/library-selection-controller.js",
+                    "/library-delete-controller.js",
                     "/premium.css",
                 }:
                     self._send_static(path.lstrip("/"), head)
@@ -2984,6 +3106,8 @@ required minlength="16" {disabled}>
                     self._json(self.server.panel.drive_config(), head=head)
                 elif path == "/api/library":
                     self._json({"items": self.server.panel.library()}, head=head)
+                elif re.fullmatch(r"/api/library/[0-9a-f]{32}/delete", path):
+                    raise PanelError("Método no permitido.", 405)
                 elif path == "/api/style":
                     self._json(self.server.panel.style(), head=head)
                 elif path.startswith("/api/jobs/"):
@@ -3059,6 +3183,18 @@ required minlength="16" {disabled}>
                     editing_style=self.headers.get("X-Editing-Style", "dynamic"),
                 )
                 self._json({"item": item}, 201)
+            elif (
+                self.command == "POST"
+                and re.fullmatch(r"/api/library/[0-9a-f]{32}/delete", path)
+            ):
+                file_id = path.split("/")[3]
+                payload = self._read_json()
+                if not isinstance(payload, dict) or payload.get("confirm") is not True:
+                    raise PanelError("Confirma la eliminación del vídeo seleccionado.", 400)
+                self._json(
+                    self.server.panel.delete_library_video(file_id, confirmed=True),
+                    200,
+                )
             elif self.command == "POST" and path == "/api/proposals":
                 self._json(self.server.panel.prepare_proposal(self._read_json()), 200)
             elif self.command == "POST" and path == "/api/jobs":

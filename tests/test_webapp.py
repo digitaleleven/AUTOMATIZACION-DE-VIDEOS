@@ -1150,10 +1150,111 @@ class VideoPanelApiTests(unittest.TestCase):
         status, _, body = self.request("GET", "/library-selection-controller.js")
         self.assertEqual(status, 200)
         self.assertIn(b"selectExistingVideo", body)
+        status, _, delete_script = self.request("GET", "/library-delete-controller.js")
+        self.assertEqual(status, 200)
+        self.assertIn(b"deleteSelected", delete_script)
         status, _, html = self.request("GET", "/")
         self.assertEqual(status, 200)
         page = html.decode("utf-8")
         self.assertIn('<script src="/library-selection-controller.js" defer></script>', page)
+        self.assertIn('<script src="/library-delete-controller.js" defer></script>', page)
+        status, _, app_script = self.request("GET", "/app.js")
+        self.assertEqual(status, 200)
+        self.assertIn(b"data-delete-video", app_script)
+
+    def test_library_deletion_removes_only_selected_source_and_keeps_results_and_other_videos(self):
+        first_source = self.root / "selected.mov"
+        shutil.copyfile(self.create_movie(".mov"), first_source)
+        status, first_response = self.upload(first_source)
+        self.assertEqual(status, 201)
+        first = first_response["item"]
+        stored_source = self.panel.input_dir / first["filename"]
+        thumbnail = self.panel.thumbnail_dir / f"{first['id']}.jpg"
+        thumbnail.write_bytes(b"selected-thumbnail")
+
+        other_source = self.create_movie(".mp4")
+        status, other_response = self.upload(other_source)
+        self.assertEqual(status, 201)
+        other = other_response["item"]
+        other_stored_source = self.panel.input_dir / other["filename"]
+
+        job_id = "a" * 32
+        self.panel.store.create_job(job_id, first["id"], 0.0, {})
+        self.panel.store.update_job(job_id, status="completed", phase="completed", output_id="kept.mp4")
+        output = self.panel.output_dir / "kept.mp4"
+        output.write_bytes(b"existing-result")
+
+        status, _, body = self.request(
+            "POST",
+            f"/api/library/{first['id']}/delete",
+            body=json.dumps({"confirm": True}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body.decode()), {"deleted": True, "id": first["id"]})
+        self.assertFalse(stored_source.exists())
+        self.assertFalse(thumbnail.exists())
+        self.assertIsNone(self.panel.store.get_upload(first["id"]))
+        self.assertTrue(other_stored_source.is_file())
+        self.assertIsNotNone(self.panel.store.get_upload(other["id"]))
+        self.assertTrue(output.is_file())
+        self.assertEqual(self.panel.store.get_job(job_id)["status"], "completed")
+
+    def test_library_deletion_requires_confirmation_and_blocks_active_jobs(self):
+        source = self.create_movie(".mov")
+        status, response = self.upload(source)
+        self.assertEqual(status, 201)
+        item = response["item"]
+        stored_source = self.panel.input_dir / item["filename"]
+
+        status, _, _ = self.request(
+            "POST",
+            f"/api/library/{item['id']}/delete",
+            body=json.dumps({"confirm": False}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 400)
+        self.assertTrue(stored_source.is_file())
+        self.assertIsNotNone(self.panel.store.get_upload(item["id"]))
+
+        self.panel.store.create_job("b" * 32, item["id"], 0.0, {})
+        status, _, body = self.request(
+            "POST",
+            f"/api/library/{item['id']}/delete",
+            body=json.dumps({"confirm": True}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 409)
+        self.assertIn("procesamiento", json.loads(body.decode())["detail"])
+        self.assertTrue(stored_source.is_file())
+        self.assertIsNotNone(self.panel.store.get_upload(item["id"]))
+
+    def test_failed_source_file_removal_restores_the_video_and_library_record(self):
+        source = self.create_movie(".mov")
+        status, response = self.upload(source)
+        self.assertEqual(status, 201)
+        item = response["item"]
+        stored_source = self.panel.input_dir / item["filename"]
+        original_unlink = Path.unlink
+
+        def fail_staged_source_unlink(path, *args, **kwargs):
+            if path.parent == self.panel.input_dir and path.name.startswith(".matrix-delete-"):
+                raise PermissionError("synthetic deletion failure")
+            return original_unlink(path, *args, **kwargs)
+
+        with patch.object(Path, "unlink", new=fail_staged_source_unlink):
+            status, _, body = self.request(
+                "POST",
+                f"/api/library/{item['id']}/delete",
+                body=json.dumps({"confirm": True}).encode(),
+                headers={"Content-Type": "application/json"},
+            )
+
+        self.assertEqual(status, 500)
+        self.assertIn("conservado", json.loads(body.decode())["detail"])
+        self.assertTrue(stored_source.is_file())
+        self.assertIsNotNone(self.panel.store.get_upload(item["id"]))
 
     def test_render_retries_are_blocked_in_modal_only_mode(self):
         source_id, job_id, _, _ = self.create_failed_0415_attempt()

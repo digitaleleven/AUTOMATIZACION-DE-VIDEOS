@@ -508,14 +508,19 @@ function renderLibrary() {
     const thumbnail = item.thumbnail_url
       ? `<img src="${escapeHtml(item.thumbnail_url)}" alt="" loading="lazy">`
       : `<span class="library-thumb-fallback">${escapeHtml(item.format || "VIDEO")}</span>`;
-    return `<button type="button" class="library-item ${String(item.id) === String(state.selectedId) ? "selected" : ""}" data-id="${escapeHtml(item.id)}">
-      <span class="library-thumb" aria-hidden="true">${thumbnail}</span>
-      <span class="library-item-body">
-        <span class="library-item-top"><strong title="${escapeHtml(name)}">${escapeHtml(name)}</strong><span class="file-type">${escapeHtml(item.source_label || item.format || "VIDEO")}</span></span>
-        <span class="library-item-meta"><span>${formatDuration(item.duration_seconds)}</span><span>${formatBytes(item.size_bytes)}</span><span>${escapeHtml(formatDate(item.created_at))}</span></span>
-      </span>
-      <span class="library-item-status ${statusClass}">${escapeHtml(statusLabel(item.status))}</span>
-    </button>`;
+    const processing = ["queued", "processing"].includes(status);
+    return `<div class="library-item ${String(item.id) === String(state.selectedId) ? "selected" : ""}" data-id="${escapeHtml(item.id)}">
+      <button type="button" class="library-item-select" data-id="${escapeHtml(item.id)}" aria-label="Seleccionar ${escapeHtml(name)}">
+        <span class="library-thumb" aria-hidden="true">${thumbnail}</span>
+        <span class="library-item-body">
+          <span class="library-item-top"><strong title="${escapeHtml(name)}">${escapeHtml(name)}</strong><span class="file-type">${escapeHtml(item.source_label || item.format || "VIDEO")}</span></span>
+          <span class="library-item-meta"><span>${formatDuration(item.duration_seconds)}</span><span>${formatBytes(item.size_bytes)}</span><span>${escapeHtml(formatDate(item.created_at))}</span></span>
+        </span>
+        <span class="library-item-status ${statusClass}">${escapeHtml(statusLabel(item.status))}</span>
+      </button>
+      <button type="button" class="library-delete-button" data-delete-video="${escapeHtml(item.id)}"
+        aria-label="Eliminar ${escapeHtml(name)}" ${processing ? 'disabled title="No se puede eliminar mientras se procesa"' : ""}>Eliminar</button>
+    </div>`;
   }).join("");
 }
 
@@ -1431,7 +1436,38 @@ const librarySelectionController = window.MatrixMotionLibrarySelection.createLib
   renderSelectedItem,
 });
 
+const libraryDeleteController = window.MatrixMotionLibraryDelete.createLibraryDeleteController({
+  confirmDelete: (item) => window.confirm(
+    `¿Eliminar "${item.original_filename || item.filename}"? Se borrará este original de MATRIX MOTION y su registro. Los resultados generados y el historial se conservarán.`,
+  ),
+  deleteVideo: (id) => requestJson(`/api/library/${encodeURIComponent(id)}/delete`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ confirm: true }),
+  }),
+  removeVideo: (id) => {
+    state.library = state.library.filter((item) => String(item.id) !== id);
+    if (String(state.selectedId) === id) {
+      state.selectedId = null;
+      byId("paid-consent").checked = false;
+      byId("unknown-cost-consent").checked = false;
+      renderSelectedItem();
+    }
+    renderLibrary();
+  },
+  notify: displayToast,
+});
+
 byId("library-list").addEventListener("click", (event) => {
+  const deleteButton = event.target.closest("[data-delete-video]");
+  if (deleteButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    const id = deleteButton.dataset.deleteVideo;
+    const item = getVisibleLibraryItems(state.library).find((entry) => String(entry.id) === id);
+    if (item) void libraryDeleteController.deleteSelected(item);
+    return;
+  }
   const actionButton = event.target.closest("[data-action]");
   if (actionButton?.dataset.action === "upload") {
     setActivePage("create");
@@ -1443,7 +1479,7 @@ byId("library-list").addEventListener("click", (event) => {
     librarySelectionController.selectExistingVideo(recentButton.dataset.recentId);
     return;
   }
-  const itemButton = event.target.closest(".library-item");
+  const itemButton = event.target.closest(".library-item-select");
   if (!itemButton) return;
   librarySelectionController.selectExistingVideo(itemButton.dataset.id);
 });
