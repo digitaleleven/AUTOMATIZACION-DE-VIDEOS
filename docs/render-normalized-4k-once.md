@@ -8,12 +8,13 @@ El ejecutor carga `/var/www/matrix-motion/.env` antes de importar los clientes d
 
 ## Único comando autorizado de ejecución en DigitalOcean
 
-Desde la raíz `/var/www/matrix-motion`, ejecutar una sola vez este comando después de actualizar el código y sus dependencias:
+Desde la raíz `/var/www/matrix-motion`, para el fallo confirmado de autenticación, ejecutar una sola vez este comando después de actualizar el código y sus dependencias:
 
 ```bash
 cd /var/www/matrix-motion &&
 /usr/bin/python3 -m scripts.render_normalized_4k_once \
   --execute \
+  --retry-failed \
   --authorize-openai \
   --authorize-gemini \
   --authorize-modal \
@@ -21,7 +22,9 @@ cd /var/www/matrix-motion &&
   --acknowledge-estimated-cost
 ```
 
-En esa misma invocación, el ejecutor realiza el preflight completo antes de llamar a los proveedores y se detiene si cualquier control falla. Los fallos anteriores reconciliados se conservan y no bloquean por sí solos; una fila completada, activa, incierta, o cualquier intento ya registrado para el hash del máster normalizado bloquea el envío. El historial se consulta en solo lectura. El ledger de Modal reclama como máximo una tentativa para ese hash, por lo que dos invocaciones concurrentes no pueden enviar el mismo trabajo; no hay reintentos automáticos. No iniciar otro trabajo de MATRIX para `IMG_1254.MOV` mientras corre esta ejecución.
+En esa invocación, el ejecutor exige `--retry-failed` y acepta únicamente el ledger exacto del máster normalizado con estado `failed` y un intento previo. La transición a intento 2 se reclama de forma atómica; la fila histórica fallida se copia antes de actualizarla a una tabla de historial en la misma base SQLite. Una fila activa, completada, incierta, ausente, con más de un intento, o un segundo uso de la repetición queda bloqueado. El historial anterior de la aplicación se consulta en solo lectura y no se borra. No hay reintentos automáticos. No iniciar otro trabajo de MATRIX para `IMG_1254.MOV` mientras corre esta ejecución.
+
+Para comprobar primero que el reintento está autorizado sin llamar a proveedores, ejecutar el mismo módulo con `--retry-failed` pero sin `--execute` ni autorizaciones de servicios. La ejecución real requiere las cinco autorizaciones explícitas que aparecen en el comando de arriba.
 
 La operación reutiliza el MP4 SDR normalizado y no vuelve a convertir HDR. El MP4 queda en `outputs/`; los eventos, transcripción, análisis y plan se guardan bajo `data/normalized-render-once/<job_id>/`. R2 conserva el MP4 privado.
 

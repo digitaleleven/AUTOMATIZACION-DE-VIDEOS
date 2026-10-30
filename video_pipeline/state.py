@@ -57,6 +57,19 @@ class ProcessingLedger:
                 )
             if "execution_key" not in existing_columns:
                 connection.execute("ALTER TABLE processing_jobs ADD COLUMN execution_key TEXT")
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS processing_job_attempt_history (
+                    source_sha256 TEXT NOT NULL,
+                    attempt_number INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    error TEXT,
+                    snapshot_json TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    PRIMARY KEY (source_sha256, attempt_number)
+                )
+                """
+            )
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -83,6 +96,7 @@ class ProcessingLedger:
         retry_failed: bool = False,
         max_attempts: int = 2,
         allow_third_attempt: bool = False,
+        preserve_failure_history: bool = False,
         stale_after_seconds: int = 3600,
         edit_options: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -167,6 +181,24 @@ class ProcessingLedger:
 
             if int(job["attempts"]) >= max_attempts:
                 raise RetryNotAllowedError("The one permitted retry has already been used.")
+            if preserve_failure_history:
+                if not retry_failed or job["status"] != "failed":
+                    raise RetryNotAllowedError(
+                        "Failure history can only be preserved for an explicitly retried failed job."
+                    )
+                connection.execute(
+                    """INSERT INTO processing_job_attempt_history
+                    (source_sha256, attempt_number, status, error, snapshot_json, recorded_at)
+                    VALUES (?, ?, ?, ?, ?, ?)""",
+                    (
+                        source_sha256,
+                        int(job["attempts"]),
+                        str(job["status"]),
+                        job.get("error"),
+                        json.dumps(job, sort_keys=True, ensure_ascii=False, default=str),
+                        now,
+                    ),
+                )
             connection.execute(
                 """UPDATE processing_jobs SET
                     source_path = ?, status = 'processing', attempts = attempts + 1,

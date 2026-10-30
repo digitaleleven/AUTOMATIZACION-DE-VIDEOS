@@ -289,10 +289,12 @@ def _prior_attempt_blockers(
     ledger_attempts: list[dict[str, Any]],
     *,
     normalized_source_key: str,
+    retry_failed: bool = False,
 ) -> tuple[list[str], int]:
-    """Allow prior failed jobs only; block active, complete, unknown, and reused one-shot keys."""
+    """Allow one explicit retry of a single failed normalized-source attempt."""
     blockers: list[str] = []
     failed_panel_attempts = 0
+    retry_failure_found = False
     for attempt in panel_attempts:
         status = attempt["status"]
         phase = attempt["phase"]
@@ -312,16 +314,27 @@ def _prior_attempt_blockers(
     for attempt in ledger_attempts:
         status = attempt["status"]
         if attempt["source_sha256"] == normalized_source_key:
-            blockers.append("normalized_source_already_claimed")
+            attempts = int(attempt.get("attempts") or 0)
+            if status != "failed":
+                blockers.append(f"normalized_source_{status or 'unknown'}")
+            elif retry_failed and attempts == 1:
+                retry_failure_found = True
+            elif retry_failed:
+                blockers.append("normalized_retry_limit_reached")
+            else:
+                blockers.append("normalized_source_already_claimed")
         elif status != "failed":
             blockers.append(f"prior_modal_ledger_{status or 'unknown'}")
 
+    if retry_failed and not retry_failure_found:
+        blockers.append("retry_failed_requires_single_failed_ledger_attempt")
     return sorted(set(blockers)), failed_panel_attempts
 
 
 def run_normalized_render_once(
     *,
     execute: bool = False,
+    retry_failed: bool = False,
     source_path: str | Path = SOURCE_PATH,
     expected_sha256: str = SOURCE_SHA256,
     ledger_path: str | Path = LEDGER_PATH,
@@ -351,6 +364,7 @@ def run_normalized_render_once(
         previous_attempts,
         previous_ledger_attempts,
         normalized_source_key=normalized_source_key,
+        retry_failed=retry_failed,
     )
     budget = enforce_job_budget(video.duration)
     if budget.maximum_usd > MAX_JOB_BUDGET_USD:
@@ -386,6 +400,7 @@ def run_normalized_render_once(
         "external_services_called": [],
         "normalization_reused": True,
         "existing_panel_attempts": len(previous_attempts),
+        "retry_failed_requested": retry_failed,
     }
     if preflight_callback:
         preflight_callback(report)
@@ -419,7 +434,9 @@ def run_normalized_render_once(
     ledger.claim(
         source_ledger_key,
         str(source),
-        max_attempts=1,
+        retry_failed=retry_failed,
+        max_attempts=2 if retry_failed else 1,
+        preserve_failure_history=retry_failed,
         edit_options=edit_options,
     )
     job_id = uuid.uuid4().hex
@@ -550,6 +567,11 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Enviar transcripción, análisis y un único render completo tras el preflight.",
     )
+    parser.add_argument(
+        "--retry-failed",
+        action="store_true",
+        help="Autoriza una sola repetición si el ledger del máster 4K está en failed con un intento.",
+    )
     for flag, help_text in (
         ("--authorize-openai", "Autoriza Whisper para transcribir el audio."),
         ("--authorize-gemini", "Autoriza Gemini para analizar el vídeo."),
@@ -566,6 +588,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         report = run_normalized_render_once(
             execute=args.execute,
+            retry_failed=args.retry_failed,
             authorizations={
                 "openai": args.authorize_openai,
                 "gemini": args.authorize_gemini,

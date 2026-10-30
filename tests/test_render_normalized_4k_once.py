@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import os
 from pathlib import Path
 import sqlite3
@@ -102,6 +103,33 @@ class NormalizedRenderPreflightTests(unittest.TestCase):
         )
         self.assertIn("prior_modal_ledger_submission_unknown", blockers)
         self.assertEqual(failed, 0)
+
+    def test_retry_gate_allows_only_one_failed_normalized_attempt(self):
+        key = "normalized-key"
+        failed_attempt = [{"source_sha256": key, "status": "failed", "attempts": 1}]
+        blockers, _ = runner._prior_attempt_blockers(
+            [], failed_attempt, normalized_source_key=key
+        )
+        self.assertIn("normalized_source_already_claimed", blockers)
+
+        blockers, _ = runner._prior_attempt_blockers(
+            [], failed_attempt, normalized_source_key=key, retry_failed=True
+        )
+        self.assertEqual(blockers, [])
+
+        for status, attempts in (("processing", 1), ("completed", 1), ("failed", 2)):
+            blockers, _ = runner._prior_attempt_blockers(
+                [],
+                [{"source_sha256": key, "status": status, "attempts": attempts}],
+                normalized_source_key=key,
+                retry_failed=True,
+            )
+            self.assertTrue(blockers, (status, attempts))
+
+        blockers, _ = runner._prior_attempt_blockers(
+            [], [], normalized_source_key=key, retry_failed=True
+        )
+        self.assertIn("retry_failed_requires_single_failed_ledger_attempt", blockers)
 
     def test_preflight_checks_exact_hash_and_verified_4k_sdr_profile(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -494,6 +522,101 @@ class NormalizedRenderExecutionTests(unittest.TestCase):
             transcribe.assert_called_once()
             render.assert_called_once()
         self.assertEqual(hashlib.sha256(self.source.read_bytes()).hexdigest(), self.digest)
+
+    def test_explicit_retry_preserves_failed_attempt_and_blocks_a_second_retry(self):
+        ledger_key = hashlib.sha256(f"{self.digest}:full".encode()).hexdigest()
+        ledger = ProcessingLedger(self.ledger)
+        ledger.claim(
+            ledger_key,
+            str(self.source),
+            max_attempts=1,
+            edit_options=runner.EDIT_OPTIONS,
+        )
+        ledger.mark_failed(ledger_key, "AuthenticationError: invalid_api_key")
+        failure_before_retry = ledger.get(ledger_key)
+
+        output = self.output_dir / "retry-render.mp4"
+        output.parent.mkdir(parents=True)
+        output.write_bytes(b"rendered MP4 placeholder")
+        fake_modal = SimpleNamespace(ensure_worker_available=lambda: None)
+        analysis = {
+            "summary": "summary",
+            "suggested_zooms": [],
+            "suggested_cuts": [],
+            "copy_and_seo": {"hook": "hook"},
+        }
+        words = [WordTiming("Hola", 0.0, 0.5), WordTiming("mundo", 0.5, 0.9)]
+        patches = self._patch_preflight()
+        with (
+            patches[0],
+            patches[1],
+            patches[2],
+            patches[3],
+            patch.dict("os.environ", {"OPENAI_API_KEY": "test", "GEMINI_API_KEY": "test"}),
+            patch.object(runner, "ModalRenderClient", return_value=fake_modal),
+            patch.object(runner, "transcribe_video", return_value=words),
+            patch.object(runner, "detect_silence_cut_suggestions", return_value=[]),
+            patch.object(runner, "analyze_video", return_value=analysis),
+            patch.object(runner, "_prepare_modal_render_plan", return_value=({}, [], [], [], [])),
+            patch.object(
+                runner,
+                "process_local_video_modal",
+                return_value={"output": str(output), "modal_output_sha256": "f" * 64},
+            ) as render,
+            patch.object(
+                runner, "upload_mp4_to_r2",
+                return_value={"object_key": "renders/retry.mp4", "verified": True},
+            ),
+        ):
+            result = runner.run_normalized_render_once(
+                execute=True,
+                retry_failed=True,
+                source_path=self.source,
+                expected_sha256=self.digest,
+                ledger_path=self.ledger,
+                panel_database_path=self.root / "panel.sqlite3",
+                output_dir=self.output_dir,
+                work_root=self.work_root,
+                authorizations=self.authorizations,
+            )
+            self.assertEqual(result["status"], "completed")
+            render.assert_called_once()
+
+        current = ProcessingLedger(self.ledger).get(ledger_key)
+        self.assertEqual(current["status"], "completed")
+        self.assertEqual(current["attempts"], 2)
+        with sqlite3.connect(self.ledger) as connection:
+            row = connection.execute(
+                """SELECT status, error, snapshot_json
+                   FROM processing_job_attempt_history
+                   WHERE source_sha256 = ? AND attempt_number = 1""",
+                (ledger_key,),
+            ).fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual(row[0], "failed")
+        self.assertEqual(row[1], failure_before_retry["error"])
+        self.assertEqual(json.loads(row[2])["error"], "AuthenticationError: invalid_api_key")
+
+        with (
+            patch.object(
+                runner,
+                "_validate_source",
+                return_value=(self.source.resolve(), self.video, {"sha256": self.digest}),
+            ),
+            self.assertRaisesRegex(RuntimeError, "Preflight bloqueado"),
+        ):
+            runner.run_normalized_render_once(
+                execute=True,
+                retry_failed=True,
+                source_path=self.source,
+                expected_sha256=self.digest,
+                ledger_path=self.ledger,
+                panel_database_path=self.root / "panel.sqlite3",
+                output_dir=self.output_dir,
+                work_root=self.work_root,
+                authorizations=self.authorizations,
+            )
+        render.assert_called_once()
 
     def test_missing_authorization_stops_before_modal_or_provider_calls(self):
         patches = self._patch_preflight()
