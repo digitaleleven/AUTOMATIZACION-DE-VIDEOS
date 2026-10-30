@@ -954,6 +954,73 @@ class VideoPanelApiTests(unittest.TestCase):
             )
             self.assertEqual(status, 400)
 
+    def test_matrix_allowed_hosts_accepts_digitalocean_https_and_rejects_unlisted_hosts(self):
+        production_host = "209.97.188.78"
+        with patch.dict(
+            os.environ,
+            {
+                "MATRIX_ALLOWED_HOSTS": production_host,
+                "REPLIT_DEV_DOMAIN": "",
+                "REPLIT_DOMAINS": "",
+            },
+        ):
+            status, _, body = self.request(
+                "GET",
+                "/login",
+                headers={
+                    "Host": production_host,
+                    "Origin": f"https://{production_host}",
+                    "X-Forwarded-Host": production_host,
+                    "X-Forwarded-Proto": "https",
+                },
+                authenticated=False,
+            )
+            self.assertEqual(status, 200)
+            self.assertIn(b'<form method="post" action="/login"', body)
+
+            for invalid_headers in (
+                {
+                    "Host": production_host,
+                    "Origin": "https://not-allowed.invalid",
+                    "X-Forwarded-Host": production_host,
+                    "X-Forwarded-Proto": "https",
+                },
+                {
+                    "Host": "not-allowed.invalid",
+                    "Origin": "https://not-allowed.invalid",
+                    "X-Forwarded-Host": "not-allowed.invalid",
+                    "X-Forwarded-Proto": "https",
+                },
+            ):
+                status, _, _ = self.request(
+                    "GET",
+                    "/login",
+                    headers=invalid_headers,
+                    authenticated=False,
+                )
+                self.assertEqual(status, 403)
+
+        with patch.dict(
+            os.environ,
+            {
+                "MATRIX_ALLOWED_HOSTS": "*",
+                "REPLIT_DEV_DOMAIN": "",
+                "REPLIT_DOMAINS": "",
+            },
+        ):
+            status, _, _ = self.request(
+                "GET",
+                "/login",
+                headers={
+                    "Host": "wildcard-probe.invalid",
+                    "Origin": "https://wildcard-probe.invalid",
+                    "X-Forwarded-Host": "wildcard-probe.invalid",
+                    "X-Forwarded-Proto": "https",
+                },
+                authenticated=False,
+            )
+            self.assertEqual(status, 403)
+
     def test_idle_and_absolute_session_expiration_are_enforced(self):
         def expire_session(column):
             raw_token = self.session_cookie.split("=", 1)[1]

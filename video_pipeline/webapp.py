@@ -2833,7 +2833,14 @@ required minlength="16" {disabled}>
         local_hosts = {"localhost", "127.0.0.1", "::1"}
         proxy_hosts = local_hosts | {"replit.com"}
         app_hosts = set()
-        for variable in ("REPLIT_DEV_DOMAIN", "REPLIT_DOMAINS"):
+        # MATRIX_ALLOWED_HOSTS is a comma-separated explicit allowlist for
+        # self-hosted production deployments. Keep parsing through hostname()
+        # so wildcards and malformed host values are never accepted.
+        for variable in (
+            "REPLIT_DEV_DOMAIN",
+            "REPLIT_DOMAINS",
+            "MATRIX_ALLOWED_HOSTS",
+        ):
             for configured in os.getenv(variable, "").split(","):
                 configured = configured.strip()
                 if not configured:
