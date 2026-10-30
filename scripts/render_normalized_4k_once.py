@@ -10,12 +10,26 @@ import hashlib
 import json
 import logging
 import os
+import sqlite3
 from pathlib import Path
 import subprocess
 import sys
-import sqlite3
 import uuid
 from typing import Any, Callable
+
+from dotenv import load_dotenv
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DOTENV_PATH = PROJECT_ROOT / ".env"
+
+
+def load_project_environment(env_path: str | Path = DOTENV_PATH) -> bool:
+    """Load project .env without logging values or overriding service environment."""
+    return load_dotenv(dotenv_path=Path(env_path), override=False, verbose=False)
+
+
+# Load secrets before importing provider clients. Existing process/systemd values win.
+load_project_environment()
 
 from video_pipeline.cost_controls import MAX_JOB_BUDGET_USD, enforce_job_budget
 from video_pipeline.gemini_video import analyze_video
@@ -214,7 +228,7 @@ def _existing_panel_attempts(
             return []
         rows = connection.execute(
             """
-            SELECT jobs.id, jobs.status, jobs.phase
+            SELECT jobs.id, jobs.status, jobs.phase, uploads.source_sha256
             FROM dashboard_jobs AS jobs
             JOIN dashboard_uploads AS uploads ON uploads.id = jobs.source_id
             WHERE lower(uploads.original_filename) = lower(?)
@@ -225,13 +239,76 @@ def _existing_panel_attempts(
         return [
             {
                 "job_id": str(row["id"]),
-                "status": str(row["status"]),
-                "phase": str(row["phase"]),
+                "status": str(row["status"]).lower(),
+                "phase": str(row["phase"]).lower(),
+                "source_sha256": str(row["source_sha256"]),
             }
             for row in rows
         ]
     finally:
         connection.close()
+
+
+def _existing_modal_ledger_attempts(
+    database_path: str | Path,
+    source_keys: set[str],
+) -> list[dict[str, Any]]:
+    """Read only the relevant idempotency rows without migrating or creating the ledger."""
+    database = Path(database_path).expanduser().resolve()
+    if not database.is_file() or not source_keys:
+        return []
+    connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=5)
+    connection.row_factory = sqlite3.Row
+    try:
+        table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'processing_jobs'"
+        ).fetchone()
+        if not table:
+            return []
+        placeholders = ",".join("?" for _ in source_keys)
+        rows = connection.execute(
+            f"""SELECT source_sha256, status, attempts
+                FROM processing_jobs
+                WHERE source_sha256 IN ({placeholders})""",
+            tuple(sorted(source_keys)),
+        ).fetchall()
+        return [
+            {
+                "source_sha256": str(row["source_sha256"]),
+                "status": str(row["status"]).lower(),
+                "attempts": int(row["attempts"]),
+            }
+            for row in rows
+        ]
+    finally:
+        connection.close()
+
+
+def _prior_attempt_blockers(
+    panel_attempts: list[dict[str, str]],
+    ledger_attempts: list[dict[str, Any]],
+    *,
+    normalized_source_key: str,
+) -> tuple[list[str], int]:
+    """Allow prior failed jobs only; block active, complete, unknown, and reused one-shot keys."""
+    blockers: list[str] = []
+    failed_panel_attempts = 0
+    for attempt in panel_attempts:
+        status = attempt["status"]
+        phase = attempt["phase"]
+        if status == "failed" and "unknown" not in phase:
+            failed_panel_attempts += 1
+        else:
+            blockers.append(f"panel_job_{status or 'unknown'}")
+
+    for attempt in ledger_attempts:
+        status = attempt["status"]
+        if attempt["source_sha256"] == normalized_source_key:
+            blockers.append("normalized_source_already_claimed")
+        elif status != "failed":
+            blockers.append(f"prior_modal_ledger_{status or 'unknown'}")
+
+    return sorted(set(blockers)), failed_panel_attempts
 
 
 def run_normalized_render_once(
@@ -251,7 +328,22 @@ def run_normalized_render_once(
         source_path,
         expected_sha256=expected_sha256,
     )
+    normalized_source_key = hashlib.sha256(
+        f"{source_report['sha256']}:full".encode("utf-8")
+    ).hexdigest()
     previous_attempts = _existing_panel_attempts(panel_database_path)
+    source_hashes = {attempt["source_sha256"] for attempt in previous_attempts}
+    ledger_keys = {
+        hashlib.sha256(f"{source_hash}:full".encode("utf-8")).hexdigest()
+        for source_hash in source_hashes
+    }
+    ledger_keys.add(normalized_source_key)
+    previous_ledger_attempts = _existing_modal_ledger_attempts(ledger_path, ledger_keys)
+    duplicate_blockers, failed_panel_attempts = _prior_attempt_blockers(
+        previous_attempts,
+        previous_ledger_attempts,
+        normalized_source_key=normalized_source_key,
+    )
     budget = enforce_job_budget(video.duration)
     if budget.maximum_usd > MAX_JOB_BUDGET_USD:
         raise RuntimeError("La estimación conservadora supera el límite interno.")
@@ -267,12 +359,7 @@ def run_normalized_render_once(
         blockers.append("Modal no está configurado")
     if not r2_status.get("ready"):
         blockers.append("R2 no está configurado")
-    if previous_attempts:
-        statuses = sorted({item["status"] for item in previous_attempts})
-        blockers.append(
-            f"historial previo del panel para IMG_1254.MOV ({len(previous_attempts)} trabajo(s), "
-            f"estados: {', '.join(statuses)})"
-        )
+    blockers.extend(duplicate_blockers)
     report = {
         "status": "preflight_blocked" if blockers else "preflight_ready",
         "source": source_report,
@@ -287,6 +374,7 @@ def run_normalized_render_once(
         "openai_key_configured": bool(os.getenv("OPENAI_API_KEY")),
         "gemini_key_configured": bool(os.getenv("GEMINI_API_KEY")),
         "preflight_blockers": blockers,
+        "previous_failed_attempts": failed_panel_attempts,
         "external_services_called": [],
         "normalization_reused": True,
         "existing_panel_attempts": len(previous_attempts),
@@ -313,9 +401,7 @@ def run_normalized_render_once(
     modal_client = ModalRenderClient()
     modal_client.ensure_worker_available()
 
-    source_ledger_key = hashlib.sha256(
-        f"{source_report['sha256']}:full".encode("utf-8")
-    ).hexdigest()
+    source_ledger_key = normalized_source_key
     edit_options = dict(EDIT_OPTIONS)
     ledger = ProcessingLedger(ledger_path)
     ledger.claim(
