@@ -705,6 +705,53 @@ class LocalMediaTests(unittest.TestCase):
         self.assertEqual(info.dolby_vision_compatibility_id, 4)
         self.assertTrue(info.dolby_vision_rpu_present)
 
+    def test_probe_uses_legacy_compatible_ffprobe_syntax_and_optional_metadata(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "clip.mp4"
+            source.write_bytes(b"fixture bytes")
+            ffprobe_output = {
+                "format": {"format_name": "mov,mp4"},
+                "streams": [
+                    {
+                        "codec_type": "video",
+                        "codec_name": "h264",
+                        "width": 1080,
+                        "height": 1920,
+                        "duration": "2.5",
+                        "avg_frame_rate": "30/1",
+                        "pix_fmt": "yuv420p",
+                    },
+                    {"codec_type": "audio", "codec_name": "aac"},
+                ],
+            }
+            with patch(
+                "video_pipeline.media.subprocess.run",
+                return_value=Mock(stdout=json.dumps(ffprobe_output)),
+            ) as ffprobe:
+                info = probe_video(source)
+
+        command = ffprobe.call_args.args[0]
+        self.assertIn("-show_streams", command)
+        self.assertIn("-show_format", command)
+        self.assertNotIn("-show_entries", command)
+        self.assertNotIn("stream_side_data", " ".join(command))
+        self.assertEqual(info.duration, 2.5)
+        self.assertEqual(info.size_bytes, len(b"fixture bytes"))
+        self.assertEqual(info.container, "mov,mp4")
+        self.assertEqual(info.video_codec, "h264")
+        self.assertEqual(info.audio_codec, "aac")
+        self.assertEqual((info.width, info.height), (1080, 1920))
+        self.assertEqual(info.fps, 30)
+        self.assertEqual(info.rotation, 0)
+        self.assertIsNone(info.color_primaries)
+        self.assertIsNone(info.color_transfer)
+        self.assertIsNone(info.color_space)
+        self.assertIsNone(info.color_range)
+        self.assertIsNone(info.dolby_vision_profile)
+        self.assertIsNone(info.dolby_vision_level)
+        self.assertIsNone(info.dolby_vision_compatibility_id)
+        self.assertIsNone(info.dolby_vision_rpu_present)
+
     def test_extracts_long_source_into_bounded_audio_chunks_with_absolute_offsets(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

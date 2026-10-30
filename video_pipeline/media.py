@@ -30,13 +30,11 @@ def probe_video(path: str | Path) -> VideoInfo:
 
     command = [
         "ffprobe", "-v", "error",
-        "-show_entries",
-        "format=duration,size,format_name,bit_rate:"
-        "stream=codec_type,codec_name,width,height,r_frame_rate,pix_fmt,profile,"
-        "color_primaries,color_transfer,color_space,color_range,bit_rate:"
-        "stream_tags=rotate:"
-        "stream_side_data=rotation,side_data_type,dv_profile,dv_level,"
-        "rpu_present_flag,dv_bl_signal_compatibility_id",
+        # -show_streams/-show_format are supported by older production builds.
+        # Do not select the newer stream_side_data section: older ffprobe
+        # versions reject the whole command instead of omitting that metadata.
+        "-show_streams",
+        "-show_format",
         "-of", "json", str(video),
     ]
     try:
@@ -56,7 +54,12 @@ def probe_video(path: str | Path) -> VideoInfo:
     video_stream = next((stream for stream in streams if stream.get("codec_type") == "video"), None)
     if not video_stream:
         raise MediaError("The video file contains no video stream.")
-    duration = float(probe.get("format", {}).get("duration") or 0)
+    format_info = probe.get("format") or {}
+    duration = float(
+        format_info.get("duration")
+        or video_stream.get("duration")
+        or 0
+    )
     if duration <= 0:
         raise MediaError("The video file has no valid duration.")
 
@@ -79,7 +82,11 @@ def probe_video(path: str | Path) -> VideoInfo:
     height = int(video_stream.get("height") or 0)
     if rotation in {90, 270}:
         width, height = height, width
-    rate = str(video_stream.get("r_frame_rate", "0/1")).split("/", 1)
+    rate = str(
+        video_stream.get("r_frame_rate")
+        or video_stream.get("avg_frame_rate")
+        or "0/1"
+    ).split("/", 1)
     try:
         fps = float(rate[0]) / float(rate[1]) if len(rate) == 2 and float(rate[1]) else 0.0
     except (TypeError, ValueError, ZeroDivisionError):
@@ -89,7 +96,7 @@ def probe_video(path: str | Path) -> VideoInfo:
     except (TypeError, ValueError):
         video_bit_rate = None
     try:
-        format_bit_rate = int(probe.get("format", {}).get("bit_rate") or 0) or None
+        format_bit_rate = int(format_info.get("bit_rate") or 0) or None
     except (TypeError, ValueError):
         format_bit_rate = None
     dolby_vision = next(
@@ -116,14 +123,14 @@ def probe_video(path: str | Path) -> VideoInfo:
         video_codec=str(video_stream.get("codec_name") or "unknown"),
         audio_codec=str(audio_stream.get("codec_name")) if audio_stream else None,
         fps=fps,
-        size_bytes=int(probe.get("format", {}).get("size") or video.stat().st_size),
+        size_bytes=int(format_info.get("size") or video.stat().st_size),
         rotation=rotation,
         pixel_format=str(video_stream.get("pix_fmt") or "unknown"),
         color_primaries=video_stream.get("color_primaries"),
         color_transfer=video_stream.get("color_transfer"),
         color_space=video_stream.get("color_space"),
         color_range=video_stream.get("color_range"),
-        container=str(probe.get("format", {}).get("format_name") or "unknown"),
+        container=str(format_info.get("format_name") or "unknown"),
         video_bit_rate_bps=video_bit_rate,
         format_bit_rate_bps=format_bit_rate,
         dolby_vision_profile=optional_int(dolby_vision.get("dv_profile")),
