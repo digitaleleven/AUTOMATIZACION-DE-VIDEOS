@@ -2002,7 +2002,7 @@ class VideoPanelApiTests(unittest.TestCase):
             })
         self.assertIn("2160 × 3840", str(blocked.exception))
 
-    def test_4k_source_defaults_to_4k_and_60_fps_without_external_calls(self):
+    def test_4k_source_defaults_to_4k_and_30_fps_without_external_calls(self):
         status, response = self.upload(self.create_movie(".mp4"))
         self.assertEqual(status, 201)
         source = SimpleNamespace(
@@ -2027,10 +2027,83 @@ class VideoPanelApiTests(unittest.TestCase):
             (proposal["edit"]["output_width"], proposal["edit"]["output_height"]),
             (2160, 3840),
         )
-        self.assertEqual(proposal["edit"]["output_fps"], 60)
+        self.assertEqual(proposal["edit"]["output_fps"], 30)
         self.assertIn("2160 × 3840", proposal["edit"]["higher_resolution_note"])
-        self.assertTrue(any("2160 × 3840 a 60 FPS" in item for item in proposal["warnings"]))
+        self.assertTrue(any("2160 × 3840 a 30 FPS" in item for item in proposal["warnings"]))
         self.assertEqual(proposal["api_plan"]["external_services_called_during_proposal"], [])
+
+    def test_4k_master_rejects_non_30_fps(self):
+        status, response = self.upload(self.create_movie(".mp4"))
+        self.assertEqual(status, 201)
+        source = SimpleNamespace(
+            width=2160,
+            height=3840,
+            duration=59.98,
+            video_codec="hevc",
+            audio_codec="aac",
+            fps=60.0,
+            video_bit_rate_bps=20_000_000,
+            format_bit_rate_bps=22_000_000,
+            has_audio=True,
+            rotation=0,
+        )
+        with patch("video_pipeline.webapp.probe_video", return_value=source):
+            with self.assertRaisesRegex(PanelError, "2160p requiere exactamente 30 FPS"):
+                self.panel.prepare_proposal({
+                    "source_id": response["item"]["id"],
+                    "subtitle_mode": "none",
+                    "output_profile": "2160p",
+                    "output_fps": 60,
+                })
+
+    def test_4k_source_cannot_be_downgraded_to_1080p(self):
+        status, response = self.upload(self.create_movie(".mp4"))
+        self.assertEqual(status, 201)
+        source = SimpleNamespace(
+            width=2160,
+            height=3840,
+            duration=59.98,
+            video_codec="hevc",
+            audio_codec="aac",
+            fps=60.0,
+            video_bit_rate_bps=20_000_000,
+            format_bit_rate_bps=22_000_000,
+            has_audio=True,
+            rotation=0,
+        )
+        with patch("video_pipeline.webapp.probe_video", return_value=source):
+            with self.assertRaisesRegex(PanelError, "requiere una salida máster de 2160 × 3840"):
+                self.panel.prepare_proposal({
+                    "source_id": response["item"]["id"],
+                    "subtitle_mode": "none",
+                    "output_profile": "1080p",
+                })
+
+    def test_rotated_4k_source_uses_display_dimensions_for_master_profile(self):
+        status, response = self.upload(self.create_movie(".mov"))
+        self.assertEqual(status, 201)
+        source = SimpleNamespace(
+            width=3840,
+            height=2160,
+            duration=59.98,
+            video_codec="hevc",
+            audio_codec="aac",
+            fps=60.0,
+            video_bit_rate_bps=20_000_000,
+            format_bit_rate_bps=22_000_000,
+            has_audio=True,
+            rotation=90,
+        )
+        with patch("video_pipeline.webapp.probe_video", return_value=source):
+            proposal = self.panel.prepare_proposal({
+                "source_id": response["item"]["id"],
+                "subtitle_mode": "none",
+            })
+        self.assertEqual(proposal["edit"]["output_profile"], "2160p")
+        self.assertEqual(
+            (proposal["edit"]["output_width"], proposal["edit"]["output_height"], proposal["edit"]["output_fps"]),
+            (2160, 3840, 30),
+        )
 
     def test_render_requires_approved_single_use_local_proposal(self):
         status, response = self.upload(self.create_movie(".mp4"))

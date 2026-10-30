@@ -13,31 +13,40 @@ from video_pipeline.modal_render_app import validate_worker_render_profile
 
 
 class ModalWorkerProfileTests(unittest.TestCase):
-    def test_accepts_4k_60_for_a_4k_master(self):
+    def test_accepts_4k_30_for_a_4k_master(self):
         self.assertEqual(
             validate_worker_render_profile(
                 {
                     "output_width": 2160,
                     "output_height": 3840,
-                    "output_fps": 60,
+                    "output_fps": 30,
                 },
                 source_width=2160,
                 source_height=3840,
             ),
-            (2160, 3840, 60),
+            (2160, 3840, 30),
         )
 
-    def test_rejects_4k_upscale_and_fps_above_60(self):
+    def test_rejects_4k_upscale_and_non_30_fps_master(self):
         profile = {
             "output_width": 2160,
             "output_height": 3840,
-            "output_fps": 60,
+            "output_fps": 30,
         }
         with self.assertRaisesRegex(ValueError, "requiere una fuente maestra vertical"):
             validate_worker_render_profile(profile, source_width=1080, source_height=1920)
+        profile["output_fps"] = 60
+        with self.assertRaisesRegex(ValueError, "exactamente 30 FPS"):
+            validate_worker_render_profile(profile, source_width=2160, source_height=3840)
         profile["output_fps"] = 61
         with self.assertRaisesRegex(ValueError, "25, 30, 50 o 60"):
             validate_worker_render_profile(profile, source_width=2160, source_height=3840)
+        with self.assertRaisesRegex(ValueError, "no se puede reducir"):
+            validate_worker_render_profile(
+                {"output_width": 1080, "output_height": 1920, "output_fps": 30},
+                source_width=2160,
+                source_height=3840,
+            )
 
 
 class FakeBatch:
@@ -302,6 +311,95 @@ class ModalRenderClientTests(unittest.TestCase):
         manifest = json.loads(volume.uploads[f"/jobs/{job_id}/manifest.json"])
         self.assertEqual(manifest["normalized_proxy_path"], cache_path)
 
+    def test_4k_normalization_uses_verified_4k_profile_and_one_normalize_call(self):
+        source, _effects, _plan, _transcript, job_id, _output, volume, sdk = _input_bundle(
+            self.root, b"render-result"
+        )
+        proxy = b"verified-4k-normalized-proxy"
+        source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+        profile_id = modal_renderer.MASTER_4K_NORMALIZATION_PROFILE_ID
+        cache_path = f"normalized-cache/{source_hash}/{profile_id}/proxy.mp4"
+        sdk.results_by_operation["normalize"] = {
+            "job_id": job_id,
+            "normalized_proxy_path": cache_path,
+            "source_sha256": source_hash,
+            "profile_id": profile_id,
+            "proxy_sha256": hashlib.sha256(proxy).hexdigest(),
+            "proxy_size_bytes": len(proxy),
+            "duration_seconds": 59.98,
+            "profile": {
+                "width": 2160, "height": 3840, "fps": 30,
+                "codec": "h264", "pixel_format": "yuv420p", "color_range": "tv",
+                "color_primaries": "bt709", "color_transfer": "bt709",
+                "color_space": "bt709", "audio_codec": "aac",
+                "audio_sample_rate": 48000, "audio_channels": 2,
+                "duration_seconds": 59.98,
+            },
+            "capabilities": {"ffmpeg_version": "ffmpeg test"},
+            "cache_hit": False,
+            "processing_seconds": 42.0,
+        }
+        volume.files[cache_path] = proxy
+        client = modal_renderer.ModalRenderClient(sdk)
+        source_profile = SimpleNamespace(
+            width=3840,
+            height=2160,
+            duration=59.98,
+            rotation=90,
+            color_range="tv",
+            color_primaries="bt2020",
+            color_transfer="arib-std-b67",
+            color_space="bt2020nc",
+        )
+        with (
+            patch.object(modal_renderer, "modal_configuration_status", return_value=_modal_status()),
+            patch("video_pipeline.media.probe_video", return_value=source_profile),
+        ):
+            result = client.normalize_input(
+                job_id=job_id,
+                input_path=source,
+                output_path=self.root / "normalized-4k.mp4",
+                profile_id=profile_id,
+            )
+
+        self.assertEqual(result.profile_id, profile_id)
+        self.assertEqual((result.profile["width"], result.profile["height"], result.profile["fps"]),
+                         (2160, 3840, 30))
+        self.assertEqual(sdk.remote_calls, [(job_id, "normalize")])
+        self.assertEqual(result.remote_processing_seconds, 42.0)
+
+    def test_4k_normalization_budget_block_happens_before_modal_access(self):
+        source, _effects, _plan, _transcript, job_id, _output, volume, sdk = _input_bundle(
+            self.root, b"render-result"
+        )
+        source_profile = SimpleNamespace(
+            width=2160,
+            height=3840,
+            duration=59.98,
+            rotation=0,
+            color_range="tv",
+            color_primaries="bt2020",
+            color_transfer="arib-std-b67",
+            color_space="bt2020nc",
+        )
+        with (
+            patch(
+                "video_pipeline.cost_controls.enforce_4k_normalization_budget",
+                side_effect=RuntimeError("budget-block"),
+            ),
+            patch.object(modal_renderer, "modal_configuration_status", return_value=_modal_status()),
+            patch("video_pipeline.media.probe_video", return_value=source_profile),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "budget-block"):
+                modal_renderer.ModalRenderClient(sdk).normalize_input(
+                    job_id=job_id,
+                    input_path=source,
+                    output_path=self.root / "normalized-4k-blocked.mp4",
+                    profile_id=modal_renderer.MASTER_4K_NORMALIZATION_PROFILE_ID,
+                )
+        self.assertEqual(sdk.remote_calls, [])
+        self.assertEqual(volume.uploads, {})
+
     def test_cleanup_removes_only_job_staging_and_preserves_cache_path(self):
         volume = FakeVolume(b"unused")
         volume.job_id = "c" * 32
@@ -371,11 +469,39 @@ class ModalRenderClientTests(unittest.TestCase):
         self.assertNotIn("normalized_proxy_path", render_manifest)
         self.assertEqual(volume.uploads[f"/jobs/{job_id}/source.mov"], b"unmodified original bytes")
 
-    def test_render_client_accepts_4k_60_and_passes_profile_to_worker(self):
+    def test_1080_analysis_proxy_is_not_attached_to_4k_master_render(self):
+        source, effects, plan, transcript, job_id, output, volume, sdk = _input_bundle(
+            self.root, b"full-4k-render-result", profile=(2160, 3840, 30)
+        )
+        source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+        client = modal_renderer.ModalRenderClient(sdk)
+        client._normalized_jobs[job_id] = {
+            "source_sha256": source_hash,
+            "profile_id": modal_renderer.NORMALIZATION_PROFILE_ID,
+            "remote_proxy_path": "normalized-cache/" + source_hash + "/1080/proxy.mp4",
+            "proxy_sha256": "a" * 64,
+            "width": 1080,
+            "height": 1920,
+        }
+        with patch.object(modal_renderer, "modal_configuration_status", return_value=_modal_status()):
+            client.render(
+                job_id=job_id,
+                input_path=source,
+                transcript=transcript,
+                plan=plan,
+                effects_dir=effects,
+                output_path=output,
+                show_subtitles=False,
+            )
+        manifest = json.loads(volume.uploads[f"/jobs/{job_id}/manifest.json"])
+        self.assertNotIn("normalized_proxy_path", manifest)
+        self.assertEqual(volume.uploads[f"/jobs/{job_id}/source.mov"], b"unmodified original bytes")
+
+    def test_render_client_accepts_4k_30_and_passes_profile_to_worker(self):
         source, effects, plan, transcript, job_id, output, volume, sdk = _input_bundle(
             self.root,
             b"verified-4k-mp4",
-            profile=(2160, 3840, 60),
+            profile=(2160, 3840, 30),
         )
         with patch.object(modal_renderer, "modal_configuration_status", return_value=_modal_status()):
             result = modal_renderer.ModalRenderClient(sdk).render(
@@ -387,11 +513,11 @@ class ModalRenderClientTests(unittest.TestCase):
                 output_path=output,
                 show_subtitles=False,
             )
-        self.assertEqual((result.width, result.height, result.fps), (2160, 3840, 60))
+        self.assertEqual((result.width, result.height, result.fps), (2160, 3840, 30))
         worker_plan = json.loads(volume.uploads[f"/jobs/{job_id}/plan.json"])
         self.assertEqual(
             (worker_plan["output_width"], worker_plan["output_height"], worker_plan["output_fps"]),
-            (2160, 3840, 60),
+            (2160, 3840, 30),
         )
 
     def test_rejects_invalid_job_and_existing_output_without_calling_modal(self):

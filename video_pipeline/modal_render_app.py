@@ -434,6 +434,12 @@ def validate_worker_render_profile(
         source_width < 2160 or source_height < 3840
     ):
         raise ValueError("La salida 2160p requiere una fuente maestra vertical de 2160 × 3840 o superior.")
+    if source_width >= 2160 and source_height >= 3840 and (
+        (width, height) != _WORKER_OUTPUT_PROFILES["2160p"]
+    ):
+        raise ValueError("Una fuente maestra 4K no se puede reducir en este perfil de producción.")
+    if (width, height) == _WORKER_OUTPUT_PROFILES["2160p"] and fps != 30:
+        raise ValueError("El perfil máster 2160p requiere exactamente 30 FPS.")
     return width, height, fps
 
 

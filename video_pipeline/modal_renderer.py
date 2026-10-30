@@ -238,6 +238,36 @@ class ModalRenderClient:
         if profile_spec is None:
             raise ValueError("Perfil de normalización Modal no admitido.")
         if profile_id == MASTER_4K_NORMALIZATION_PROFILE_ID:
+            from .media import probe_video
+
+            source_profile = probe_video(source)
+            is_hlg = (
+                source_profile.color_range == "tv"
+                and source_profile.color_primaries == "bt2020"
+                and source_profile.color_transfer == "arib-std-b67"
+                and source_profile.color_space == "bt2020nc"
+            )
+            is_sdr_bt709 = (
+                source_profile.color_range in {"tv", "pc"}
+                and source_profile.color_primaries == "bt709"
+                and source_profile.color_transfer == "bt709"
+                and source_profile.color_space == "bt709"
+            )
+            display_width, display_height = source_profile.width, source_profile.height
+            if abs(int(round(source_profile.rotation or 0))) % 180 == 90:
+                display_width, display_height = display_height, display_width
+            if (
+                display_width < 2160
+                or display_height < 3840
+                or abs(source_profile.duration - 59.98) > 0.5
+            ):
+                raise ValueError(
+                    "La normalización máster 4K requiere el original vertical 2160×3840 de 59,98 s."
+                )
+            if not (is_hlg or is_sdr_bt709):
+                raise ValueError(
+                    "La entrada debe tener etiquetas explícitas HLG BT.2020 limitada o SDR BT.709."
+                )
             from .cost_controls import enforce_4k_normalization_budget
 
             enforce_4k_normalization_budget()
@@ -373,7 +403,7 @@ class ModalRenderClient:
             size_bytes=size,
             sha256=digest.hexdigest(),
             source_sha256=source_sha256,
-            profile_id=NORMALIZATION_PROFILE_ID,
+            profile_id=profile_id,
             remote_proxy_path=remote_proxy_path,
             cache_hit=bool(cache_result.get("cache_hit")),
             remote_processing_seconds=(
@@ -449,6 +479,8 @@ class ModalRenderClient:
             )
         except StyleConfigError as exc:
             raise ValueError(str(exc)) from None
+        if (expected_width, expected_height) == (2160, 3840) and expected_fps != 30:
+            raise ValueError("El perfil máster 2160p requiere exactamente 30 FPS.")
         if not isinstance(show_subtitles, bool):
             raise ValueError("La opción de subtítulos debe ser booleana.")
         if not isinstance(briefing, str) or len(briefing) > 4000:
