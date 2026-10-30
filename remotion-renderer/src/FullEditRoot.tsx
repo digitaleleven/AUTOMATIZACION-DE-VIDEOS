@@ -67,6 +67,12 @@ export type SourceVideoSegment = {
   outputStart: number;
 };
 
+export type ZoomWindow = {
+  startFrame: number;
+  endFrame: number;
+  effect?: "zoomIn" | "zoomOut";
+};
+
 type FullEditProps = {
   width: number;
   height: number;
@@ -83,6 +89,7 @@ type FullEditProps = {
   videoSegments: SourceVideoSegment[];
   sceneCutFrames: number[];
   reframeFrames: number[];
+  zoomWindows: ZoomWindow[];
   promoText: string | null;
   imageOverlays: TimedImageOverlay[];
   cardOverlays: TimedCardOverlay[];
@@ -206,9 +213,10 @@ const SourceVideoBackground: FC<{
   segments: SourceVideoSegment[];
   sceneCutFrames: number[];
   reframeFrames: number[];
-}> = ({ asset, segments, sceneCutFrames, reframeFrames }) => {
+  zoomWindows: ZoomWindow[];
+}> = ({ asset, segments, sceneCutFrames, reframeFrames, zoomWindows }) => {
   const frame = useCurrentFrame();
-  const scale = cameraScaleAtFrame(frame, reframeFrames);
+  const scale = cameraScaleAtFrame(frame, reframeFrames, 12, 1.06, zoomWindows);
   const videoTrack = (
     <AbsoluteFill style={{ overflow: "hidden", backgroundColor: "#000000" }}>
       {segments.map((segment) => (
@@ -422,6 +430,7 @@ const FullEdit: FC<FullEditProps> = ({
   videoSegments,
   sceneCutFrames,
   reframeFrames,
+  zoomWindows,
   promoText,
   imageOverlays,
   cardOverlays,
@@ -434,6 +443,7 @@ const FullEdit: FC<FullEditProps> = ({
         segments={videoSegments}
         sceneCutFrames={sceneCutFrames}
         reframeFrames={reframeFrames}
+        zoomWindows={zoomWindows}
       />
     )}
     <div
@@ -521,6 +531,7 @@ export const FullRemotionRoot: FC = () => (
       videoSegments: [],
       sceneCutFrames: [],
       reframeFrames: [],
+      zoomWindows: [],
       promoText: null,
       imageOverlays: [],
       cardOverlays: [],

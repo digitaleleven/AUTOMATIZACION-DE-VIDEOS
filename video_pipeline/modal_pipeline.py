@@ -14,7 +14,14 @@ import subprocess
 from typing import Any
 
 from .config import PipelineConfig
-from .edit_plan import EditPlanError, edited_duration, normalize_edit_plan, sticker_svg
+from .edit_plan import (
+    EditPlanError,
+    edited_duration,
+    map_source_time_to_output,
+    normalize_edit_plan,
+    retained_source_ranges,
+    sticker_svg,
+)
 from .media import probe_video, temporary_work_directory, validate_rendered_output
 from .models import WordTiming
 from .modal_renderer import ModalRenderClient
@@ -241,11 +248,6 @@ def process_local_video_modal(
         plan = normalize_edit_plan(creative_plan, video.duration)
     except EditPlanError as exc:
         raise ValueError(str(exc)) from None
-    if plan["zooms"]:
-        raise ValueError(
-            "Los zooms manuales aún no están soportados por el motor Remotion en Modal. "
-            "El montaje conserva el reencuadre suave automático; no se ignoró el zoom solicitado."
-        )
 
     if (
         subtitle_mode == "dynamic"
@@ -302,11 +304,26 @@ def process_local_video_modal(
     transcript = _render_transcript_payload(words)
     effect_cues = []
     for sticker in plan["stickers"]:
+        source_end = sticker["start_seconds"] + sticker["duration_seconds"]
+        retained = retained_source_ranges(
+            sticker["start_seconds"],
+            source_end,
+            plan["cuts"],
+        )
+        if (
+            len(retained) != 1
+            or abs(retained[0][0] - sticker["start_seconds"]) > 0.01
+            or abs(retained[0][1] - source_end) > 0.01
+        ):
+            continue
         name = sticker["sticker"]
         effect_cues.append(
             {
                 "effect": name,
-                "start_seconds": sticker["start_seconds"],
+                "start_seconds": round(
+                    map_source_time_to_output(sticker["start_seconds"], plan["cuts"]),
+                    3,
+                ),
                 "duration_seconds": sticker["duration_seconds"],
                 "position": sticker["position"],
                 "assets": [name],
@@ -314,6 +331,7 @@ def process_local_video_modal(
         )
     modal_plan = {
         "cuts": plan["cuts"],
+        "zooms": plan["zooms"],
         "effect_cues": effect_cues,
         "expected_output_duration_seconds": expected_duration,
         "output_width": expected_style.output_width,

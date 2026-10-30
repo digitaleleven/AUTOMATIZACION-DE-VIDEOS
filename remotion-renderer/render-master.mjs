@@ -32,7 +32,6 @@ import {
   buildJumpFrames,
   buildMasterFilterComplex,
   buildSoundEffectCues,
-  buildZoompanFilter,
 } from "./src/master-assembly.mjs";
 import {
   MASTER_OVERLAY_PROFILE,
@@ -259,8 +258,12 @@ try {
   }
 
   const plan = JSON.parse(await readFile(planPath, "utf8"));
-  if (!Array.isArray(plan.cuts) || !Array.isArray(plan.effect_cues)) {
-    throw new Error("El plan debe incluir cortes y señales de elementos vectoriales.");
+  if (
+    !Array.isArray(plan.cuts) ||
+    !Array.isArray(plan.effect_cues) ||
+    (plan.zooms !== undefined && !Array.isArray(plan.zooms))
+  ) {
+    throw new Error("El plan debe incluir cortes, zooms y señales vectoriales válidos.");
   }
   const inputProbe = await probe(inputPath);
   const inputVideo = inputProbe.streams?.find((stream) => stream.codec_type === "video");
@@ -312,6 +315,27 @@ try {
 
   const sourceFrames = Math.round(sourceDuration * FULL_FPS);
   const clips = buildKeepSegments(sourceFrames, plan.cuts, FULL_FPS);
+  const zoomWindows = (plan.zooms ?? []).flatMap((zoom, index) => {
+    const sourceStart = Math.round(Number(zoom?.start_seconds) * FULL_FPS);
+    const sourceEnd = Math.round(Number(zoom?.end_seconds) * FULL_FPS);
+    if (
+      !Number.isInteger(sourceStart) || !Number.isInteger(sourceEnd) ||
+      sourceStart < 0 || sourceEnd <= sourceStart || sourceEnd > sourceFrames ||
+      !["zoomIn", "zoomOut"].includes(zoom?.effect)
+    ) {
+      throw new Error(`La ventana de zoom ${index + 1} no es válida para este montaje.`);
+    }
+    return clips.flatMap((clip) => {
+      const startFrame = Math.max(sourceStart, clip.sourceStart);
+      const endFrame = Math.min(sourceEnd, clip.sourceStart + clip.frames);
+      if (endFrame <= startFrame) return [];
+      return [{
+        startFrame: clip.outputStart + startFrame - clip.sourceStart,
+        endFrame: clip.outputStart + endFrame - clip.sourceStart,
+        effect: zoom.effect,
+      }];
+    });
+  });
   const durationInFrames = clips.reduce((sum, clip) => sum + clip.frames, 0);
   const expectedFrames = Math.round(Number(plan.expected_output_duration_seconds) * FULL_FPS);
   if (
@@ -426,11 +450,9 @@ try {
     width: FULL_WIDTH,
     height: FULL_HEIGHT,
   });
-  const sourceVideoFilter = `${colorFilter},${buildZoompanFilter(jumpFrames, {
-    width: FULL_WIDTH,
-    height: FULL_HEIGHT,
-    fps: FULL_FPS,
-  })}`;
+  // Color/scale are baked into the proxy once. Remotion owns all camera scaling,
+  // avoiding a second 1.06x zoom in the FFmpeg preprocessing pass.
+  const sourceVideoFilter = colorFilter;
   const videoSegments = clips
     .filter((clip) => clip.outputStart < renderFrameCount)
     .map((clip) => ({
@@ -548,6 +570,7 @@ try {
     videoSegments,
     sceneCutFrames,
     reframeFrames: jumpFrames,
+    zoomWindows,
     promoText: creativeOverlays.promo?.text ?? null,
     imageOverlays: creativeOverlays.images,
     cardOverlays: creativeOverlays.cards,
@@ -727,6 +750,7 @@ try {
         soundEffects: soundEffectsInRender,
         scheduledSoundEffects: soundEffects.length,
         jumpFrames,
+        plannedZoomWindows: zoomWindows,
         zoom: "reencuadres 1.00x → 1.06x → 1.00x con smoothstep en frases/productos; sin salto inicial",
       },
       stage2: {

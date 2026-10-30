@@ -2,7 +2,9 @@
 
 import json
 import logging
+import math
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 from collections.abc import Iterator
@@ -19,6 +21,168 @@ class MediaError(RuntimeError):
 
 class OutputValidationError(MediaError):
     """Raised when a rendered MP4 does not meet the configured output contract."""
+
+
+_SILENCE_START = re.compile(r"\bsilence_start:\s*(-?\d+(?:\.\d+)?)")
+_SILENCE_END = re.compile(r"\bsilence_end:\s*(-?\d+(?:\.\d+)?)")
+
+
+def parse_silence_intervals(
+    stderr: str,
+    duration: float,
+    *,
+    min_silence_seconds: float = 0.75,
+) -> list[dict[str, float]]:
+    """Parse FFmpeg silencedetect events into validated source-time intervals."""
+    if not math.isfinite(duration) or duration <= 0:
+        raise ValueError("La duración del audio debe ser positiva y finita.")
+    pending_start: float | None = None
+    intervals: list[dict[str, float]] = []
+    for line in stderr.splitlines():
+        start_match = _SILENCE_START.search(line)
+        if start_match:
+            pending_start = max(0.0, min(duration, float(start_match.group(1))))
+            continue
+        end_match = _SILENCE_END.search(line)
+        if end_match and pending_start is not None:
+            end = max(pending_start, min(duration, float(end_match.group(1))))
+            if end - pending_start >= min_silence_seconds:
+                intervals.append({
+                    "start_seconds": round(pending_start, 3),
+                    "end_seconds": round(end, 3),
+                })
+            pending_start = None
+    if pending_start is not None:
+        end = duration
+        if end - pending_start >= min_silence_seconds:
+            intervals.append({
+                "start_seconds": round(pending_start, 3),
+                "end_seconds": round(end, 3),
+            })
+    return intervals
+
+
+def detect_silence_cut_suggestions(
+    path: str | Path,
+    duration: float,
+    word_timings: list | None = None,
+    *,
+    noise_threshold_db: int = -38,
+    min_silence_seconds: float = 0.75,
+    edge_padding_seconds: float = 0.16,
+    min_cut_seconds: float = 0.35,
+    max_removed_ratio: float = 0.12,
+    max_cuts: int = 12,
+) -> list[dict[str, float]]:
+    """Detect long low-energy pauses locally, preserving transcript-adjacent audio.
+
+    This is an analysis-only FFmpeg pass; it does not encode or modify the input.
+    The resulting ranges are candidates for removal, not evidence that speech is
+    absent. Word timings are protected with a margin before candidates are made.
+    """
+    source = Path(path).expanduser().resolve()
+    if not source.is_file():
+        raise MediaError(f"Audio analysis input does not exist: {source.name}")
+    if (
+        not math.isfinite(duration) or duration <= 0 or
+        isinstance(noise_threshold_db, bool) or not -90 <= noise_threshold_db <= -10 or
+        min_silence_seconds <= 0 or edge_padding_seconds < 0 or
+        min_cut_seconds <= 0 or not 0 < max_removed_ratio <= 0.5 or
+        not isinstance(max_cuts, int) or max_cuts < 1
+    ):
+        raise ValueError("La configuración de detección de silencios no es válida.")
+    command = [
+        "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "info",
+        "-i", str(source), "-map", "0:a:0", "-vn",
+        "-af", f"silencedetect=noise={noise_threshold_db}dB:d={min_silence_seconds:.3f}",
+        "-f", "null", "-",
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=max(120, min(3600, int(duration * 8 + 60))),
+        )
+    except FileNotFoundError as exc:
+        raise MediaError("ffmpeg is required but was not found on PATH.") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise MediaError("FFmpeg timed out while detecting long silent pauses.") from exc
+    except subprocess.CalledProcessError as exc:
+        logger.error("FFmpeg silence detection failed: %s", (exc.stderr or "")[-2000:])
+        raise MediaError("Could not analyze source audio for silent pauses.") from exc
+
+    silences = parse_silence_intervals(
+        result.stderr,
+        duration,
+        min_silence_seconds=min_silence_seconds,
+    )
+    protected: list[tuple[float, float]] = []
+    for word in word_timings or []:
+        start = getattr(word, "start", None)
+        end = getattr(word, "end", None)
+        if start is None and isinstance(word, dict):
+            start = word.get("start")
+            end = word.get("end")
+        try:
+            start_value, end_value = float(start), float(end)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(start_value) and math.isfinite(end_value) and end_value > start_value:
+            protected.append((
+                max(0.0, start_value - edge_padding_seconds),
+                min(duration, end_value + edge_padding_seconds),
+            ))
+    protected.sort()
+
+    candidates: list[dict[str, float]] = []
+    for silence in silences:
+        start = silence["start_seconds"] + edge_padding_seconds
+        end = silence["end_seconds"] - edge_padding_seconds
+        pieces = [(start, end)]
+        for protected_start, protected_end in protected:
+            next_pieces: list[tuple[float, float]] = []
+            for left, right in pieces:
+                if protected_end <= left or protected_start >= right:
+                    next_pieces.append((left, right))
+                    continue
+                if protected_start > left:
+                    next_pieces.append((left, protected_start))
+                if protected_end < right:
+                    next_pieces.append((protected_end, right))
+            pieces = next_pieces
+        for left, right in pieces:
+            if right - left >= min_cut_seconds:
+                candidates.append({
+                    "start_seconds": round(left, 3),
+                    "end_seconds": round(right, 3),
+                })
+
+    max_removed = duration * max_removed_ratio
+    selected: list[dict[str, float]] = []
+    removed = 0.0
+    for candidate in sorted(
+        candidates,
+        key=lambda item: item["end_seconds"] - item["start_seconds"],
+        reverse=True,
+    ):
+        if len(selected) >= max_cuts or removed >= max_removed:
+            break
+        length = candidate["end_seconds"] - candidate["start_seconds"]
+        remaining = max_removed - removed
+        if remaining < min_cut_seconds:
+            break
+        if length > remaining:
+            candidate = {
+                "start_seconds": candidate["start_seconds"],
+                "end_seconds": round(candidate["start_seconds"] + remaining, 3),
+            }
+            length = candidate["end_seconds"] - candidate["start_seconds"]
+        if length >= min_cut_seconds:
+            selected.append(candidate)
+            removed += length
+    return sorted(selected, key=lambda item: item["start_seconds"])
 
 
 def probe_video(path: str | Path) -> VideoInfo:

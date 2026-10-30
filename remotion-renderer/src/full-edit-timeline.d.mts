@@ -22,6 +22,7 @@ export function cameraScaleAtFrame(
   reframeFrames?: number[],
   easingFrames?: number,
   maxScale?: number,
+  zoomWindows?: Array<{ startFrame: number; endFrame: number; effect?: "zoomIn" | "zoomOut" }>,
 ): number;
 export function isSceneCutBlurFrame(frame: number, sceneCutFrames: number[]): boolean;
 export function buildKeepSegments(sourceFrames: number, cuts: Array<{ start_seconds: number; end_seconds: number }>, fps?: number): KeepSegment[];

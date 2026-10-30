@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 from video_pipeline.auth import OwnerAuth
 from video_pipeline.google_drive import DriveOAuthConfig, GoogleDriveError, GoogleDriveOAuth
-from video_pipeline.media import probe_video
+from video_pipeline.media import parse_silence_intervals, probe_video
 from video_pipeline.webapp import (
     DashboardStore,
     PanelError,
@@ -28,30 +28,72 @@ from video_pipeline.webapp import (
 
 
 class ModalZoomCompatibilityTests(unittest.TestCase):
-    def test_gemini_zoom_windows_remain_suggestions_for_modal_auto_zoom(self):
+    def test_gemini_zoom_windows_reach_the_modal_render_plan(self):
         suggestions = [{
             "start_seconds": 1.0,
             "end_seconds": 2.5,
             "reason": "momento clave",
         }]
 
-        plan, retained_suggestions, applied = _prepare_modal_render_plan(
+        plan, retained_suggestions, applied, _, _ = _prepare_modal_render_plan(
             {},
             5.0,
             suggestions,
         )
 
-        self.assertEqual(plan["zooms"], [])
+        self.assertEqual(plan["zooms"], [{
+            "start_seconds": 1.0,
+            "end_seconds": 2.5,
+            "effect": "zoomIn",
+        }])
         self.assertEqual(retained_suggestions, suggestions)
+        self.assertEqual(applied[0]["reason"], "momento clave")
+
+    def test_gemini_cuts_are_applied_only_when_audio_confirms_silence(self):
+        suggested = [{
+            "start_seconds": 1.0,
+            "end_seconds": 2.0,
+            "reason": "pausa larga",
+        }]
+        plan, _, _, _, applied = _prepare_modal_render_plan(
+            {},
+            5.0,
+            [],
+            suggested,
+            [{"start_seconds": 1.2, "end_seconds": 1.8}],
+        )
+        self.assertEqual(plan["cuts"], [{"start_seconds": 1.2, "end_seconds": 1.8}])
+        self.assertEqual(applied, [{"start_seconds": 1.2, "end_seconds": 1.8}])
+
+    def test_gemini_cut_without_detected_silence_is_not_applied(self):
+        plan, _, _, _, applied = _prepare_modal_render_plan(
+            {},
+            5.0,
+            [],
+            [{"start_seconds": 1.0, "end_seconds": 2.0, "reason": "pausa"}],
+            [],
+        )
+        self.assertEqual(plan["cuts"], [])
         self.assertEqual(applied, [])
 
-    def test_explicit_timed_zoom_stays_blocked_for_modal(self):
-        with self.assertRaisesRegex(PanelError, "solo admite el auto-zoom suave"):
-            _prepare_modal_render_plan(
-                {"zooms": [{"start_seconds": 1.0, "end_seconds": 2.0}]},
-                5.0,
-                [],
-            )
+    def test_manual_timed_zoom_is_now_valid_for_modal(self):
+        plan, _, _, _, _ = _prepare_modal_render_plan(
+            {"zooms": [{"start_seconds": 1.0, "end_seconds": 2.0, "effect": "zoomOut"}]},
+            5.0,
+        )
+        self.assertEqual(plan["zooms"][0]["effect"], "zoomOut")
+
+    def test_ffmpeg_silence_log_is_parsed_with_open_end_clamped_to_duration(self):
+        intervals = parse_silence_intervals(
+            "[silencedetect] silence_start: 1.25\n"
+            "[silencedetect] silence_end: 2.50 | silence_duration: 1.25\n"
+            "[silencedetect] silence_start: 4.60\n",
+            5.0,
+        )
+        self.assertEqual(intervals, [
+            {"start_seconds": 1.25, "end_seconds": 2.5},
+            {"start_seconds": 4.6, "end_seconds": 5.0},
+        ])
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg tools are required")

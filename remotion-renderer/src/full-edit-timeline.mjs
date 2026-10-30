@@ -4,9 +4,19 @@ export const FULL_HEIGHT = 1920;
 export const FULL_DURATION_IN_FRAMES = 1747;
 export const VECTOR_DURATION_IN_FRAMES = 54;
 
-export function cameraScaleAtFrame(frame, reframeFrames = [], easingFrames = 12, maxScale = 1.06) {
+export function cameraScaleAtFrame(
+  frame,
+  reframeFrames = [],
+  easingFrames = 12,
+  maxScale = 1.06,
+  zoomWindows = [],
+) {
   if (!Number.isFinite(frame) || !Array.isArray(reframeFrames)) return 1;
-  if (!Number.isInteger(easingFrames) || easingFrames <= 0 || !Number.isFinite(maxScale)) {
+  if (
+    !Number.isInteger(easingFrames) || easingFrames <= 0 ||
+    !Number.isFinite(maxScale) || maxScale < 1 || maxScale > 1.06 ||
+    !Array.isArray(zoomWindows)
+  ) {
     throw new Error("La curva de reencuadre no es válida.");
   }
   const smooth = (value) => value * value * (3 - 2 * value);
@@ -19,6 +29,39 @@ export function cameraScaleAtFrame(frame, reframeFrames = [], easingFrames = 12,
     } else if (frame > start + easingFrames && frame <= start + easingFrames * 2) {
       const progress = (frame - start - easingFrames) / easingFrames;
       scale = Math.max(scale, maxScale - (maxScale - 1) * smooth(progress));
+    }
+  }
+  for (const window of zoomWindows) {
+    const startFrame = Number(window?.startFrame);
+    const endFrame = Number(window?.endFrame);
+    if (
+      !Number.isInteger(startFrame) || !Number.isInteger(endFrame) ||
+      startFrame < 0 || endFrame <= startFrame
+    ) {
+      throw new Error("Una ventana de zoom temporizada no es válida.");
+    }
+    const rampFrames = Math.min(easingFrames, Math.floor((endFrame - startFrame) / 2));
+    if (rampFrames <= 0) continue;
+    if (window.effect === "zoomOut") {
+      const preStartFrame = Math.max(0, startFrame - rampFrames);
+      if (frame >= preStartFrame && frame < startFrame) {
+        const progress = (frame - preStartFrame) / Math.max(1, startFrame - preStartFrame);
+        scale = Math.max(scale, 1 + (maxScale - 1) * smooth(progress));
+      } else if (frame >= startFrame && frame <= startFrame + rampFrames) {
+        const progress = (frame - startFrame) / rampFrames;
+        scale = Math.max(scale, maxScale - (maxScale - 1) * smooth(progress));
+      }
+      continue;
+    }
+    if (frame < startFrame || frame > endFrame) continue;
+    if (frame < startFrame + rampFrames) {
+      const progress = (frame - startFrame) / rampFrames;
+      scale = Math.max(scale, 1 + (maxScale - 1) * smooth(progress));
+    } else if (frame > endFrame - rampFrames) {
+      const progress = (frame - (endFrame - rampFrames)) / rampFrames;
+      scale = Math.max(scale, maxScale - (maxScale - 1) * smooth(progress));
+    } else {
+      scale = Math.max(scale, maxScale);
     }
   }
   return scale;

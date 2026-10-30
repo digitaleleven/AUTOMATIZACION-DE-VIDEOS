@@ -47,7 +47,14 @@ from .google_drive import (
     configured_drive_folders,
     parse_style_instructions,
 )
-from .media import MediaError, make_analysis_clip, prepare_video_for_modal, probe_video, temporary_work_directory
+from .media import (
+    MediaError,
+    detect_silence_cut_suggestions,
+    make_analysis_clip,
+    prepare_video_for_modal,
+    probe_video,
+    temporary_work_directory,
+)
 from .edit_plan import EditPlanError, edited_duration, normalize_edit_plan
 from .models import VideoInfo, WordTiming
 from .drive import (
@@ -101,19 +108,101 @@ VIDEO_EDIT_STYLE_LABELS = {
 }
 
 
-def _prepare_modal_render_plan(base_plan, duration, gemini_zoom_suggestions):
-    """Keep Gemini zoom windows as proposals; Modal currently renders its smooth auto-zoom."""
+def _prepare_modal_render_plan(
+    base_plan,
+    duration,
+    gemini_zoom_suggestions=(),
+    gemini_cut_suggestions=(),
+    silence_cut_suggestions=(),
+):
+    """Combine explicit edits with AI cues corroborated by source audio."""
+    manual = normalize_edit_plan(base_plan, duration)
+    silence = normalize_edit_plan(
+        {"cuts": list(silence_cut_suggestions or []), "zooms": [], "stickers": []},
+        duration,
+    )["cuts"]
+    manual_cut_ranges = list(manual["cuts"])
+
+    normalized_ai_cuts = normalize_edit_plan(
+        {
+            "cuts": [
+                {key: value for key, value in cue.items() if key in {"start_seconds", "end_seconds"}}
+                for cue in (gemini_cut_suggestions or [])
+            ],
+            "zooms": [],
+            "stickers": [],
+        },
+        duration,
+    )["cuts"]
+    confirmed_ai_cuts = []
+    for suggestion in normalized_ai_cuts:
+        for pause in silence:
+            start = max(suggestion["start_seconds"], pause["start_seconds"])
+            end = min(suggestion["end_seconds"], pause["end_seconds"])
+            if end - start >= 0.35:
+                confirmed_ai_cuts.append({
+                    "start_seconds": round(start, 3),
+                    "end_seconds": round(end, 3),
+                })
+
+    combined_cuts = sorted(
+        [*manual_cut_ranges, *confirmed_ai_cuts],
+        key=lambda item: item["start_seconds"],
+    )
+    merged_cuts = []
+    for cut in combined_cuts:
+        if merged_cuts and cut["start_seconds"] < merged_cuts[-1]["end_seconds"]:
+            merged_cuts[-1]["end_seconds"] = round(
+                max(merged_cuts[-1]["end_seconds"], cut["end_seconds"]),
+                3,
+            )
+        else:
+            merged_cuts.append(dict(cut))
+
+    manual_zooms = list(manual["zooms"])
+    accepted_zooms = list(manual_zooms)
+    applied_zoom_details = [
+        {**zoom, "source": "manual"}
+        for zoom in manual_zooms
+    ]
+    for suggestion in gemini_zoom_suggestions or []:
+        candidate = {
+            "start_seconds": suggestion.get("start_seconds"),
+            "end_seconds": suggestion.get("end_seconds"),
+            "effect": suggestion.get("effect", "zoomIn"),
+        }
+        normalized_candidate = normalize_edit_plan(
+            {"cuts": [], "zooms": [candidate], "stickers": []},
+            duration,
+        )["zooms"][0]
+        if any(
+            normalized_candidate["start_seconds"] < existing["end_seconds"] and
+            normalized_candidate["end_seconds"] > existing["start_seconds"]
+            for existing in accepted_zooms
+        ):
+            continue
+        if len(accepted_zooms) >= 12:
+            break
+        accepted_zooms.append(normalized_candidate)
+        applied_zoom_details.append({
+            **normalized_candidate,
+            "reason": str(suggestion.get("reason", ""))[:240],
+            "source": "gemini",
+        })
+
     render_plan = {
-        "cuts": list((base_plan or {}).get("cuts") or []),
-        "zooms": list((base_plan or {}).get("zooms") or []),
-        "stickers": list((base_plan or {}).get("stickers") or []),
+        "cuts": merged_cuts,
+        "zooms": accepted_zooms,
+        "stickers": manual["stickers"],
     }
-    if render_plan["zooms"]:
-        raise PanelError(
-            "El motor Modal solo admite el auto-zoom suave integrado, no zooms temporizados."
-        )
     normalized = normalize_edit_plan(render_plan, duration)
-    return normalized, list(gemini_zoom_suggestions or []), []
+    return (
+        normalized,
+        list(gemini_zoom_suggestions or []),
+        applied_zoom_details,
+        list(gemini_cut_suggestions or []),
+        confirmed_ai_cuts,
+    )
 
 
 DEFAULT_VIDEO_NICHE = "generic_viral"
@@ -1726,11 +1815,6 @@ class VideoPanel:
             creative_plan = normalize_edit_plan(payload.get("creative_plan"), video.duration)
         except EditPlanError as exc:
             raise PanelError(str(exc)) from None
-        if render_backend == "modal" and creative_plan["zooms"]:
-            raise PanelError(
-                "Los zooms manuales aún no están soportados por Remotion en Modal; "
-                "el montaje conserva el reencuadre suave automático."
-            )
         if video.video_codec not in ALLOWED_CODECS:
             raise PanelError("El vídeo debe usar H.264 o HEVC/H.265.")
         if video.duration > style.max_video_duration_seconds:
@@ -2375,6 +2459,12 @@ class VideoPanel:
                         model="whisper-1",
                     )
                 transcript_text = " ".join(word.text for word in whisper_words)
+                update_phase("detecting_silences")
+                silence_cut_suggestions = detect_silence_cut_suggestions(
+                    normalized_video.path,
+                    normalized_video.duration,
+                    whisper_words,
+                )
                 update_phase("analyzing_with_gemini")
                 gemini_analysis = analyze_video(
                     normalized_video.path,
@@ -2382,12 +2472,21 @@ class VideoPanel:
                     briefing=edit_options.get("style_notes", ""),
                     transcript_text=transcript_text,
                 )
-                render_plan, suggested_zooms, applied_zooms = _prepare_modal_render_plan(
+                (
+                    render_plan,
+                    suggested_zooms,
+                    applied_zooms,
+                    suggested_cuts,
+                    applied_ai_cuts,
+                ) = _prepare_modal_render_plan(
                     edit_options.get("creative_plan") or {},
                     original_video.duration,
                     gemini_analysis["suggested_zooms"],
+                    gemini_analysis["suggested_cuts"],
+                    silence_cut_suggestions,
                 )
                 gemini_analysis["suggested_zooms"] = suggested_zooms
+                gemini_analysis["suggested_cuts"] = suggested_cuts
                 result = process_local_video_modal(
                     source_path,
                     self.output_dir,
@@ -2412,9 +2511,20 @@ class VideoPanel:
                     progress_callback=update_phase,
                 )
                 result["gemini_analysis"] = gemini_analysis
-                result["gemini_analysis"]["suggested_cuts_applied"] = False
-                result["gemini_analysis"]["suggested_zooms_applied"] = bool(applied_zooms)
+                result["gemini_analysis"]["suggested_cuts_applied"] = bool(applied_ai_cuts)
+                result["gemini_analysis"]["applied_ai_cuts"] = applied_ai_cuts
+                result["gemini_analysis"]["applied_cuts"] = render_plan["cuts"]
+                result["gemini_analysis"]["suggested_zooms_applied"] = any(
+                    item.get("source") == "gemini" for item in applied_zooms
+                )
                 result["gemini_analysis"]["applied_zooms"] = applied_zooms
+                result["gemini_analysis"]["silence_analysis"] = {
+                    "threshold_db": -38,
+                    "minimum_detected_seconds": 0.75,
+                    "candidate_count": len(silence_cut_suggestions),
+                    "candidates": silence_cut_suggestions,
+                    "ai_confirmed_count": len(applied_ai_cuts),
+                }
                 result["transcription_provider"] = "OpenAI"
                 result["transcription_model"] = "whisper-1"
                 result["transcription_word_count"] = len(whisper_words)
